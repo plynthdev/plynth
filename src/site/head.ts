@@ -6,7 +6,11 @@ export const plynthHead = {
     {
       "name": "description",
       "content": "Private round-ups, tokenized stocks and privacy by choice on Robinhood Chain."
-    }
+    },
+    { "property": "og:title", "content": "plynth \u2014 A private foundation" },
+    { "property": "og:description", "content": "Private round-ups, tokenized stocks and privacy by choice on Robinhood Chain." },
+    { "property": "og:type", "content": "website" },
+    { "name": "twitter:card", "content": "summary_large_image" }
   ],
   "links": [
     {
