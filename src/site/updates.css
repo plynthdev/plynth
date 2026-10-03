@@ -33,9 +33,9 @@
 .services-bands{overflow:visible}
 .service-band{min-height:780px;padding:95px 0 150px;clip-path:polygon(0 75px,14% 5px,33% 70px,57% 10px,78% 70px,100% 0,100% calc(100% - 75px),78% calc(100% - 5px),57% calc(100% - 65px),33% calc(100% - 5px),14% calc(100% - 70px),0 100%);margin-top:-75px}
 .service-band:first-child{margin-top:-75px}
-.service-band.gold{background:#f5d98e}
+.service-band.gold{background:var(--gold)}
 .service-heading{padding-top:22px}
-.service-heading h2{font-size:clamp(84px,8.2vw,132px);line-height:.76;max-width:920px;min-height:1.52em;display:flex;align-items:center;justify-content:center;flex-wrap:wrap}
+.service-heading h2{font-size:clamp(84px,8.2vw,132px);line-height:.76;max-width:920px;min-height:1.52em;display:block}
 .service-heading h2.stagger span:nth-child(n+7){opacity:.3}
 .service-heading p{font-weight:500}
 .service-watermark{top:100px;scale:2.8;opacity:.13}
