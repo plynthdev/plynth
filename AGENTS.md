@@ -8,3 +8,5 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- Preserve the imported static-site runtime and enhance page-specific experiences through `src/site/runtime.js` plus layered site CSS, because the app intentionally mirrors the reference site's custom interaction model.

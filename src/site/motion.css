@@ -52,11 +52,15 @@
 .service-watermark .logo-mark{animation:watermark-spin 12s linear infinite paused;will-change:transform}
 .service-band.motion-in-view .service-watermark .logo-mark{animation-play-state:running}
 @keyframes watermark-spin{from{transform:rotate(-12deg)}to{transform:rotate(348deg)}}
+.service-heading h2.stagger span{transition:opacity .45s ease}
+.service-heading h2.stagger span:nth-child(3n){opacity:.35}
+.service-heading.in h2.stagger span{opacity:1}
 .phone-card.active-step{box-shadow:none}
 .phone-step{animation:none}
-.capabilities{padding-top:100px}
+.capabilities{padding-top:140px}
+.capabilities>h2{margin-bottom:80px}
 .capability-grid{padding-bottom:0;border-bottom:0;row-gap:0}
-.capability-grid>div{padding:30px;min-width:0;border-left:0}
+.capability-grid>div{padding:45px 30px;min-width:0;border-left:0}
 .capability-grid>div:nth-child(even){border-left:1px solid var(--ink)}
 .capability-grid>div:nth-child(n+3){border-top:1px solid var(--ink)}
 .capability-grid>div:nth-child(2) .capability-label,.capability-grid>div:nth-child(2) .sticker-board a{background:var(--cyan-light)}
