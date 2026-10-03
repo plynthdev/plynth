@@ -14,11 +14,6 @@ export const plynthHead = {
   ],
   "links": [
     {
-      "rel": "icon",
-      "href": "/favicon.png",
-      "type": "image/png"
-    },
-    {
       "rel": "preload",
       "as": "image",
       "href": "/assets/plynth-mark.png"
