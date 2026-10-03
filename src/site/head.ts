@@ -1,0 +1,58 @@
+export const plynthHead = {
+  "meta": [
+    {
+      "title": "plynth \u2014 A private foundation"
+    },
+    {
+      "name": "description",
+      "content": "Private round-ups, tokenized stocks and privacy by choice on Robinhood Chain."
+    }
+  ],
+  "links": [
+    {
+      "rel": "icon",
+      "href": "/assets/plynth-favicon.png",
+      "type": "image/png"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/plynth-mark.png"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/08-card-purchase.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/01-pink-architecture.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/04-personal-workspace.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/05-hidden-vault-door.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/06-quiet-city.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/09-rain-glass-alternate.webp"
+    },
+    {
+      "rel": "preload",
+      "as": "image",
+      "href": "/assets/10-teal-architecture.webp"
+    }
+  ]
+};
