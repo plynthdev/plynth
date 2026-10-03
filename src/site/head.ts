@@ -15,7 +15,7 @@ export const plynthHead = {
   "links": [
     {
       "rel": "icon",
-      "href": "/assets/plynth-favicon.png",
+      "href": "/favicon.png",
       "type": "image/png"
     },
     {
