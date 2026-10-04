@@ -1,0 +1,7 @@
+[package]
+name = "threshold_holdings"
+type = "bin"
+authors = ["plynth"]
+
+[dependencies]
+hidden = { path = "../hidden" }

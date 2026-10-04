@@ -8,3 +8,4 @@ export * from "./service";
 export * from "./tx";
 export * from "./roundups";
 export * from "./statements";
+export * from "./proofs";

@@ -43,6 +43,9 @@ export const REST: Proc[] = [
   { method: "GET", path: "/v1/crowd/books", call: (k, c) => k.crowd.books(q(c) as any) },
   { method: "GET", path: "/v1/statements/:address", call: (k, c) => k.statements.list({ address: c.req.param("address")! }) },
   { method: "POST", path: "/v1/statements/verify", call: async (k, c) => k.statements.verify({ bundle: await body(c) }) },
+  { method: "POST", path: "/v1/proofs/verify", call: async (k, c) => k.proofs.verify((await body(c)) as any) },
+  { method: "POST", path: "/proofs/verify", call: async (k, c) => k.proofs.verify((await body(c)) as any) },
+  { method: "GET", path: "/v1/proofs/nonce", call: (k, c) => k.proofs.nonce(q(c) as any) },
   { method: "GET", path: "/v1/meta/eligibility", call: (k) => k.meta.eligibility() },
   { method: "GET", path: "/v1/meta/health", call: (k) => k.meta.health() },
 ];

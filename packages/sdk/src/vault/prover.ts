@@ -36,7 +36,8 @@ export async function destroyProver(): Promise<void> {
   await b.destroy();
 }
 
-async function prove(program: { bytecode: string; abi: unknown }, inputs: Record<string, unknown>): Promise<{ proof: Hex; publicInputs: bigint[] }> {
+/** Witness + UltraHonk proof (EVM target) for a compiled Noir program. */
+export async function proveCircuit(program: { bytecode: string; abi: unknown }, inputs: Record<string, unknown>): Promise<{ proof: Hex; publicInputs: bigint[] }> {
   const { witness } = await new Noir(program as any).execute(inputs as any);
   const be = new UltraHonkBackend(program.bytecode, await backend());
   const pd = await be.generateProof(witness, { verifierTarget: "evm" });
@@ -84,7 +85,7 @@ export async function proveTransfer(p: {
   ];
   const outCommitments = outs.map((o) => commitmentOf(assetId, o.raw, o.ownerPk, o.blinding));
 
-  const { proof } = await prove(transferArtifact, {
+  const { proof } = await proveCircuit(transferArtifact, {
     root: f(root),
     nullifiers: nullifiers.map(f),
     out_commitments: outCommitments.map(f),
@@ -122,7 +123,7 @@ export async function proveWithdraw(p: {
   const change = note.raw - p.amount;
   const changeBlinding = randomField();
   const changeCommitment = commitmentOf(assetId, change, keys.ownerPk, changeBlinding);
-  const { proof } = await prove(withdrawArtifact, {
+  const { proof } = await proveCircuit(withdrawArtifact, {
     root: f(root),
     nullifier_hash: f(nullifier),
     change_commitment: f(changeCommitment),
@@ -152,4 +153,14 @@ export async function proveWithdraw(p: {
       encryptedChange: encryptNote({ asset, raw: change, blinding: changeBlinding }, keys.viewingPub),
     },
   };
+}
+
+/** Checks an EVM-target UltraHonk proof against a compiled program's verification key (no chain state). */
+export async function verifyCircuitProof(program: { bytecode: string }, proof: Hex, publicInputs: readonly bigint[]): Promise<boolean> {
+  const be = new UltraHonkBackend(program.bytecode, await backend());
+  try {
+    return await be.verifyProof({ proof: Buffer.from(proof.slice(2), "hex"), publicInputs: publicInputs.map((x) => toBytes32(x)) }, { verifierTarget: "evm" });
+  } catch {
+    return false;
+  }
 }

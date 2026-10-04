@@ -12,6 +12,9 @@ import {ShieldedPool, IHonkVerifier} from "../src/consumer/ShieldedPool.sol";
 import {IShieldedDeposit} from "../src/consumer/CrowdBuy.sol";
 import {TransferVerifier} from "../src/consumer/verifiers/TransferVerifier.sol";
 import {WithdrawVerifier} from "../src/consumer/verifiers/WithdrawVerifier.sol";
+import {ThresholdVerifier} from "../src/consumer/ThresholdVerifier.sol";
+import {ThresholdHoldingsVerifier} from "../src/consumer/verifiers/ThresholdHoldingsVerifier.sol";
+import {ThresholdSavingsVerifier} from "../src/consumer/verifiers/ThresholdSavingsVerifier.sol";
 import {IERC5564Announcer} from "../src/interfaces/IERC5564Announcer.sol";
 import {IERC6538Registry} from "../src/interfaces/IERC6538Registry.sol";
 import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
@@ -56,6 +59,7 @@ contract LocalConsumer is Script {
         address crowd;
         address stealthClaims;
         address shieldedPool;
+        address thresholdVerifier;
         address multicall3;
         address tsla;
         address nvda;
@@ -131,6 +135,14 @@ contract LocalConsumer is Script {
         ShieldedPool pool = ShieldedPool(_deployHidden(deployer, o.crowd, assets, caps));
         CrowdBuy(o.crowd).setShieldedPool(IShieldedDeposit(address(pool)));
         o.shieldedPool = address(pool);
+        // Same as ThresholdProofs.s.sol.
+        o.thresholdVerifier = address(
+            new ThresholdVerifier(
+                pool,
+                IHonkVerifier(address(new ThresholdHoldingsVerifier())),
+                IHonkVerifier(address(new ThresholdSavingsVerifier()))
+            )
+        );
     }
 
     function _deployHidden(address owner, address crowd, address[] memory assets, uint256[] memory caps)
@@ -186,6 +198,7 @@ contract LocalConsumer is Script {
         vm.serializeAddress(r, "crowdBuy", o.crowd);
         vm.serializeAddress(r, "multicall3", o.multicall3);
         vm.serializeAddress(r, "shieldedPool", o.shieldedPool);
+        vm.serializeAddress(r, "thresholdVerifier", o.thresholdVerifier);
         if (o.stealthClaims != address(0)) {
             vm.serializeAddress(r, "stealthClaims", o.stealthClaims);
             vm.serializeAddress(r, "erc5564Announcer", ANNOUNCER);

@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeFunctionData, getAddress, hexToBytes, type Hex } from "viem";
 import circuitConstants from "../../../circuits/constants.json" with { type: "json" };
-import { compactArtifact } from "../scripts/sync-circuits";
+import { CIRCUITS, compactArtifact } from "../scripts/sync-circuits";
 import {
   ENCRYPTED_NOTE_BYTES,
   NoteTree,
@@ -76,7 +76,7 @@ describe("note model matches the circuits and the contract", () => {
   });
 
   test("shipped circuit artifacts equal the compiled circuits (when built)", () => {
-    for (const c of ["transfer", "withdraw"]) {
+    for (const c of CIRCUITS) {
       if (!existsSync(join(ROOT, "circuits", c, "target", `${c}.json`))) {
         console.warn(`skip: circuits/${c}/target not built (bash circuits/scripts/build.sh)`);
         continue;

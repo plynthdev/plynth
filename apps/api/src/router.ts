@@ -5,6 +5,7 @@ import { eligibility } from "./eligibility";
 import { stockOf } from "./deployment";
 import { indexedBlock } from "./events";
 import { listStatements, StatementsUnavailable, verifyStatementBundle } from "./statements";
+import { proofNonce, verifyThreshold } from "./proofs";
 import { activity, crowdBooks, habit, MODES, overview, RANGES, settings, type Deps, type Range } from "./service";
 import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
@@ -22,6 +23,7 @@ const address = z
   .refine((s) => isAddress(s, { strict: false }), "not an address")
   .transform((s) => getAddress(s) as Address);
 const amount = z.string().regex(/^\d{1,30}(\.\d{1,6})?$/, "decimal USDG amount, at most 6 decimals");
+const bytes32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "bytes32 hex").transform((s) => s as `0x${string}`);
 const range = z.enum(Object.keys(RANGES) as [Range, ...Range[]]);
 
 /** Bad tx input is the caller's fault (400), not a server error. */
@@ -87,6 +89,13 @@ export const appRouter = t.router({
     list: t.procedure.input(z.object({ address })).query(({ ctx, input }) => hidden(() => listStatements(ctx, input.address))),
     // Stateless: the bundle is checked against the chain and nothing is stored. Shape errors come back in the verdict.
     verify: t.procedure.input(z.object({ bundle: z.unknown() })).mutation(({ ctx, input }) => hidden(() => verifyStatementBundle(ctx, input.bundle))),
+  }),
+  proofs: t.router({
+    // Stateless: checks a threshold proof for the caller's own (verifier, requestId); nothing is stored.
+    verify: t.procedure
+      .input(z.object({ proof: z.unknown(), verifier: address, requestId: bytes32 }))
+      .mutation(({ ctx, input }) => hidden(() => verifyThreshold(ctx, input.proof, input.verifier, input.requestId))),
+    nonce: t.procedure.input(z.object({ verifier: address, requestId: bytes32 })).query(({ ctx, input }) => hidden(async () => proofNonce(ctx, input.verifier, input.requestId))),
   }),
   meta: t.router({
     eligibility: t.procedure.query(({ ctx }) => eligibility(ctx.headers)),
