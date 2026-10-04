@@ -109,6 +109,17 @@
         "drizzle-kit": "^0.31.11",
       },
     },
+    "packages/policy-compiler": {
+      "name": "@plynth/policy-compiler",
+      "version": "0.0.0",
+      "bin": {
+        "policy-compiler": "src/cli.ts",
+      },
+      "dependencies": {
+        "@plynth/chain": "workspace:*",
+        "viem": "^2.57.2",
+      },
+    },
     "packages/sdk": {
       "name": "@plynth/sdk",
       "version": "0.0.0",
@@ -247,6 +258,8 @@
     "@plynth/indexer": ["@plynth/indexer@workspace:apps/indexer"],
 
     "@plynth/keeper": ["@plynth/keeper@workspace:apps/keeper"],
+
+    "@plynth/policy-compiler": ["@plynth/policy-compiler@workspace:packages/policy-compiler"],
 
     "@plynth/relayer": ["@plynth/relayer@workspace:apps/relayer"],
 

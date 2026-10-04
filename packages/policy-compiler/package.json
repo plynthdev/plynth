@@ -1,0 +1,14 @@
+{
+  "name": "@plynth/policy-compiler",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": { "policy-compiler": "src/cli.ts" },
+  "scripts": {
+    "fixture": "bun src/fixture.ts"
+  },
+  "dependencies": {
+    "@plynth/chain": "workspace:*",
+    "viem": "^2.57.2"
+  }
+}

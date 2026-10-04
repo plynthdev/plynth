@@ -1,0 +1,37 @@
+# Balanced treasury policy (T1). Bands are percent of NAV; caps are whole USD.
+name: balanced
+description: Cash and equity roughly even. Equity across every Stock Token that has a Chainlink feed.
+network: mainnet
+bands:
+  cash: [40, 70]
+  equity: [30, 60]
+  basis: [0, 0]        # T1: no basis trade
+hedge:
+  netDeltaBps: [0, 0]  # T1: no hedge overlay
+  maxLeverageX10: 0    # T1: no perps
+limits:
+  perOrderUsd: 100000
+  perDayUsd: 500000
+  approvalAboveUsd: 50000
+  perNameFloatBps: 100 # hold at most 1% of a Stock Token's supply
+  perVenueBps: 0       # T1: no venues
+risk:
+  noNewRiskOffHours: true
+  pauseNewRiskAtDrawdownBps: -400
+  deriskAtDrawdownBps: -800
+periodDays: 30
+controller: null       # pass --controller at compile time
+# QCOM is left out: it has no Chainlink feed, so it cannot be marked.
+instruments:
+  - { asset: USDG, kind: cash }
+  - { asset: steakUSDG, kind: cash_vault }
+  - { asset: SPY, kind: stock_token }
+  - { asset: AAPL, kind: stock_token }
+  - { asset: MSFT, kind: stock_token }
+  - { asset: NVDA, kind: stock_token }
+  - { asset: AMZN, kind: stock_token }
+  - { asset: GOOGL, kind: stock_token }
+  - { asset: META, kind: stock_token }
+  - { asset: TSLA, kind: stock_token }
+  - { asset: MSTR, kind: stock_token }
+venues: []

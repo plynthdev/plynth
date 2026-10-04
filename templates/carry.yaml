@@ -1,0 +1,4 @@
+# Carry policy. Identical to balanced until T2 adds the basis band, hedge overlay and venues.
+extends: balanced
+name: carry
+description: Same rules as balanced in T1. T2 will add a basis band and perp venues here.
