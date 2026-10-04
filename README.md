@@ -1,0 +1,42 @@
+# plynth
+
+Backend for plynth on Robinhood Chain.
+
+| Network | Chain ID | Public RPC | Explorer |
+|---|---|---|---|
+| Mainnet | 4663 | https://rpc.mainnet.chain.robinhood.com | https://robinhoodchain.blockscout.com |
+| Testnet | 46630 | https://rpc.testnet.chain.robinhood.com | https://explorer.testnet.chain.robinhood.com |
+
+Stock Tokens, the Morpho USDG vault and Uniswap v3 exist **only on mainnet**. Testnet has Uniswap v4,
+the ERC-4337 EntryPoint and Permit2. So contracts are tested on a local **fork of mainnet**: a free,
+simulated copy of the real chain. Nothing is spent and nothing is sent.
+
+## Setup (Mac)
+
+```bash
+brew install oven-sh/bun/bun
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+git submodule update --init --recursive
+bun install
+cp .env.example .env
+```
+
+## Run
+
+```bash
+bun run test:contracts                                   # contract unit tests
+RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com bun run test:contracts   # + mainnet-fork tests
+bun test                                                 # TypeScript tests
+bun run verify:chain                                     # re-check every address against the live chain
+```
+
+## Layout
+
+- `contracts/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
+  (Chainlink price x ERC-8056 `uiMultiplier()`, applied exactly once; stale feed -> `hold`, not revert).
+- `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
+
+## Still to verify
+
+- Chainlink feed addresses for each Stock Token (and whether each feed already embeds the multiplier).
+- USDG token address; Orderly and Arcus contracts on 4663.
