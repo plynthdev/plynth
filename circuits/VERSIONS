@@ -1,0 +1,6 @@
+# Pinned toolchain for the Hidden Vault circuits. Bump together: bb must match noir
+# (see barretenberg/bbup/bb-versions.json; bb 5.2.0 ships noir v1.0.0-beta.25).
+nargo=1.0.0-beta.25
+bb=5.2.0
+@noir-lang/noir_js=1.0.0-beta.25
+@aztec/bb.js=5.2.0

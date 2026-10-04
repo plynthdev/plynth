@@ -1,0 +1,15 @@
+{
+  "name": "@plynth/circuits",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "fixtures": "bun scripts/fixtures.ts",
+    "prove": "bun scripts/prove.ts"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "5.2.0",
+    "@noir-lang/noir_js": "1.0.0-beta.25",
+    "viem": "^2.57.2"
+  }
+}

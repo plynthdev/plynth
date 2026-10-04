@@ -1,0 +1,7 @@
+[package]
+name = "transfer"
+type = "bin"
+authors = ["plynth"]
+
+[dependencies]
+hidden = { path = "../hidden" }

@@ -1,0 +1,6 @@
+{
+  "treeDepth": 20,
+  "zeroLeafPreimage": "plynth.hidden.zero-leaf",
+  "zeroLeaf": "19775478028315771982975137691107476491441223034782917916729230798959553774862",
+  "note": "zeroLeaf = keccak256(zeroLeafPreimage) mod p, decimal (hex form is in circuits/hidden/src/constants.nr)"
+}

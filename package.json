@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "circuits"
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
@@ -19,7 +20,8 @@
     "keeper": "bun apps/keeper/src/main.ts",
     "api": "bun apps/api/src/main.ts",
     "relayer": "bun apps/relayer/src/main.ts",
-    "eligibility": "bun apps/eligibility/src/main.ts"
+    "eligibility": "bun apps/eligibility/src/main.ts",
+    "circuits:build": "bash circuits/scripts/build.sh"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

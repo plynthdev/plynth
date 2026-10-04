@@ -1,0 +1,6 @@
+[package]
+name = "hidden"
+type = "lib"
+authors = ["plynth"]
+
+[dependencies]

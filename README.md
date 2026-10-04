@@ -28,6 +28,9 @@ curl -L https://foundry.paradigm.xyz | bash && foundryup
 git submodule update --init --recursive
 bun install
 cp .env.example .env
+# Hidden Vault circuits only (versions pinned in circuits/VERSIONS):
+curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash && noirup -v 1.0.0-beta.25
+curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash && bbup -v 5.2.0
 ```
 
 ## Run
@@ -65,6 +68,13 @@ bun run eligibility                                      # eligibility screen: P
 - `packages/sdk/` ERC-5564 scheme 1 stealth addresses (keys from a wallet signature, meta-address, ERC-6538
   registration calldata, announcement scanning with view tags, stealth keys, claim signing). Matches the ERC's
   reference vector.
+- `circuits/` Hidden Vault Noir circuits (UltraHonk, no per-circuit trusted setup): `transfer` (2-in/2-out,
+  one asset) and `withdraw` (1 note -> public amount + change, recipient and relayer fee bound as public
+  inputs), on the shared note model in `circuits/hidden` (Poseidon2 commitments/nullifiers, depth-20 tree).
+  `bash circuits/scripts/build.sh` regenerates `contracts/src/consumer/verifiers/{Transfer,Withdraw}Verifier.sol`;
+  `bun circuits/scripts/fixtures.ts` regenerates the Poseidon2 fixtures and `HiddenConstants.sol`;
+  `circuits/scripts/prove.ts` is the client-side prover (noir_js + bb.js). `Poseidon2.sol` equals Noir's hash.
+  Testnet and forks only until an external audit (mainnet deposit cap 0).
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
 - `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
