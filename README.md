@@ -113,6 +113,11 @@ What you have to trust, per component. Later components add their own entries he
   unpark can wait for liquidity). Buys, sells and parks stop when pool deposits are paused and count against
   caps; unpark and settle never stop.
 
+- **PeriodClose.** Recomputes NAV, band weights and the positions hash on-chain at commit, so a statement
+  cannot claim holdings the account does not have. You trust the policy's controller to sign only the bundle
+  it stored (the chain checks the bundle's hash, not its desk-action log), and the board to appoint the
+  PeriodClose: it alone may move the platform fee (0.25%/year of NAV, from idle USDG) out of the account.
+
 IP geolocation by [DB-IP](https://db-ip.com) (IP to Country Lite, licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Sanctions data: the OFAC SDN list (US Treasury).
 

@@ -55,6 +55,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     event GuardDecision(bytes32 indexed opHash, bytes32 indexed deskId, uint8 code);
     event Executed(bytes32 indexed opHash, bytes32 indexed deskId, address indexed adapter);
     event WithdrawnToBoard(address indexed token, uint256 amount);
+    event CloseFeePaid(address indexed token, address indexed to, uint256 amount);
 
     error NotBoard();
     error ZeroAddress();
@@ -66,6 +67,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error BadSleeve(address sleeve);
     error DuplicateAsset(address asset);
     error GuardRejected(uint8 code);
+    error NotPeriodClose();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -123,6 +125,16 @@ contract TreasuryAccount is ReentrancyGuardTransient {
             IERC20(token).safeTransfer(board, amount);
         }
         emit WithdrawnToBoard(token, amount);
+    }
+
+    // ---------------------------------------------------------------- period close
+
+    /// The platform fee leg of a period close: only the board-appointed PeriodClose may move `amount` of
+    /// `token` to `to`. PeriodClose computes the fee from the NAV it just recomputed and bounds it by idle cash.
+    function payCloseFee(address token, address to, uint256 amount) external nonReentrant {
+        if (msg.sender != periodClose || msg.sender == address(0)) revert NotPeriodClose();
+        IERC20(token).safeTransfer(to, amount);
+        emit CloseFeePaid(token, to, amount);
     }
 
     // ---------------------------------------------------------------- desks

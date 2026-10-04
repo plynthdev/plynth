@@ -3,7 +3,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { toFunctionSelector, type Abi, type AbiFunction, type AbiError } from "viem";
+import { toEventSelector, toFunctionSelector, type Abi, type AbiEvent, type AbiFunction, type AbiError } from "viem";
+import { closePolicyAbi, periodCloseAbi, periodCloseErrorsAbi } from "../close/abi";
 import { accountAbi, beaconAbi, cashSleeveAbi, equitySleeveAbi, errorsAbi, guardAbi, policyAbi, valuerAbi } from "../desks/abi";
 
 const OUT = join(import.meta.dir, "..", "..", "..", "contracts", "out");
@@ -67,5 +68,16 @@ describe("hand-written ABIs match contracts/out", () => {
       for (const s of selectors(art(f, n))) all.add(s);
     }
     for (const e of errorsAbi) expect(all.has(errSel(e as AbiError)), (e as AbiError).name).toBe(true);
+  });
+
+  test("close service / cfo-pack ABIs: functions, PeriodClosed event and errors", () => {
+    if (!ready) return;
+    const pc = art("PeriodClose.sol", "PeriodClose");
+    expectSubset(periodCloseAbi as Abi, [pc]);
+    expectSubset(closePolicyAbi as Abi, [art("TreasuryPolicy.sol", "TreasuryPolicy")]);
+    const ev = (abi: Abi) => abi.filter((i) => i.type === "event").map((i) => toEventSelector(i as AbiEvent));
+    expect(ev(pc)).toContain(ev(periodCloseAbi as Abi)[0]!);
+    const errs = selectors(pc);
+    for (const e of periodCloseErrorsAbi) expect(errs.has(errSel(e as AbiError)), (e as AbiError).name).toBe(true);
   });
 });

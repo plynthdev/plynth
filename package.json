@@ -22,7 +22,9 @@
     "relayer": "bun apps/relayer/src/main.ts",
     "eligibility": "bun apps/eligibility/src/main.ts",
     "circuits:build": "bash circuits/scripts/build.sh",
-    "treasury:desks": "bun apps/treasury/desks/main.ts"
+    "treasury:desks": "bun apps/treasury/desks/main.ts",
+    "treasury:close": "bun apps/treasury/close/main.ts",
+    "treasury:cfo-pack": "bun apps/treasury/cfo-pack/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

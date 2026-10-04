@@ -4,7 +4,9 @@
   "type": "module",
   "main": "desks/index.ts",
   "scripts": {
-    "desks": "bun desks/main.ts"
+    "desks": "bun desks/main.ts",
+    "close": "bun close/main.ts",
+    "cfo-pack": "bun cfo-pack/main.ts"
   },
   "dependencies": {
     "@plynth/chain": "workspace:*",

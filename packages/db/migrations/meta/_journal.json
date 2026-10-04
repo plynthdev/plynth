@@ -57,6 +57,13 @@
       "when": 1791116428490,
       "tag": "0007_treasury_desks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791116429490,
+      "tag": "0008_treasury_closes",
+      "breakpoints": true
     }
   ]
 }
