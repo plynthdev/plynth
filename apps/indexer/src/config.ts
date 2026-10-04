@@ -41,6 +41,32 @@ export const DEPLOYMENT_EVENTS: Record<string, AbiEvent[]> = {
     "event Revealed(bytes32 indexed key, bytes32 secret, uint64 executeAt)",
     ...OWNABLE,
   ]),
+  savingsVault: ev([
+    "event KeeperSet(address indexed keeper)",
+    "event CrowdSet(address indexed crowd)",
+    "event Deposited(address indexed user, uint256 amount, bool viaPermit2)",
+    "event Withdrawn(address indexed user, address indexed to, uint256 amount, uint256 fromAvailable, uint256 fromPending)",
+    "event SettingsSet(address indexed user, uint8 roundTo, uint8 multiplier, uint64 weeklyCap, uint64 fixedTopUp, uint8 mode)",
+    "event MixSet(address indexed user, (address stockToken, uint16 weightBps)[] mix)",
+    "event WalletLinked(address indexed user, address indexed wallet, uint256 nonce)",
+    "event WalletUnlinked(address indexed user, address indexed wallet)",
+    "event Accrued(address indexed user, bytes32 indexed sourceTx, uint32 logIndex, uint256 spend, uint256 added, uint64 week)",
+    "event TopUpPulled(address indexed user, uint256 amount)",
+    "event Swept(address indexed user, address indexed crowd, uint256 amount)",
+    "event Refunded(address indexed user, uint256 amount)",
+    ...OWNABLE,
+  ]),
+  crowdBuy: ev([
+    "event KeeperSet(address indexed keeper)",
+    "event BookOpened(address indexed asset, uint256 indexed bookId, uint64 openedAt)",
+    "event Joined(address indexed asset, uint256 indexed bookId, address indexed user, uint256 usdg)",
+    "event Cancelled(address indexed asset, uint256 indexed bookId, address indexed user, uint256 usdg)",
+    "event Executed(address indexed asset, uint256 indexed bookId, uint256 usdgTotal, uint256 rawOut, uint32 accounts, uint80 roundId)",
+    "event Claimed(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
+    "event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
+    "event DustSettled(address indexed asset, uint256 indexed bookId, uint256 raw)",
+    ...OWNABLE,
+  ]),
 };
 
 /** Mock Stock Tokens in the testnet kit announce multiplier changes. */
@@ -60,6 +86,22 @@ export function readDeployment(dir: string, chainId: number): Deployment | undef
   const file = join(dir, `${chainId}.json`);
   if (!existsSync(file)) return undefined;
   return JSON.parse(readFileSync(file, "utf8")) as Deployment;
+}
+
+/**
+ * Round-up source: one stream per linked spending wallet, USDG Transfer(from = wallet), starting at the
+ * block the wallet was first linked (so a wallet linked later is backfilled from its own link block and
+ * never from before it). Built from the vault's WalletLinked logs already in ev_logs; see linked.ts.
+ */
+export function spendStreams(chainId: number, chain: ChainName, usdg: string, wallets: { wallet: string; fromBlock: bigint }[]): Stream[] {
+  return wallets.map((w) => ({
+    name: `${chainId}:usdg:spend:${w.wallet.toLowerCase()}`,
+    chain,
+    address: getAddress(usdg),
+    events: [TRANSFER_EVENT],
+    fromBlock: w.fromBlock,
+    args: { from: getAddress(w.wallet) },
+  }));
 }
 
 export type ExtraStream = { name: string; address: string; events: string[]; fromBlock?: number | string; args?: Record<string, unknown> };

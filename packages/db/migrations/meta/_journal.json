@@ -22,6 +22,13 @@
       "when": 1791107592632,
       "tag": "0002_treasury_placeholder",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791109859439,
+      "tag": "0003_keeper",
+      "breakpoints": true
     }
   ]
 }

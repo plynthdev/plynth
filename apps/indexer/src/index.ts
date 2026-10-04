@@ -4,3 +4,4 @@ export * from "./health";
 export * from "./indexer";
 export * from "./json";
 export * from "./retry";
+export * from "./linked";

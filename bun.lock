@@ -20,6 +20,18 @@
         "viem": "^2.57.2",
       },
     },
+    "apps/keeper": {
+      "name": "@plynth/keeper",
+      "version": "0.0.0",
+      "dependencies": {
+        "@plynth/chain": "workspace:*",
+        "@plynth/db": "workspace:*",
+        "@plynth/indexer": "workspace:*",
+        "drizzle-orm": "^0.45.3",
+        "hono": "^4.13.13",
+        "viem": "^2.57.2",
+      },
+    },
     "packages/chain": {
       "name": "@plynth/chain",
       "version": "0.0.0",
@@ -111,6 +123,8 @@
     "@plynth/db": ["@plynth/db@workspace:packages/db"],
 
     "@plynth/indexer": ["@plynth/indexer@workspace:apps/indexer"],
+
+    "@plynth/keeper": ["@plynth/keeper@workspace:apps/keeper"],
 
     "@scure/base": ["@scure/base@1.2.6", "", {}, "sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg=="],
 

@@ -37,12 +37,15 @@ bun run test:contracts                                   # contract unit tests
 RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com bun run test:contracts   # + mainnet-fork tests
 bun test                                                 # TypeScript tests
 bun run verify:chain                                     # re-check every address against the live chain
+bun run indexer --once && bun run keeper --once          # one indexer + keeper pass (see .env.example)
 ```
 
 ## Layout
 
 - `contracts/src/core/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
   (Chainlink price x ERC-8056 `uiMultiplier()`, applied exactly once; stale feed -> `hold`, not revert).
+- `apps/keeper/` Round-ups, weekly top-ups, sweeps into crowd books, JitterBeacon commit-reveal and crowd
+  execution. Every action is pre-simulated; the contracts bound what the keeper can do.
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
 - `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;

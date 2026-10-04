@@ -15,7 +15,8 @@
     "db:create": "bun packages/db/src/create.ts",
     "db:generate": "bun run --cwd packages/db generate",
     "db:migrate": "bun packages/db/src/migrate.ts",
-    "indexer": "bun apps/indexer/src/main.ts"
+    "indexer": "bun apps/indexer/src/main.ts",
+    "keeper": "bun apps/keeper/src/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

@@ -39,9 +39,10 @@ describe("packages/db", () => {
     expect(await pk("ev_cursors")).toEqual(["stream"]);
   });
 
-  test("only indexer tables exist now (keeper/treasury migrations are placeholders)", async () => {
+  test("indexer and keeper tables exist; every table is owner-prefixed (ev_, keeper_, treasury_)", async () => {
     const tables = (await t.sql`select table_name from information_schema.tables where table_schema = 'public' order by 1`).map((r) => r.table_name);
-    expect(tables).toEqual(["ev_cursors", "ev_logs"]);
+    expect(tables).toEqual(expect.arrayContaining(["ev_cursors", "ev_logs", "keeper_jobs", "keeper_roundups"]));
+    for (const name of tables) expect(name).toMatch(/^(ev|keeper|treasury)_/);
   });
 
   test("migrate is idempotent", async () => {

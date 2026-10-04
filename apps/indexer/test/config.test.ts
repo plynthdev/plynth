@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toEventSelector, type AbiEvent } from "viem";
-import { DEPLOYMENT_EVENTS, loadStreams, STOCK_TOKEN_EVENTS } from "../src/config";
+import { DEPLOYMENT_EVENTS, loadStreams, spendStreams, STOCK_TOKEN_EVENTS } from "../src/config";
 import { toJsonSafe } from "../src/json";
 
 const A = (n: number) => `0x${n.toString(16).padStart(40, "0")}`;
@@ -52,7 +52,13 @@ describe("config", () => {
 
   test("event signatures match the compiled contracts (skips if contracts/out is not built)", () => {
     const out = join(import.meta.dir, "..", "..", "..", "contracts", "out");
-    const map: Record<string, string> = { stockTokenRegistry: "StockTokenRegistry", stockRouter: "StockRouter", jitterBeacon: "JitterBeacon" };
+    const map: Record<string, string> = {
+      stockTokenRegistry: "StockTokenRegistry",
+      stockRouter: "StockRouter",
+      jitterBeacon: "JitterBeacon",
+      savingsVault: "SavingsVault",
+      crowdBuy: "CrowdBuy",
+    };
     const check = (contract: string, events: AbiEvent[]) => {
       const f = join(out, `${contract}.sol`, `${contract}.json`);
       if (!existsSync(f)) return console.warn(`skip: ${f} not built`);
@@ -62,6 +68,15 @@ describe("config", () => {
     };
     for (const [k, c] of Object.entries(map)) check(c, DEPLOYMENT_EVENTS[k]!);
     check("MockStockToken", STOCK_TOKEN_EVENTS);
+  });
+
+  test("spend streams: one USDG Transfer(from = wallet) stream per linked wallet from its link block", () => {
+    const s = spendStreams(46630, "testnet", A(1), [{ wallet: A(9), fromBlock: 42n }]);
+    expect(s).toHaveLength(1);
+    expect(s[0]!.name).toBe(`46630:usdg:spend:${A(9)}`);
+    expect(s[0]!.args).toEqual({ from: A(9) });
+    expect(s[0]!.fromBlock).toBe(42n);
+    expect(s[0]!.events[0]!.name).toBe("Transfer");
   });
 
   test("toJsonSafe turns bigint into decimal strings, deeply", () => {
