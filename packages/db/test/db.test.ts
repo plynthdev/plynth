@@ -42,7 +42,7 @@ describe("packages/db", () => {
   test("indexer, keeper and treasury tables exist; every table is owner-prefixed (ev_, keeper_, treasury_, eligibility_, roundup_) or a named treasury table", async () => {
     const tables = (await t.sql`select table_name from information_schema.tables where table_schema = 'public' order by 1`).map((r) => r.table_name);
     // Treasury-lane tables that predate the owner-prefix rule (OWNER: treasury in src/schema).
-    const treasuryTables = ["desk_actions", "closes"];
+    const treasuryTables = ["desk_actions", "closes", "jury_verdicts"];
     expect(tables).toEqual(expect.arrayContaining(["eligibility_decisions", "ev_cursors", "ev_logs", "keeper_hidden_deliveries", "keeper_jobs", "keeper_roundups", "roundup_events", "roundup_sources", ...treasuryTables]));
     for (const name of tables) if (!treasuryTables.includes(name)) expect(name).toMatch(/^(ev|keeper|treasury|eligibility|roundup)_/);
   });

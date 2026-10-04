@@ -4,8 +4,12 @@
 // Env: TREASURY_CONFIG (desk config JSON, see config.ts), TREASURY_RPC_URL (overrides the config's rpcUrl),
 // DATABASE_URL (desk_actions), TREASURY_CASH_DESK_KEY | _KEYSTORE (+ _KEYSTORE_PASSWORD[_FILE]),
 // TREASURY_EQUITY_DESK_KEY | _KEYSTORE (+ ...). Keys are never logged.
+// Jury (todo 26): TREASURY_JURY=off disables it; OLLAMA_HOST, TREASURY_JURY_MODELS, TREASURY_JURY_TIMEOUT_MS.
+// A rule-9 rejection (needs the board) is filed as a BoardApprovals ticket with the jury's verdict attached;
+// without Ollama the rule juror alone runs.
 import { connect, databaseUrl } from "@plynth/db";
 import { createPublicClient, createWalletClient, defineChain, http, type PublicClient } from "viem";
+import { JuryService, juryExceptionHandler, PgJuryStore } from "../jury";
 import { loadConfig } from "./config";
 import { loadDeskAccount } from "./keys";
 import { PgActionLog } from "./log";
@@ -37,6 +41,10 @@ const ctx: DeskContext = {
   log: new PgActionLog(db),
   say,
 };
+if (process.env.TREASURY_JURY !== "off") {
+  const store = new PgJuryStore(db);
+  ctx.onException = juryExceptionHandler(JuryService.fromEnv(process.env, { store, log: (m) => say(`jury: ${m}`) }), store);
+}
 
 async function pass() {
   const r = await runOnce(ctx);

@@ -67,3 +67,37 @@ export const closes = pgTable(
     index("closes_period_idx").on(t.chainId, t.periodClose, t.periodEnd),
   ],
 );
+
+/**
+ * One row per exception the model jury deliberated on (todo 26). `bundle_json` is the exact text whose
+ * keccak256 (`bundle_hash`) went to BoardApprovals.request as `juryVerdictCid` (text, not jsonb, for the same
+ * reason as closes). The jury only advises; `ticket` is the board ticket the desk opened with it.
+ * recommendation: approve | reject | none (models), rule_recommendation: approve | reject (rule juror).
+ * status: deliberated (stored, not yet on-chain) | requested (ticket opened) | failed
+ */
+export const juryVerdicts = pgTable(
+  "jury_verdicts",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    approvals: text("approvals").notNull(),
+    account: text("account").notNull(),
+    desk: text("desk").notNull(),
+    opHash: text("op_hash").notNull(),
+    bundleHash: text("bundle_hash").notNull(),
+    bundleJson: text("bundle_json").notNull(),
+    mode: text("mode").notNull(), // models+rules | rules-only
+    recommendation: text("recommendation").notNull(),
+    ruleRecommendation: text("rule_recommendation").notNull(),
+    status: text("status").notNull(),
+    ticket: text("ticket"),
+    txHash: text("tx_hash"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("jury_verdicts_bundle_uq").on(t.chainId, t.approvals, t.bundleHash),
+    index("jury_verdicts_ticket_idx").on(t.chainId, t.approvals, t.ticket),
+    index("jury_verdicts_op_idx").on(t.opHash),
+  ],
+);

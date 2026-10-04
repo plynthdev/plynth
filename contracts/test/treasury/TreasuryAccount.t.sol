@@ -164,6 +164,44 @@ contract BoardApprovalsTest is TreasuryFixture {
         approvals.request(OP);
     }
 
+    function test_requestWithJury_storesCidAndEmits() public {
+        bytes memory cid = abi.encodePacked(keccak256("bundle"));
+        vm.expectEmit(true, false, false, true, address(approvals));
+        emit BoardApprovals.JuryVerdictAttached(bytes32(uint256(1)), cid);
+        vm.prank(eqKey);
+        bytes32 t = approvals.request(OP, cid);
+        assertEq(approvals.juryVerdictCidOf(t), cid);
+        assertEq(approvals.ticketOf(t).opHash, OP);
+        assertEq(uint8(approvals.ticketOf(t).status), uint8(BoardApprovals.Status.Requested));
+        // The verdict is advice only: the ticket is not valid until the board approves it.
+        assertFalse(approvals.isValid(t, OP, address(account)));
+        vm.prank(board);
+        approvals.approve(t);
+        assertTrue(approvals.isValid(t, OP, address(account)));
+    }
+
+    function test_requestWithJury_sameRulesAsPlainRequest() public {
+        vm.prank(stranger);
+        vm.expectRevert(BoardApprovals.NotDesk.selector);
+        approvals.request(OP, hex"01");
+        vm.prank(eqKey);
+        vm.expectRevert(BoardApprovals.CidTooLong.selector);
+        approvals.request(OP, new bytes(129));
+        vm.prank(eqKey);
+        bytes32 t = approvals.request(OP, "");
+        assertEq(approvals.juryVerdictCidOf(t).length, 0);
+        vm.prank(eqKey);
+        bytes32 t2 = approvals.request(OP);
+        assertEq(t2, bytes32(uint256(2)));
+    }
+
+    function testFuzz_requestWithJury_roundTripsAnyCid(bytes calldata cid) public {
+        vm.assume(cid.length <= 128);
+        vm.prank(eqKey);
+        bytes32 t = approvals.request(OP, cid);
+        assertEq(approvals.juryVerdictCidOf(t), cid);
+    }
+
     function test_request_needsBoundAccount() public {
         BoardApprovals fresh = new BoardApprovals(board, address(guard));
         vm.prank(eqKey);

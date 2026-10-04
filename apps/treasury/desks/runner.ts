@@ -34,6 +34,9 @@ export type DeskContext = {
   equity: Desk;
   log: ActionLog;
   say?: (m: string) => void;
+  /** Called when a simulation is rejected; the jury (todo 26) files rule-9 rejections with the board. Errors
+   *  are logged and never stop the pass. */
+  onException?: (ctx: DeskContext, op: Op, rejection: Rejection) => Promise<void>;
 };
 
 export type State = {
@@ -204,6 +207,13 @@ export async function attempt(ctx: DeskContext, op: Op): Promise<Outcome> {
   if (!sim.ok) {
     await ctx.log.record({ ...row, status: "rejected", reasonCode: sim.rejection.code, reason: sim.rejection.reason });
     ctx.say?.(`${op.desk} ${op.action} ${op.asset} ${op.amount}: rejected by simulation (${sim.rejection.reason})`);
+    if (ctx.onException) {
+      try {
+        await ctx.onException(ctx, op, sim.rejection);
+      } catch (e) {
+        ctx.say?.(`exception filing failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     return { ok: false, rejection: sim.rejection, sent: false };
   }
   const { desk } = deskOf(ctx, op.desk);

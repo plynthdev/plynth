@@ -8,8 +8,13 @@ import {ITreasuryAccount} from "./interfaces/ITreasuryAccount.sol";
 /// A desk asks for a ticket for one exact operation (`opHash`, see TreasuryAccount.opHashOf). The board
 /// approves or rejects it. The PolicyGuard consumes an approved ticket once, for that opHash only, within
 /// `TTL` of the request. One BoardApprovals serves one TreasuryAccount, bound once by the board.
+///
+/// A request may carry a model-jury verdict reference (`juryVerdictCid`): today the keccak256 of the verdict
+/// bundle JSON the treasury service stores (or an IPFS CID of it). It is advice for the board only; nothing
+/// here reads it, and only `approve` (board) can make a ticket valid.
 contract BoardApprovals {
     uint64 public constant TTL = 24 hours;
+    uint256 public constant MAX_CID_LENGTH = 128;
 
     enum Status {
         None,
@@ -32,12 +37,14 @@ contract BoardApprovals {
     address public account;
     uint256 public ticketCount;
     mapping(bytes32 ticket => Ticket) private _tickets;
+    mapping(bytes32 ticket => bytes cid) private _juryVerdictCids;
 
     event AccountBound(address indexed account);
     event Requested(bytes32 indexed ticket, bytes32 indexed opHash, address indexed requester);
     event Approved(bytes32 indexed ticket, bytes32 indexed opHash);
     event Rejected(bytes32 indexed ticket, bytes32 indexed opHash);
     event Consumed(bytes32 indexed ticket, bytes32 indexed opHash);
+    event JuryVerdictAttached(bytes32 indexed ticket, bytes juryVerdictCid);
 
     error NotBoard();
     error NotGuard();
@@ -49,6 +56,7 @@ contract BoardApprovals {
     error BadStatus(Status status);
     error Expired();
     error InvalidTicket();
+    error CidTooLong();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -70,6 +78,24 @@ contract BoardApprovals {
 
     /// Called by a desk key of the bound account. Returns the ticket id (1, 2, 3, ... as bytes32).
     function request(bytes32 opHash) external returns (bytes32 ticket) {
+        ticket = _request(opHash);
+    }
+
+    /// Same, with the jury's verdict reference attached for the board (empty = no verdict).
+    function request(bytes32 opHash, bytes calldata juryVerdictCid) external returns (bytes32 ticket) {
+        if (juryVerdictCid.length > MAX_CID_LENGTH) revert CidTooLong();
+        ticket = _request(opHash);
+        if (juryVerdictCid.length != 0) {
+            _juryVerdictCids[ticket] = juryVerdictCid;
+            emit JuryVerdictAttached(ticket, juryVerdictCid);
+        }
+    }
+
+    function juryVerdictCidOf(bytes32 ticket) external view returns (bytes memory) {
+        return _juryVerdictCids[ticket];
+    }
+
+    function _request(bytes32 opHash) private returns (bytes32 ticket) {
         address a = account;
         if (a == address(0)) revert NotBound();
         if (!ITreasuryAccount(a).isDeskKey(msg.sender)) revert NotDesk();

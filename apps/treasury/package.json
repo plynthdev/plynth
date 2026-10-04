@@ -14,5 +14,8 @@
     "@plynth/policy-compiler": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "viem": "^2.57.2"
+  },
+  "devDependencies": {
+    "msw": "^2"
   }
 }
