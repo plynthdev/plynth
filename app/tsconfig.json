@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "types": ["bun"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@plynth/sdk": ["../sdk/src/index.ts"],
+      "@plynth/sdk/*": ["../sdk/src/*/index.ts"],
+      "@plynth/chain": ["./src/chain/index.ts"],
+      "viem": ["./node_modules/viem"],
+      "viem/*": ["./node_modules/viem/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "drizzle.config.ts"]
+}

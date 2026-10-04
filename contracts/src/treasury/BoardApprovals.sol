@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {ITreasuryAccount} from "./interfaces/ITreasuryAccount.sol";
+import {ITreasuryAccount} from "../interfaces/ITreasuryAccount.sol";
 
 /// Board sign-off for large desk operations (policy rule 9).
 ///

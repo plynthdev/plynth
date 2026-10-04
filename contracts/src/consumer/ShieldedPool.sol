@@ -36,7 +36,7 @@ interface IHonkVerifier {
 /// known roots, move a pool asset out (to swap it) and back in, and insert leaves; it carries its own swap and
 /// settle verifiers. Treat its code as part of this contract for audit purposes.
 ///
-/// Encrypted notes (ECIES to the owner's viewing key, see packages/sdk vault) are opaque bytes here, at
+/// Encrypted notes (ECIES to the owner's viewing key, see sdk vault) are opaque bytes here, at
 /// most MAX_NOTE_BYTES each, emitted in `NoteEncrypted` keyed by commitment.
 contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;

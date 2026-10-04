@@ -17,7 +17,7 @@ import {ShieldedTrade} from "../src/consumer/ShieldedTrade.sol";
 import {SwapVerifier} from "../src/consumer/verifiers/SwapVerifier.sol";
 import {SettleVerifier} from "../src/consumer/verifiers/SettleVerifier.sol";
 import {ERC4626Park} from "../src/consumer/park/ERC4626Park.sol";
-import {IParkAdapter} from "../src/consumer/park/IParkAdapter.sol";
+import {IParkAdapter} from "../src/interfaces/IParkAdapter.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {MockUsdgVault} from "../test/mocks/MockUsdgVault.sol";
 import {ThresholdHoldingsVerifier} from "../src/consumer/verifiers/ThresholdHoldingsVerifier.sol";

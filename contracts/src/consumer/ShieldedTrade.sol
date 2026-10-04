@@ -7,7 +7,7 @@ import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {ShieldedPool, IHonkVerifier} from "./ShieldedPool.sol";
-import {IParkAdapter} from "./park/IParkAdapter.sol";
+import {IParkAdapter} from "../interfaces/IParkAdapter.sol";
 import {Poseidon2} from "./verifiers/Poseidon2.sol";
 import {StockRouter} from "../core/StockRouter.sol";
 

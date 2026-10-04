@@ -8,7 +8,7 @@ import {TreasuryAccount} from "./TreasuryAccount.sol";
 import {PolicyGuard} from "./PolicyGuard.sol";
 import {PeriodClose} from "./PeriodClose.sol";
 import {BoardApprovals} from "./BoardApprovals.sol";
-import {ITierSource} from "../token/ITierSource.sol";
+import {ITierSource} from "../interfaces/ITierSource.sol";
 import {TemplateRegistry} from "./TemplateRegistry.sol";
 
 /// One call gives a board a working treasury: EIP-1167 clones of TreasuryPolicy, TreasuryAccount, PeriodClose

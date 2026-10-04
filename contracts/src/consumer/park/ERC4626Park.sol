@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IParkAdapter} from "./IParkAdapter.sol";
+import {IParkAdapter} from "../../interfaces/IParkAdapter.sol";
 
 /// Parks USDG in one ERC-4626 vault (e.g. Steakhouse USDG, a Morpho Vault V2 on 4663; see chain-facts).
 /// The vault's own share token is the park note asset. Which vaults are usable is decided by ShieldedTrade's

@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TokenFixture} from "./TokenFixture.sol";
 import {PlinthStaking} from "../../src/token/PlinthStaking.sol";
-import {Tier} from "../../src/token/ITierSource.sol";
+import {Tier} from "../../src/interfaces/ITierSource.sol";
 
 contract PlinthStakingTest is TokenFixture {
     // ------------------------------------------------------------ tiers

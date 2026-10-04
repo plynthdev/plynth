@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 
-/// Cross-checks packages/policy-compiler against Solidity: every compiled template must pass validate(),
+/// Cross-checks app/src/treasury/policy-compiler against Solidity: every compiled template must pass validate(),
 /// hash to the same keccak256(abi.encode(p)), and every instrument proof must verify with OpenZeppelin
-/// MerkleProof against the compiled root. Regenerate with `bun packages/policy-compiler/src/fixture.ts`.
+/// MerkleProof against the compiled root. Regenerate with `bun app/src/treasury/policy-compiler/fixture.ts`.
 contract PolicyCompilerFixtureTest is Test {
     string json;
     TreasuryPolicy tp;

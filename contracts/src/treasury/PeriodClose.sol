@@ -9,9 +9,9 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 import {Valuer} from "../core/Valuer.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 import {TreasuryAccount} from "./TreasuryAccount.sol";
-import {AssetValuation} from "./AssetValuation.sol";
-import {ISleeve, IPeriodStartNav} from "./interfaces/ISleeve.sol";
-import {ITierSource, Tier} from "../token/ITierSource.sol";
+import {AssetValuation} from "../libs/AssetValuation.sol";
+import {ISleeve, IPeriodStartNav} from "../interfaces/ISleeve.sol";
+import {ITierSource, Tier} from "../interfaces/ITierSource.sol";
 import {IPrivateSleeve} from "./PrivateSleeve.sol";
 
 /// Optional hook on the fee recipient (FeeRouter, todo 30).

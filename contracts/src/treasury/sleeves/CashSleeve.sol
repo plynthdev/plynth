@@ -5,8 +5,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {Valuer} from "../../core/Valuer.sol";
-import {AssetValuation} from "../AssetValuation.sol";
-import {ISleeve} from "../interfaces/ISleeve.sol";
+import {AssetValuation} from "../../libs/AssetValuation.sol";
+import {ISleeve} from "../../interfaces/ISleeve.sol";
 
 /// Cash band adapter: USDG held directly plus shares of allow-listed ERC-4626 vaults over USDG.
 ///

@@ -6,7 +6,7 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {CashSleeve} from "../../../src/treasury/sleeves/CashSleeve.sol";
 import {PolicyGuard} from "../../../src/treasury/PolicyGuard.sol";
 import {MockERC20} from "../../mocks/MockV4.sol";
-import {MockCashVault} from "../mocks/TreasuryMocks.sol";
+import {MockCashVault} from "../../mocks/TreasuryMocks.sol";
 import {SleeveFixture} from "./SleeveFixture.sol";
 
 /// Pulls only part of what it is asked to deposit (a broken or hostile vault).

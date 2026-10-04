@@ -9,7 +9,7 @@ import {PLTH} from "../../src/token/PLTH.sol";
 import {PlinthStaking} from "../../src/token/PlinthStaking.sol";
 import {FeeRouter, IStakingRewards, IInsuranceFees} from "../../src/token/FeeRouter.sol";
 import {ExceptionInsurancePool} from "../../src/token/ExceptionInsurancePool.sol";
-import {Tier} from "../../src/token/ITierSource.sol";
+import {Tier} from "../../src/interfaces/ITierSource.sol";
 import {IHooks, IPoolManager, PoolKey} from "../../src/interfaces/IUniswapV4.sol";
 import {MockERC20, MockPoolManager} from "../mocks/MockV4.sol";
 

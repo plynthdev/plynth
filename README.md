@@ -4,7 +4,7 @@ Backend for plynth on Robinhood Chain.
 
 ## Products
 
-Two products share one core (`contracts/src/core/`, `packages/chain/`).
+Two products share one core (`contracts/src/core/`, `app/src/chain/`).
 
 - **plynth (consumer).** Spare change and top-ups in USDG, pooled into Stock Token buys and delivered to
   the saver. Contracts in `contracts/src/consumer/`.
@@ -52,7 +52,7 @@ bun run verify:chain                                     # re-check every addres
 bun run indexer --once && bun run keeper --once          # one indexer + keeper pass (see .env.example)
 bun run api                                              # dashboard API: tRPC at /trpc, REST mirror at /v1
 bun run relayer                                          # gasless Quiet claims: POST /claim on :8789
-bun apps/eligibility/scripts/download-dbip.ts            # monthly: free IP-to-country database into data/
+bun app/scripts/download-dbip.ts            # monthly: free IP-to-country database into data/
 bun run eligibility                                      # eligibility screen: POST /eligibility/check on :8790
 ```
 
@@ -70,7 +70,7 @@ RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com ./scripts/e2e.sh tre
 ```
 
 They need Postgres (`DATABASE_URL`, a throwaway `plynth_e2e_*` database is created and dropped), anvil, forge
-and bun. The scenarios live in `test/e2e/`.
+and bun. The scenarios live in `app/scripts/e2e/`.
 
 ## Deploy to testnet (46630)
 
@@ -121,21 +121,21 @@ consumer script adds SavingsVault, CrowdBuy, StealthClaims and the Hidden Vault 
 
 - `contracts/src/core/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
   (Chainlink price x ERC-8056 `uiMultiplier()`, applied exactly once; stale feed -> `hold`, not revert).
-- `apps/keeper/` Round-ups, weekly top-ups, sweeps into crowd books, JitterBeacon commit-reveal and crowd
+- `app/src/keeper/` Round-ups, weekly top-ups, sweeps into crowd books, JitterBeacon commit-reveal and crowd
   execution. Every action is pre-simulated; the contracts bound what the keeper can do.
-- `apps/api/` Read-only dashboard API (Hono + tRPC, REST mirror under `/v1`): account overview, saving habit,
+- `app/src/api/` Read-only dashboard API (Hono + tRPC, REST mirror under `/v1`): account overview, saving habit,
   activity, settings, Crowd Buy books, health. Transactions come back unsigned (`{to, data, value, chainId}`)
   for the user's own wallet; the API holds no keys. `meta.eligibility` is a self-attestation stub, not KYC.
-- `apps/relayer/` Gasless claims for Quiet delivery: verifies the stealth key's EIP-712 signature off-chain,
+- `app/src/relayer/` Gasless claims for Quiet delivery: verifies the stealth key's EIP-712 signature off-chain,
   simulates, and sends `StealthClaims.claim` from its own wallet. Rate-limited per IP and per stealth address;
   refuses claims into Plynth contracts.
-- `contracts/src/core/EligibilityRegistry.sol` + `apps/eligibility/` Eligibility screening with free sources:
+- `contracts/src/core/EligibilityRegistry.sol` + `app/src/eligibility/` Eligibility screening with free sources:
   an EIP-712 self-attestation signed by the wallet, the IP's country (MMDB database, plus `CF-IPCountry`
   behind Cloudflare) and the OFAC SDN digital-currency addresses (refreshed daily; fails closed when stale).
   A pass returns a 30-day attestation signed by the attester key that anyone can submit to the registry.
   Screens are pluggable, so a KYC vendor can be added as one more. Decisions are stored without the IP.
   The API also serves the route at `/v1/eligibility/check` when `ELIGIBILITY_REGISTRY` is set.
-- `packages/sdk/` ERC-5564 scheme 1 stealth addresses (keys from a wallet signature, meta-address, ERC-6538
+- `sdk/` ERC-5564 scheme 1 stealth addresses (keys from a wallet signature, meta-address, ERC-6538
   registration calldata, announcement scanning with view tags, stealth keys, claim signing). Matches the ERC's
   reference vector.
 - `circuits/` Hidden Vault Noir circuits (UltraHonk, no per-circuit trusted setup): `transfer` (2-in/2-out,
@@ -153,9 +153,9 @@ consumer script adds SavingsVault, CrowdBuy, StealthClaims and the Hidden Vault 
   `ERC4626Park` (any allow-listed USDG ERC-4626 vault, e.g. Steakhouse USDG) and `MorphoBluePark` (USDG lender in
   one Morpho Blue market). Adding an adapter takes 48h; unparking is never gated, and park shares can also be
   withdrawn from the pool as shares and redeemed at the adapter directly.
-- `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
+- `app/src/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
-- `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
+- `.githooks/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
   `bun install` sets `core.hooksPath` to `.githooks`). Run it by hand with `bun run guard`.
 
 ## Trust assumptions

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["bun"],
+    "rootDir": "src",
+    "noEmitOnError": true,
+    "paths": { "@plynth/chain": ["./scripts/chain.d.ts"] }
+  },
+  "include": ["src/**/*.ts"]
+}

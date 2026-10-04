@@ -8,7 +8,7 @@ import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
 import {MockFeed} from "../../src/testnet/MockFeed.sol";
 import {MockStockToken} from "../../src/testnet/MockStockToken.sol";
-import {MockEquitySleeve, MockCashSleeve, MockCashVault} from "./mocks/TreasuryMocks.sol";
+import {MockEquitySleeve, MockCashSleeve, MockCashVault} from "../mocks/TreasuryMocks.sol";
 import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 
 /// Random desk operations. After every successful execute it checks, independently of the guard's code:

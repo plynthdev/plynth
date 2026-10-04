@@ -47,7 +47,7 @@ contract TestnetConsumer is Script {
     error MissingCanonical(address what);
 
     function run() external returns (Out memory o) {
-        string memory path = string.concat(vm.projectRoot(), "/../deployments/", vm.toString(block.chainid), ".json");
+        string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", vm.toString(block.chainid), ".json");
         string memory kit = vm.readFile(path);
         for (uint256 i; i < 3; ++i) {
             address c = [PERMIT2, ANNOUNCER, REGISTRY_6538][i];

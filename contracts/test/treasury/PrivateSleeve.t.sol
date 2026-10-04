@@ -12,7 +12,7 @@ import {TransferVerifier} from "../../src/consumer/verifiers/TransferVerifier.so
 import {WithdrawVerifier} from "../../src/consumer/verifiers/WithdrawVerifier.sol";
 import {TreasuryCloseVerifier} from "../../src/consumer/verifiers/TreasuryCloseVerifier.sol";
 import {Poseidon2} from "../../src/consumer/verifiers/Poseidon2.sol";
-import {ITierSource, Tier} from "../../src/token/ITierSource.sol";
+import {ITierSource, Tier} from "../../src/interfaces/ITierSource.sol";
 
 contract MockTiers is ITierSource {
     bool public privateOn = true;

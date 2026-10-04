@@ -1,0 +1,53 @@
+{
+  "name": "plynth-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "cd ../sdk && bun install",
+    "prepare": "git config core.hooksPath .githooks || true",
+    "api": "bun run src/bin/api.ts",
+    "indexer": "bun run src/bin/indexer.ts",
+    "keeper": "bun run src/bin/keeper.ts",
+    "relayer": "bun run src/bin/relayer.ts",
+    "eligibility": "bun run src/bin/eligibility.ts",
+    "mcp": "bun run src/bin/mcp.ts",
+    "migrate": "bun run src/bin/migrate.ts",
+    "treasury-desks": "bun run src/bin/treasury-desks.ts",
+    "treasury-close": "bun run src/bin/treasury-close.ts",
+    "treasury-risk": "bun run src/bin/treasury-risk.ts",
+    "treasury-receipts": "bun run src/bin/treasury-receipts.ts",
+    "treasury-marks": "bun run src/bin/treasury-marks.ts",
+    "treasury-reconciler": "bun run src/bin/treasury-reconciler.ts",
+    "treasury-webhooks": "bun run src/bin/treasury-webhooks.ts",
+    "cfo-pack": "bun run scripts/cfo-pack.ts",
+    "policy-compiler": "bun run scripts/policy-compiler.ts",
+    "db:create": "bun run scripts/db-create.ts",
+    "db:generate": "drizzle-kit generate",
+    "verify:chain": "bun run scripts/verify-chain.ts",
+    "download-ip-db": "bun run scripts/download-dbip.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "e2e": "bash scripts/e2e.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@hono/trpc-server": "^0.4.2",
+    "@modelcontextprotocol/sdk": "^1",
+    "@plynth/sdk": "file:../sdk",
+    "@trpc/server": "^11",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.13",
+    "mmdb-lib": "^3.0.3",
+    "plaid": "^41",
+    "postgres": "^3.4.9",
+    "viem": "^2.57.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "drizzle-kit": "^0.31.11",
+    "msw": "^2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -12,7 +12,7 @@ import {PLTH} from "../src/token/PLTH.sol";
 import {PlinthStaking} from "../src/token/PlinthStaking.sol";
 import {FeeRouter, IStakingRewards, IInsuranceFees} from "../src/token/FeeRouter.sol";
 import {ExceptionInsurancePool} from "../src/token/ExceptionInsurancePool.sol";
-import {Tier} from "../src/token/ITierSource.sol";
+import {Tier} from "../src/interfaces/ITierSource.sol";
 
 /// Testnet kit, token part: PLTH, a PLTH/mUSDG Uniswap v4 pool on the chain's real PoolManager (~50k mUSDG a
 /// side at 0.05 mUSDG per PLTH), PlinthStaking with four tiers, the ExceptionInsurancePool and the FeeRouter.
@@ -49,7 +49,7 @@ contract TestnetTokenKit is Script {
     }
 
     function run() external returns (Deployment memory d) {
-        string memory path = string.concat(vm.projectRoot(), "/../deployments/", vm.toString(block.chainid), ".json");
+        string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", vm.toString(block.chainid), ".json");
         MockUSDG usdg = MockUSDG(vm.parseJsonAddress(vm.readFile(path), ".usdg"));
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
@@ -131,7 +131,7 @@ contract TestnetTokenKit is Script {
         vm.serializeAddress(root, "plthTreasury", p.plthTreasury);
         vm.serializeAddress(root, "plthStakerReserve", p.stakerReserve);
         string memory json = vm.serializeBytes32(root, "plthPoolId", d.poolId);
-        string memory dir = string.concat(vm.projectRoot(), "/../deployments");
+        string memory dir = string.concat(vm.projectRoot(), "/../app/deployments");
         vm.writeJson(json, string.concat(dir, "/", vm.toString(block.chainid), "-token.json"));
     }
 }

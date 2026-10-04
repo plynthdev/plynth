@@ -6,11 +6,11 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 import {StockTokenRegistry} from "../core/StockTokenRegistry.sol";
 import {Valuer} from "../core/Valuer.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
-import {AssetValuation} from "./AssetValuation.sol";
+import {AssetValuation} from "../libs/AssetValuation.sol";
 import {BoardApprovals} from "./BoardApprovals.sol";
-import {ITreasuryAccount} from "./interfaces/ITreasuryAccount.sol";
-import {IPeriodStartNav, ISleeve} from "./interfaces/ISleeve.sol";
-import {IPerpVenue, IPositionSleeve} from "./interfaces/IPerpVenue.sol";
+import {ITreasuryAccount} from "../interfaces/ITreasuryAccount.sol";
+import {IPeriodStartNav, ISleeve} from "../interfaces/ISleeve.sol";
+import {IPerpVenue, IPositionSleeve} from "../interfaces/IPerpVenue.sol";
 import {IPrivateSleeve} from "./PrivateSleeve.sol";
 
 /// "Agent proposes, code disposes." The TreasuryAccount takes a `snapshot` before a desk operation, runs it,

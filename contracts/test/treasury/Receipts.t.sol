@@ -19,7 +19,7 @@ contract ReceiptsTest is TreasuryFixture {
         hour = uint64(block.timestamp / 1 hours) - 1; // the last finished hour
     }
 
-    // ------------------------------------------------------------ tree helpers (mirror apps/treasury/receipts)
+    // ------------------------------------------------------------ tree helpers (mirror app/src/treasury/receipts)
 
     function _root(bytes32[] memory level) internal pure returns (bytes32) {
         if (level.length == 0) return bytes32(0);

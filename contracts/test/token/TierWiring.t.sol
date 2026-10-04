@@ -8,7 +8,7 @@ import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 import {PLTH} from "../../src/token/PLTH.sol";
 import {PlinthStaking} from "../../src/token/PlinthStaking.sol";
-import {ITierSource, Tier} from "../../src/token/ITierSource.sol";
+import {ITierSource, Tier} from "../../src/interfaces/ITierSource.sol";
 
 /// PeriodClose reads the board's staking tier: a period under 28 days (weekly close) needs `weeklyClose`.
 contract TierWiringTest is TreasuryFixture {

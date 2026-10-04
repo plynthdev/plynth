@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {ITierSource, Tier} from "./ITierSource.sol";
+import {ITierSource, Tier} from "../interfaces/ITierSource.sol";
 
 /// PLTH staking with rewards in two tokens (index 0 = USDG, index 1 = PLTH) and tiers by staked amount.
 ///

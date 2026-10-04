@@ -8,9 +8,9 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {ShieldedPool, IHonkVerifier} from "../consumer/ShieldedPool.sol";
 import {Poseidon2} from "../consumer/verifiers/Poseidon2.sol";
 import {Valuer} from "../core/Valuer.sol";
-import {ITierSource} from "../token/ITierSource.sol";
-import {ISleeve} from "./interfaces/ISleeve.sol";
-import {ITreasuryAccount} from "./interfaces/ITreasuryAccount.sol";
+import {ITierSource} from "../interfaces/ITierSource.sol";
+import {ISleeve} from "../interfaces/ISleeve.sol";
+import {ITreasuryAccount} from "../interfaces/ITreasuryAccount.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 
 /// What PeriodClose and the PolicyGuard read from an account's private sleeve.
@@ -43,7 +43,7 @@ interface IPrivateSleeve {
 /// is not readable on-chain. Unlocked by the `privateSleeve` staking tier of the account's board.
 ///
 /// Notes are owned by `ownerPk` = H(spending secret), the secret derived off-chain from the policy controller's
-/// signature (packages/sdk vault `deriveVaultKeys`). The controller sets the key here; this contract is the
+/// signature (sdk vault `deriveVaultKeys`). The controller sets the key here; this contract is the
 /// depositor (pool origin) of every note it shields, and every unshield it performs pays the account.
 ///
 /// Flows:

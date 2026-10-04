@@ -10,7 +10,7 @@ import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
 import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
 import {TemplateRegistry} from "../../src/treasury/TemplateRegistry.sol";
-import {ITierSource, Tier} from "../../src/token/ITierSource.sol";
+import {ITierSource, Tier} from "../../src/interfaces/ITierSource.sol";
 import {FeeRouter, IStakingRewards, IInsuranceFees, ITemplateFeeSource} from "../../src/token/FeeRouter.sol";
 import {IHooks, IPoolManager, PoolKey} from "../../src/interfaces/IUniswapV4.sol";
 import {TreasuryFixture} from "./TreasuryFixture.sol";

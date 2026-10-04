@@ -1,0 +1,20 @@
+{
+  // Development resolution (Bun and editors). @plynth/chain is the app's verified address table, inlined into
+  // dist by scripts/build.ts; @plynth/sdk points at src so the examples and tests need no build.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "paths": {
+      "@plynth/chain": ["../app/src/chain/index.ts"],
+      "@plynth/sdk": ["./src/index.ts"],
+      "@plynth/sdk/*": ["./src/*/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "examples/**/*.ts", "test/**/*.ts"]
+}

@@ -8,7 +8,7 @@ import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
 import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
-import {ITierSource} from "../../src/token/ITierSource.sol";
+import {ITierSource} from "../../src/interfaces/ITierSource.sol";
 import {TemplateRegistry} from "../../src/treasury/TemplateRegistry.sol";
 import {TreasuryFixture} from "./TreasuryFixture.sol";
 

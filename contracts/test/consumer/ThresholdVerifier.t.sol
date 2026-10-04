@@ -14,7 +14,7 @@ import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 import {ThresholdProofs} from "../../script/ThresholdProofs.s.sol";
 
 /// ThresholdVerifier with the real UltraHonk verifiers and proofs made by the SDK
-/// (packages/sdk/scripts/threshold-fixtures.ts). The pool history below reproduces the fixture's trees exactly.
+/// (sdk/scripts/threshold-fixtures.ts). The pool history below reproduces the fixture's trees exactly.
 contract ThresholdVerifierTest is Test {
     ShieldedPool pool;
     ThresholdVerifier tv;

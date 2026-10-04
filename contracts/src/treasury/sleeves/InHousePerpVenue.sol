@@ -6,8 +6,8 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {PerpPool} from "../../perps/PerpPool.sol";
 import {PerpMarket} from "../../perps/PerpMarket.sol";
-import {AssetValuation} from "../AssetValuation.sol";
-import {IPerpVenue, IPositionSleeve} from "../interfaces/IPerpVenue.sol";
+import {AssetValuation} from "../../libs/AssetValuation.sol";
+import {IPerpVenue, IPositionSleeve} from "../../interfaces/IPerpVenue.sol";
 
 /// The in-house perp pool engine (todo 20) as a venue: fully on-chain, so positions and equity are read straight
 /// from the markets and are never stale. This adapter is the trader (one position per market), and margin

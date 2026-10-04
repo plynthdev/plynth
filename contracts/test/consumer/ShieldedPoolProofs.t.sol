@@ -7,7 +7,7 @@ import {TransferVerifier} from "../../src/consumer/verifiers/TransferVerifier.so
 import {WithdrawVerifier} from "../../src/consumer/verifiers/WithdrawVerifier.sol";
 import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 
-/// ShieldedPool with the real UltraHonk verifiers and proofs made by the SDK (packages/sdk/scripts/pool-fixtures.ts):
+/// ShieldedPool with the real UltraHonk verifiers and proofs made by the SDK (sdk/scripts/pool-fixtures.ts):
 /// alice deposits 1_000_000 + 250_000, transfers 900_000 to bob (350_000 change), bob withdraws 600_000 to
 /// RECIPIENT through a relayer that keeps a 1_000 fee. The on-chain tree must reproduce the SDK's roots.
 contract ShieldedPoolProofsTest is Test {

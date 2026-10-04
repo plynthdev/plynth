@@ -4,9 +4,9 @@ pragma solidity ^0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {AssetValuation} from "../AssetValuation.sol";
+import {AssetValuation} from "../../libs/AssetValuation.sol";
 import {PositionMirror} from "../PositionMirror.sol";
-import {IPerpVenue, IPositionSleeve} from "../interfaces/IPerpVenue.sol";
+import {IPerpVenue, IPositionSleeve} from "../../interfaces/IPerpVenue.sol";
 
 /// An off-chain venue (order book run by someone else) as seen on-chain: margin moves on-chain, trading does not.
 /// Deposits go to the venue's `custody` (its vault or deposit address; todo 29 specialises the call per venue)

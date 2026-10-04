@@ -20,7 +20,7 @@ import {TestnetPoolMath} from "../src/testnet/TestnetPoolMath.sol";
 /// the testnet broadcast is done by a human with their own keystore.
 contract TestnetKit is Script {
     /// Uniswap v4 PoolManager, same address on 4663 and 46630.
-    /// Source of truth: packages/chain/src/index.ts (`uniV4PoolManager`), verified on both chains.
+    /// Source of truth: app/src/chain/index.ts (`uniV4PoolManager`), verified on both chains.
     address public constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
 
     uint24 public constant FEE = 3000;
@@ -113,7 +113,7 @@ contract TestnetKit is Script {
     }
 
     function _write(Deployment memory d) internal {
-        string memory dir = string.concat(vm.projectRoot(), "/../deployments");
+        string memory dir = string.concat(vm.projectRoot(), "/../app/deployments");
         string memory stocks = "stocks";
         for (uint256 i; i < 3; i++) {
             Stock memory s = d.stocks[i];
@@ -130,7 +130,7 @@ contract TestnetKit is Script {
         }
         string memory root = "root";
         vm.serializeUint(root, "chainId", block.chainid);
-        // First block the indexer must scan (apps/indexer uses it as fromBlock). vm.getBlockNumber, not
+        // First block the indexer must scan (app/src/indexer uses it as fromBlock). vm.getBlockNumber, not
         // block.number: on Arbitrum Orbit block.number is the parent-chain block, not the L2 block.
         vm.serializeUint(root, "deployBlock", vm.getBlockNumber());
         vm.serializeAddress(root, "deployer", d.deployer);

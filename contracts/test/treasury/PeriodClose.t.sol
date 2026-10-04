@@ -6,7 +6,7 @@ import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
-import {ITierSource} from "../../src/token/ITierSource.sol";
+import {ITierSource} from "../../src/interfaces/ITierSource.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 contract PeriodCloseTest is TreasuryFixture {

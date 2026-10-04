@@ -7,7 +7,7 @@ import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
-import {MockEquitySleeve} from "./mocks/TreasuryMocks.sol";
+import {MockEquitySleeve} from "../mocks/TreasuryMocks.sol";
 import {MockStockToken} from "../../src/testnet/MockStockToken.sol";
 
 contract PolicyGuardTest is TreasuryFixture {

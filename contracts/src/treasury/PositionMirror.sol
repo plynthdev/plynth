@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
-import {IPerpVenue} from "./interfaces/IPerpVenue.sol";
+import {IPerpVenue} from "../interfaces/IPerpVenue.sol";
 
 /// The on-chain copy of what off-chain perp venues (Orderly, Arcus) hold for a treasury. The risk service
 /// reads each venue, and the policy's controller signs a snapshot `(venue, positions, equityUsd, flowInSeen, ts)`

@@ -14,7 +14,7 @@ import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {
     MockCashVault, MockCashSleeve, MockEquitySleeve, MockPeriodClose
-} from "./mocks/TreasuryMocks.sol";
+} from "../mocks/TreasuryMocks.sol";
 
 /// A treasury with a cash sleeve (USDG + an ERC-4626 vault) and an equity sleeve (AAPL, NVDA, DEL, BAD),
 /// funded with 600,000 USDG and 2,000 AAPL ($1M NAV, cash 60%, equity 40%: inside both bands). Tracked asset order: USDG, VAULT, AAPL, NVDA, DEL, BAD.

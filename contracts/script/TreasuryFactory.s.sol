@@ -11,7 +11,7 @@ import {PolicyGuard} from "../src/treasury/PolicyGuard.sol";
 import {PeriodClose} from "../src/treasury/PeriodClose.sol";
 import {BoardApprovals} from "../src/treasury/BoardApprovals.sol";
 import {TreasuryFactory} from "../src/treasury/TreasuryFactory.sol";
-import {ITierSource} from "../src/token/ITierSource.sol";
+import {ITierSource} from "../src/interfaces/ITierSource.sol";
 import {TemplateRegistry} from "../src/treasury/TemplateRegistry.sol";
 import {Receipts} from "../src/treasury/Receipts.sol";
 
@@ -31,7 +31,7 @@ contract TreasuryFactoryScript is Script {
     }
 
     function run() external returns (Deployment memory d) {
-        string memory path = string.concat(vm.projectRoot(), "/../deployments/", vm.toString(block.chainid), ".json");
+        string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", vm.toString(block.chainid), ".json");
         string memory json = vm.readFile(path);
         StockTokenRegistry registry = StockTokenRegistry(vm.parseJsonAddress(json, ".stockTokenRegistry"));
         Valuer valuer = Valuer(vm.parseJsonAddress(json, ".valuer"));
@@ -49,7 +49,7 @@ contract TreasuryFactoryScript is Script {
         vm.serializeAddress(root, "receipts", address(d.receipts));
         vm.serializeAddress(root, "templateRegistry", address(d.templates));
         string memory out = vm.serializeAddress(root, "treasuryFactory", address(d.factory));
-        vm.writeJson(out, string.concat(vm.projectRoot(), "/../deployments/", vm.toString(block.chainid), "-treasury.json"));
+        vm.writeJson(out, string.concat(vm.projectRoot(), "/../app/deployments/", vm.toString(block.chainid), "-treasury.json"));
     }
 
     /// Same deployment without broadcasting or writing files, for tests.

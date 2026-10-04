@@ -18,7 +18,7 @@ import {TreasuryAccount} from "../../../src/treasury/TreasuryAccount.sol";
 import {CashSleeve} from "../../../src/treasury/sleeves/CashSleeve.sol";
 import {EquitySleeve} from "../../../src/treasury/sleeves/EquitySleeve.sol";
 import {MockERC20, MockPoolManager, MockStockERC20} from "../../mocks/MockV4.sol";
-import {MockCashVault} from "../mocks/TreasuryMocks.sol";
+import {MockCashVault} from "../../mocks/TreasuryMocks.sol";
 
 /// A treasury wired with the real CashSleeve (USDG + one ERC-4626 vault) and the real EquitySleeve (AAPL,
 /// NVDA through the StockRouter on a fixed-rate MockPoolManager). Funded with 1,000,000 USDG.

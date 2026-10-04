@@ -20,7 +20,7 @@ contract TestnetPerpKit is Script {
     }
 
     function run() external returns (Deployment memory d) {
-        string memory path = string.concat(vm.projectRoot(), "/../deployments/", vm.toString(block.chainid), ".json");
+        string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", vm.toString(block.chainid), ".json");
         string memory json = vm.readFile(path);
         MockUSDG usdg = MockUSDG(vm.parseJsonAddress(json, ".usdg"));
         Valuer valuer = Valuer(vm.parseJsonAddress(json, ".valuer"));
@@ -70,7 +70,7 @@ contract TestnetPerpKit is Script {
             mj = vm.serializeAddress(m, SYMBOLS[i], address(d.markets[i]));
         }
         string memory json = vm.serializeString(root, "markets", mj);
-        string memory dir = string.concat(vm.projectRoot(), "/../deployments");
+        string memory dir = string.concat(vm.projectRoot(), "/../app/deployments");
         vm.writeJson(json, string.concat(dir, "/", vm.toString(block.chainid), "-perps.json"));
     }
 }

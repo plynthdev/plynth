@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {TreasuryFixture} from "./TreasuryFixture.sol";
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
-import {MockEquitySleeve, ForceEth} from "./mocks/TreasuryMocks.sol";
+import {MockEquitySleeve, ForceEth} from "../mocks/TreasuryMocks.sol";
 
 contract TreasuryAccountTest is TreasuryFixture {
     // ------------------------------------------------------------ desks

@@ -7,9 +7,9 @@ import {StockRouter} from "../../core/StockRouter.sol";
 import {Valuer} from "../../core/Valuer.sol";
 import {TreasuryPolicy} from "../TreasuryPolicy.sol";
 import {PolicyGuard} from "../PolicyGuard.sol";
-import {AssetValuation} from "../AssetValuation.sol";
-import {ISleeve} from "../interfaces/ISleeve.sol";
-import {ITreasuryAccount} from "../interfaces/ITreasuryAccount.sol";
+import {AssetValuation} from "../../libs/AssetValuation.sol";
+import {ISleeve} from "../../interfaces/ISleeve.sol";
+import {ITreasuryAccount} from "../../interfaces/ITreasuryAccount.sol";
 
 /// What the sleeve reads from its caller besides ITreasuryAccount: the guard whose loss bound caps slippage.
 interface IGuardedAccount {

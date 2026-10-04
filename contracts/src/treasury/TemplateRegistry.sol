@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {ITierSource, Tier} from "../token/ITierSource.sol";
+import {ITierSource, Tier} from "../interfaces/ITierSource.sol";
 
 /// The templates marketplace: authors publish a compiled policy template, a review committee (a Safe in
 /// production) lists or delists it, and TreasuryFactory only builds treasuries from listed templates.

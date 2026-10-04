@@ -10,7 +10,7 @@ import {PositionMirror} from "../../../src/treasury/PositionMirror.sol";
 import {BasisSleeve} from "../../../src/treasury/sleeves/BasisSleeve.sol";
 import {InHousePerpVenue} from "../../../src/treasury/sleeves/InHousePerpVenue.sol";
 import {MirroredPerpVenue} from "../../../src/treasury/sleeves/MirroredPerpVenue.sol";
-import {IPerpVenue} from "../../../src/treasury/interfaces/IPerpVenue.sol";
+import {IPerpVenue} from "../../../src/interfaces/IPerpVenue.sol";
 import {PerpPool} from "../../../src/perps/PerpPool.sol";
 import {PerpMarket} from "../../../src/perps/PerpMarket.sol";
 import {MockStockToken} from "../../../src/testnet/MockStockToken.sol";

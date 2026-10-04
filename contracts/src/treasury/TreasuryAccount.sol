@@ -6,8 +6,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 import {PolicyGuard} from "./PolicyGuard.sol";
-import {IAdapter, ISleeve} from "./interfaces/ISleeve.sol";
-import {IPositionSleeve} from "./interfaces/IPerpVenue.sol";
+import {IAdapter, ISleeve} from "../interfaces/ISleeve.sol";
+import {IPositionSleeve} from "../interfaces/IPerpVenue.sol";
 
 /// The parts of a PrivateSleeve the account reads.
 interface IPrivateSleeveAccount {
