@@ -10,6 +10,9 @@ export type ApiDeployment = {
   valuer: Address;
   usdg: Address;
   stocks: ApiStock[];
+  /** Hidden Vault pool and the block the deployment started at (statements scan from there). */
+  shieldedPool?: Address;
+  deployBlock: bigint;
 };
 
 /** Addresses the API reads, from deployments/<chainid>.json (written by the deploy scripts). */
@@ -27,6 +30,8 @@ export function apiDeployment(dep: Deployment | undefined, chainId: number): Api
     valuer: need("valuer"),
     usdg: need("usdg"),
     stocks: Object.entries(dep.stocks ?? {}).map(([symbol, s]) => ({ symbol, token: getAddress(s.token) })),
+    ...(typeof dep.shieldedPool === "string" ? { shieldedPool: getAddress(dep.shieldedPool) } : {}),
+    deployBlock: dep.deployBlock !== undefined ? BigInt(dep.deployBlock) : 0n,
   };
 }
 

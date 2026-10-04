@@ -14,6 +14,9 @@ export const vaultAbi = parseAbi([
   "function accountOf(address user) view returns (Account)",
   "function mixOf(address user) view returns (MixEntry[])",
   "function MAX_WEEKLY_CAP() view returns (uint64)",
+  "struct HiddenKeys { bytes32 ownerPk; bytes32 viewingPub; }",
+  "function hiddenKeysOf(address user) view returns (HiddenKeys)",
+  "event HiddenKeysSet(address indexed user, bytes32 ownerPk, bytes32 viewingPub)",
 ]);
 
 export const crowdAbi = parseAbi([

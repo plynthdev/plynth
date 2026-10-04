@@ -41,6 +41,8 @@ export const REST: Proc[] = [
   { method: "POST", path: "/v1/tx/setMix", call: async (k, c) => k.tx.setMix((await body(c)) as any) },
   { method: "POST", path: "/v1/tx/claimOpen", call: async (k, c) => k.tx.claimOpen((await body(c)) as any) },
   { method: "GET", path: "/v1/crowd/books", call: (k, c) => k.crowd.books(q(c) as any) },
+  { method: "GET", path: "/v1/statements/:address", call: (k, c) => k.statements.list({ address: c.req.param("address")! }) },
+  { method: "POST", path: "/v1/statements/verify", call: async (k, c) => k.statements.verify({ bundle: await body(c) }) },
   { method: "GET", path: "/v1/meta/eligibility", call: (k) => k.meta.eligibility() },
   { method: "GET", path: "/v1/meta/health", call: (k) => k.meta.health() },
 ];

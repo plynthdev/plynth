@@ -4,6 +4,7 @@ import { z } from "zod";
 import { eligibility } from "./eligibility";
 import { stockOf } from "./deployment";
 import { indexedBlock } from "./events";
+import { listStatements, StatementsUnavailable, verifyStatementBundle } from "./statements";
 import { activity, crowdBooks, habit, MODES, overview, RANGES, settings, type Deps, type Range } from "./service";
 import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
@@ -29,6 +30,16 @@ function wrap<T>(f: () => T): T {
     return f();
   } catch (e) {
     if (e instanceof TxInputError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
+    throw e;
+  }
+}
+
+/** No Hidden Vault on this deployment is a 404, not a server error. */
+async function hidden<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f();
+  } catch (e) {
+    if (e instanceof StatementsUnavailable) throw new TRPCError({ code: "NOT_FOUND", message: e.message });
     throw e;
   }
 }
@@ -71,6 +82,11 @@ export const appRouter = t.router({
       if (!s) throw new TRPCError({ code: "NOT_FOUND", message: `unknown Stock Token ${input.asset}` });
       return crowdBooks(ctx, [s]);
     }),
+  }),
+  statements: t.router({
+    list: t.procedure.input(z.object({ address })).query(({ ctx, input }) => hidden(() => listStatements(ctx, input.address))),
+    // Stateless: the bundle is checked against the chain and nothing is stored. Shape errors come back in the verdict.
+    verify: t.procedure.input(z.object({ bundle: z.unknown() })).mutation(({ ctx, input }) => hidden(() => verifyStatementBundle(ctx, input.bundle))),
   }),
   meta: t.router({
     eligibility: t.procedure.query(({ ctx }) => eligibility(ctx.headers)),
