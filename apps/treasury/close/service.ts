@@ -37,11 +37,14 @@ export type CloseContext = {
   store: CloseStore;
   maxAttempts?: number;
   say?: (m: string) => void;
+  /** Reconciler gate (todo 29): open (unexplained) breaks of the account. Any > 0 and the close refuses. */
+  breaks?: { count(): Promise<number> };
 };
 
 export type CloseOutcome =
   | { status: "not_due"; periodEnd: bigint; now: bigint }
   | { status: "hold"; periodEnd: bigint; token: Address }
+  | { status: "blocked"; periodEnd: bigint; reason: "unexplained_breaks"; breaks: number }
   | { status: "committed"; periodEnd: bigint; index: number; txHash: Hex; bundleHash: Hex; attempts: number }
   | { status: "failed"; periodEnd: bigint; error: string };
 
@@ -156,6 +159,14 @@ export async function closeOnce(ctx: CloseContext): Promise<CloseOutcome> {
   const periodEnd = await targetPeriodEnd(ctx.pub, pc);
   const now = (await ctx.pub.getBlock({ blockTag: "latest" })).timestamp;
   if (now < periodEnd) return { status: "not_due", periodEnd, now };
+  // Spec kill criterion: no statement while venue, mirror and ledger disagree without a written explanation.
+  if (ctx.breaks) {
+    const n = await ctx.breaks.count();
+    if (n > 0) {
+      say(`period ${periodEnd}: ${n} unexplained reconciler break(s); refusing to commit`);
+      return { status: "blocked", periodEnd, reason: "unexplained_breaks", breaks: n };
+    }
+  }
 
   const max = ctx.maxAttempts ?? 5;
   let lastErr = "";

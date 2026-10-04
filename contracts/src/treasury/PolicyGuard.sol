@@ -183,6 +183,8 @@ contract PolicyGuard {
         uint256 moved; // sum of |delta usd| over assets and venue equity
         uint256 grossMoved; // sum of |delta gross notional| over venues
         uint256 cursor; // next unread entry of allowProof
+        bool venueRiskUp; // some venue's gross or margin went up
+        bool venueGrossDown; // some venue's gross notional went down
     }
 
     /// Called by the account itself after running the operation. Returns OK or the first broken rule's code.
@@ -274,7 +276,9 @@ contract PolicyGuard {
             Venue calldata v = b.venues[i];
             c.moved += _absDiff(a.equity, v.equity);
             c.grossMoved += _absDiff(a.gross, v.gross);
+            if (a.gross < v.gross) c.venueGrossDown = true;
             if (!_riskUp(a, v)) continue;
+            c.venueRiskUp = true;
             if (a.gross > v.gross) c.stockIncreased = true; // new perp exposure is new risk for rule 8
             if (a.stale || v.stale) return R6_STALE_VENUE;
             bool ok;
@@ -339,8 +343,13 @@ contract PolicyGuard {
         uint256 eqBefore = _weight(b.equityUsd, b.nav);
         uint256 eqAfter = _weight(c.a.equityUsd, c.a.nav);
 
-        // Rule 7: off-hours (a held equity's feed on hold) only equity-reducing operations.
-        if (c.p.noNewRiskOffHours && (b.equityHold || c.a.equityHold) && !(eqAfter < eqBefore)) return R7_OFF_HOURS;
+        // Rule 7: off-hours (a held equity's feed on hold) only risk-reducing operations: equity weight down, or a
+        // pure perp reduction (gross notional down at a venue, no venue risk up, no stock bought, spot value not
+        // up). The perp reduction costs a spread, so NAV dips and the equity weight ticks up without new risk.
+        if (c.p.noNewRiskOffHours && (b.equityHold || c.a.equityHold) && !(eqAfter < eqBefore)) {
+            bool perpReduce = c.venueGrossDown && !c.venueRiskUp && !c.stockIncreased && c.a.equityUsd <= b.equityUsd;
+            if (!perpReduce) return R7_OFF_HOURS;
+        }
 
         // Rule 8: drawdown from the period-start NAV (written by PeriodClose).
         address pc = ITreasuryAccount(account).periodClose();

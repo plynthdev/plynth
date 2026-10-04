@@ -7,6 +7,8 @@
 import { connect, databaseUrl } from "@plynth/db";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadDeskAccount } from "../desks/keys";
+import { PgExceptionStore } from "../reconciler/store";
+import { periodCloseAbi } from "./abi";
 import { closeOnce } from "./service";
 import { CloseStore } from "./store";
 
@@ -31,7 +33,15 @@ const ctx = {
   periodClose: getAddress(pcAddr),
   store: new CloseStore(db),
   say,
+  breaks: undefined as { count(): Promise<number> } | undefined,
 };
+// Reconciler gate: open breaks of this PeriodClose's account block the commit (TREASURY_CLOSE_SKIP_RECONCILE=1
+// turns it off for a T1 treasury with no perp venues and no reconciler running).
+if (process.env.TREASURY_CLOSE_SKIP_RECONCILE !== "1") {
+  const acct = await pub.readContract({ address: ctx.periodClose, abi: periodCloseAbi, functionName: "account" });
+  const exc = new PgExceptionStore(db);
+  ctx.breaks = { count: async () => (await exc.open(id, acct)).length };
+}
 
 async function pass() {
   const r = await closeOnce(ctx);

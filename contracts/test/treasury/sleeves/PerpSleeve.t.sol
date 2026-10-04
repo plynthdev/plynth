@@ -225,6 +225,19 @@ contract PerpSleeveTest is TreasuryFixture {
         _withdraw(0, 20_000e6); // 2.5x
     }
 
+    /// Rule 7 (todo 29 fix): off-hours a pure perp reduction passes although its spread lifts the equity weight;
+    /// new perp size off-hours is still refused.
+    function test_rule7_offHoursPerpReduceAllowed() public {
+        _activateT2();
+        _depositTo(0, 100_000e6);
+        _short(100_000e6, 20_000e6);
+        vm.warp(block.timestamp + 2 days); // feeds stale: off-hours
+        _hedge(_op(3, 0, abi.encode(address(aapl), uint256(50_000e6)), 0), new bytes32[](0));
+        assertEq(guard.snapshot(address(account)).venues[0].gross > 0, true);
+        vm.expectRevert(); // the market itself refuses new size on a held feed
+        _short(10_000e6, 0);
+    }
+
     // ------------------------------------------------------------ rule 6: allow-list, cap, staleness
 
     function test_rule6_venueCap() public {

@@ -1,6 +1,6 @@
 // OWNER: apps/treasury (todos 10-14). Only the treasury service writes these tables.
 // Tables still to come from later treasury todos: treasuries, policies, desk_keys, nav_marks, positions,
-// exceptions, feeds.
+// feeds.
 import { bigint, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 /**
@@ -100,4 +100,52 @@ export const juryVerdicts = pgTable(
     index("jury_verdicts_ticket_idx").on(t.chainId, t.approvals, t.ticket),
     index("jury_verdicts_op_idx").on(t.opHash),
   ],
+);
+
+/**
+ * Reconciler breaks (todo 29, spec §3): every hour each venue's own statement, the on-chain PositionMirror and
+ * the internal fill ledger are compared; a disagreement is one row here (one open row per break key; later
+ * hours bump `last_seen_at`). A period close refuses to commit while any row of the account is `open`.
+ * status: open | explained (a human wrote why; `explanation` + `explained_by` are required) | resolved (the
+ * sources agree again; it still needs no explanation because nothing was wrong at close time).
+ */
+export const exceptions = pgTable(
+  "exceptions",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(),
+    kind: text("kind").notNull(), // reconcile.position | reconcile.equity | reconcile.stale_mirror | reconcile.venue_error
+    key: text("key").notNull(), // stable per break: kind:venue:underlying
+    venue: text("venue").notNull(),
+    underlying: text("underlying"),
+    detail: jsonb("detail").notNull(),
+    status: text("status").notNull(),
+    explanation: text("explanation"),
+    explainedBy: text("explained_by"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [index("exceptions_account_status_idx").on(t.chainId, t.account, t.status), index("exceptions_key_idx").on(t.chainId, t.account, t.key, t.status)],
+);
+
+/**
+ * The internal ledger of perp fills (todo 29): every order a hedge/basis desk got filled at a venue, as signed
+ * Stock Token base units (+ bought, - sold). Ledger position = sum per (account, venue, underlying).
+ */
+export const venueFills = pgTable(
+  "venue_fills",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(),
+    venue: text("venue").notNull(),
+    underlying: text("underlying").notNull(),
+    desk: text("desk").notNull(), // hedge | basis
+    tokens: text("tokens").notNull(), // signed base units as a decimal string
+    orderId: text("order_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("venue_fills_pos_idx").on(t.chainId, t.account, t.venue, t.underlying)],
 );

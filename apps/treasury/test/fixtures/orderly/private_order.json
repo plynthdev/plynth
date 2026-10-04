@@ -1,0 +1,1 @@
+{"_note":"docs-shaped (POST /v1/order response, orderly.network docs)","success":true,"data":{"order_id":5512793,"client_order_id":null,"order_type":"IOC","order_price":369.75,"order_quantity":2.5,"order_amount":null},"timestamp":1791116000456}

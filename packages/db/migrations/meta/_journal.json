@@ -71,6 +71,13 @@
       "when": 1791116430490,
       "tag": "0009_treasury_jury",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791116431490,
+      "tag": "0010_treasury_reconciler",
+      "breakpoints": true
     }
   ]
 }
