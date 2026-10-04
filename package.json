@@ -4,7 +4,8 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "circuits"
+    "circuits",
+    "test/e2e"
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
@@ -29,7 +30,9 @@
     "treasury:webhooks": "bun apps/treasury/webhooks/main.ts",
     "treasury:valuer": "bun apps/treasury/valuer/main.ts",
     "treasury:receipts": "bun apps/treasury/receipts/main.ts",
-    "mcp": "bun apps/mcp/src/main.ts"
+    "mcp": "bun apps/mcp/src/main.ts",
+    "e2e:consumer": "./scripts/e2e.sh consumer",
+    "e2e:treasury": "./scripts/e2e.sh treasury"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

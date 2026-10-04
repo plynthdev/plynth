@@ -1,0 +1,14 @@
+{
+  "name": "@plynth/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end scenarios on local anvil forks (run through scripts/e2e.sh).",
+  "dependencies": {
+    "@plynth/db": "workspace:*",
+    "@plynth/keeper": "workspace:*",
+    "@plynth/policy-compiler": "workspace:*",
+    "@plynth/sdk": "workspace:*",
+    "viem": "^2.57.2"
+  }
+}

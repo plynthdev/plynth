@@ -56,6 +56,67 @@ bun apps/eligibility/scripts/download-dbip.ts            # monthly: free IP-to-c
 bun run eligibility                                      # eligibility screen: POST /eligibility/check on :8790
 ```
 
+## End to end
+
+Both scenarios run on a local anvil fork (nothing is broadcast to a real network), start and stop everything
+they need, check every number against the chain, exit non-zero on any mismatch and print the total runtime.
+
+```bash
+./scripts/e2e.sh consumer    # testnet fork: kit + consumer stack; API, relayer, indexer, keeper; three users
+                             # through Open, Quiet and Hidden; API overview == on-chain truth
+RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com ./scripts/e2e.sh treasury
+                             # mainnet fork: real Stock Tokens, USDG and steakUSDG; factory treasury from the
+                             # balanced template; desks over a simulated week; period close; CFO pack
+```
+
+They need Postgres (`DATABASE_URL`, a throwaway `plynth_e2e_*` database is created and dropped), anvil, forge
+and bun. The scenarios live in `test/e2e/`.
+
+## Deploy to testnet (46630)
+
+```bash
+cd contracts
+forge script script/TestnetKit.s.sol:TestnetKit --account <keystore> --sender <address> \
+  --rpc-url https://rpc.testnet.chain.robinhood.com --broadcast --slow
+KEEPER_ADDRESS=<keeper address> MIN_CROWD=3 forge script script/TestnetConsumer.s.sol:TestnetConsumer \
+  --account <keystore> --sender <address> --rpc-url https://rpc.testnet.chain.robinhood.com --broadcast --slow
+```
+
+The kit deploys mock USDG, mock Stock Tokens with feeds, the core contracts and real Uniswap v4 pools; the
+consumer script adds SavingsVault, CrowdBuy, StealthClaims and the Hidden Vault and writes every address to
+`deployments/46630.json`, which the indexer, keeper, relayer and API read. Treasury: `TreasuryFactory.s.sol`
+(writes `deployments/<chainid>-treasury.json`).
+
+## Architecture
+
+```
+            users' wallets / frontend                         board Safe
+                 |   (unsigned txs from the API)                  |  policy, desks, approvals
+                 v                                                v
+ +------------------------- Robinhood Chain (4663 / 46630) ----------------------------+
+ |  core:      StockTokenRegistry -> Valuer (Chainlink x uiMultiplier) -> StockRouter  |
+ |             (Uniswap v4 pools, oracle-guarded)          JitterBeacon (commit-reveal)|
+ |  consumer:  SavingsVault -> CrowdBuy -> Open claim | StealthClaims (ERC-5564/6538)  |
+ |                                       | ShieldedPool (+ ShieldedTrade, verifiers)   |
+ |  treasury:  TreasuryFactory -> TreasuryPolicy / TreasuryAccount (PolicyGuard) /     |
+ |             sleeves (cash, equity, perp, basis, private) / PeriodClose / Receipts   |
+ +----^------------------^------------------^-------------------------^----------------+
+      | logs             | txs              | txs                     | txs
+ +----+-----+     +------+------+     +-----+-----+         +---------+------------+
+ | indexer  |     |   keeper    |     |  relayer  |         | treasury services:   |
+ | ev_logs  |---->| round-ups,  |     | gasless   |         | desks, close, valuer,|
+ +----+-----+     | sweeps,     |     | claims /  |         | receipts, risk,      |
+      |           | beacon,     |     | withdraws |         | reconciler, webhooks |
+      v           | execute,    |     +-----------+         +---------+------------+
+ +----------+     | deliver     |                                     |
+ | Postgres |<----+-------------+-------------------------------------+
+ +----+-----+
+      v
+ +----------+   tRPC /trpc + REST /v1 (read-only; returns unsigned transactions)
+ |   api    |   + optional eligibility and round-up source routes, MCP server for treasuries
+ +----------+
+```
+
 ## Layout
 
 - `contracts/src/core/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
@@ -101,6 +162,18 @@ bun run eligibility                                      # eligibility screen: P
 
 What you have to trust, per component. Later components add their own entries here.
 
+- **Unaudited.** No contract here has had an external audit. The Hidden Vault's deposit caps stay 0 on mainnet
+  until one exists, and nothing should hold real money before that.
+- **Keeper attests round-ups.** The vault cannot see a card or bank statement. The keeper reports each spend and
+  the vault credits the round-up; the contract bounds it (one credit per source event, the user's weekly cap,
+  only the keeper key may report), but within those bounds you trust the keeper's report.
+- **Funding is public.** Deposits, top-ups, withdrawals and book membership are ordinary on-chain transfers.
+  Quiet and Hidden hide where the bought Stock Tokens go, not that you saved or how much went into a book.
+- **Crowd privacy depends on crowd size.** A book executes only with at least `MIN_CROWD` savers, and delivery
+  hides each saver's share among the book's members; a small crowd is a small anonymity set.
+- **USDG can be frozen by its issuer.** USDG is a regulated stablecoin; its issuer can freeze an address,
+  including a vault or treasury account. Stock Tokens have their own issuer controls.
+
 - **StockTokenRegistry.** The registry owner (the board) decides which Stock Tokens and feeds are canonical.
   Unlisted tokens are refused (fail-closed).
 - **Valuer.** Chainlink price feeds on Robinhood Chain, and each Stock Token's own `uiMultiplier()`. A stale
@@ -130,7 +203,7 @@ What you have to trust, per component. Later components add their own entries he
 IP geolocation by [DB-IP](https://db-ip.com) (IP to Country Lite, licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Sanctions data: the OFAC SDN list (US Treasury).
 
-## Still to verify
+## Chain facts
 
-- Chainlink feed addresses for each Stock Token (and whether each feed already embeds the multiplier).
-- USDG token address; Orderly and Arcus contracts on 4663.
+Every address used here was checked against the live chain; `bun run verify:chain` re-checks them. Robinhood's
+Chainlink Stock Token feeds price one token (the multiplier is already embedded).
