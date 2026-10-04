@@ -9,6 +9,7 @@ import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
 import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {BoardApprovals} from "../../src/treasury/BoardApprovals.sol";
 import {ITierSource} from "../../src/token/ITierSource.sol";
+import {TemplateRegistry} from "../../src/treasury/TemplateRegistry.sol";
 import {TreasuryFixture} from "./TreasuryFixture.sol";
 
 /// Todo 14: TreasuryFactory clones and wires a treasury; the clones behave exactly like directly deployed ones.
@@ -43,7 +44,8 @@ contract TreasuryFactoryTest is TreasuryFixture {
             guard,
             IERC20Metadata(address(usdg)),
             feeTo,
-            ITierSource(address(0))
+            ITierSource(address(0)),
+            TemplateRegistry(address(0))
         );
     }
 
@@ -218,12 +220,14 @@ contract TreasuryFactoryTest is TreasuryFixture {
         vm.expectRevert(abi.encodeWithSelector(TreasuryFactory.NoCode.selector, stranger));
         new TreasuryFactory(
             stranger, address(accountImpl), address(closeImpl), address(approvalsImpl), guard,
-            IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0))
+            IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0)),
+            TemplateRegistry(address(0))
         );
         vm.expectRevert(TreasuryFactory.ZeroAddress.selector);
         new TreasuryFactory(
             address(policyImpl), address(accountImpl), address(closeImpl), address(approvalsImpl),
-            PolicyGuard(address(0)), IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0))
+            PolicyGuard(address(0)), IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0)),
+            TemplateRegistry(address(0))
         );
     }
 

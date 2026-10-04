@@ -43,6 +43,6 @@ const { db } = connect(databaseUrl());
 const elig = eligibilityFromEnv(process.env, { chainId, pub, db });
 // Round-up sources (statement import, Plaid link) when ROUNDUPS_ENABLED=1; see src/roundups.ts.
 const roundups = await roundupsFromEnv(process.env, { chainId, db, pub });
-const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub) }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS), eligibility: elig?.routes, roundups });
+const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub), mcpSecret: process.env.MCP_TOKEN_SECRET || undefined }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS), eligibility: elig?.routes, roundups });
 const server = Bun.serve({ port: Number(process.env.API_PORT ?? 8789), fetch: app.fetch });
 console.log(`[api ${chainId}] listening on :${server.port}`);

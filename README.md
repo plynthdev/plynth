@@ -14,6 +14,11 @@ Two products share one core (`contracts/src/core/`, `packages/chain/`).
   period close and approvals contracts, all owned by the board). The API serves it under `/v1/treasury/*`
   (create and policy proposals return unsigned transactions for the board Safe), and
   `bun run treasury:webhooks` delivers HMAC-signed `guard.denied`, `drawdown.state` and `close.committed` events.
+  `bun run treasury:valuer` writes a NAV mark per treasury every 60 s (`nav.history`); `bun run treasury:receipts`
+  posts an hourly Merkle root of every desk decision to `Receipts` (proofs at
+  `/v1/treasury/:account/actions/:id/proof`); `bun run mcp` serves read-only treasury tools plus
+  `exceptions_request` over MCP (stdio or streamable HTTP) with board-issued, per-treasury tokens; and
+  `TemplateRegistry` lists reviewed policy templates whose authors earn a share of the platform fee.
 
 | Network | Chain ID | Public RPC | Explorer |
 |---|---|---|---|

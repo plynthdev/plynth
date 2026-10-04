@@ -1,5 +1,5 @@
 // OWNER: apps/treasury (todos 10-14). Only the treasury service writes these tables.
-// Tables still to come from later treasury todos: treasuries, policies, desk_keys, nav_marks, positions,
+// Tables still to come from later treasury todos: treasuries, policies, desk_keys, positions,
 // feeds.
 import { bigint, boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
@@ -200,3 +200,92 @@ export const treasuryWebhookCursors = pgTable("treasury_webhook_cursors", {
   lastId: integer("last_id").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * NAV marks (todo 30, spec §3): the valuer service writes one row per treasury every 60 s from one pinned block
+ * (PolicyGuard.snapshot): NAV, band weights and whether any held feed was on hold. `nav.history` reads it.
+ */
+export const navMarks = pgTable(
+  "nav_marks",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(), // lower-case TreasuryAccount (the treasury id)
+    ts: timestamp("ts", { withTimezone: true }).notNull(), // when the mark was taken (service clock)
+    blockNumber: bigint("block_number", { mode: "bigint" }).notNull(),
+    blockTime: timestamp("block_time", { withTimezone: true }).notNull(),
+    navUsd: text("nav_usd").notNull(), // USD 1e18 as a decimal string
+    cashBps: integer("cash_bps").notNull(),
+    equityBps: integer("equity_bps").notNull(),
+    basisBps: integer("basis_bps").notNull(),
+    hold: boolean("hold").notNull(), // any held Stock Token's feed on hold at that block
+    weights: jsonb("weights").notNull(), // [{ asset, bps, usd }] per tracked asset
+  },
+  (t) => [index("nav_marks_treasury_ts_idx").on(t.chainId, t.account, t.ts)],
+);
+
+/**
+ * Hourly receipts (todo 30): one row per (account, UTC hour) the receipts service closed. `root` is the Merkle
+ * root over every desk_actions row of that hour (ascending id, guard denials included), `action_ids` the leaves
+ * in order. status: built (stored, not yet on-chain) | posted (Receipts.post mined) | failed
+ */
+export const treasuryReceipts = pgTable(
+  "treasury_receipts",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(),
+    hour: bigint("hour", { mode: "bigint" }).notNull(), // unix seconds / 3600
+    root: text("root").notNull(),
+    leafCount: integer("leaf_count").notNull(),
+    actionIds: integer("action_ids").array().notNull(),
+    status: text("status").notNull(),
+    txHash: text("tx_hash"),
+    blockNumber: bigint("block_number", { mode: "bigint" }),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("treasury_receipts_hour_uq").on(t.chainId, t.account, t.hour)],
+);
+
+/**
+ * MCP API tokens (todo 30): issued by the board through the API, scoped to one treasury. The token itself is an
+ * HMAC over its id and claims and is never stored; this row only lets the board list and revoke it.
+ */
+export const treasuryMcpTokens = pgTable(
+  "treasury_mcp_tokens",
+  {
+    id: text("id").primaryKey(), // random token id (the `jti`)
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(),
+    label: text("label").notNull(),
+    issuedBy: text("issued_by").notNull(), // the board address that signed the request
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("treasury_mcp_tokens_account_idx").on(t.chainId, t.account)],
+);
+
+/**
+ * Exception requests filed through MCP (`exceptions_request`, todo 30): an agent asks the board to allow an
+ * operation the policy would refuse. Filing changes nothing on-chain; the board still decides (BoardApprovals).
+ * status: pending (waiting for the board) | approved | rejected | withdrawn
+ */
+export const treasuryExceptionRequests = pgTable(
+  "treasury_exception_requests",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(),
+    tokenId: text("token_id").notNull(), // which MCP token filed it
+    desk: text("desk"),
+    action: text("action").notNull(),
+    asset: text("asset"),
+    amountUsd: text("amount_usd"),
+    reason: text("reason").notNull(),
+    status: text("status").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("treasury_exception_requests_account_idx").on(t.chainId, t.account, t.status)],
+);

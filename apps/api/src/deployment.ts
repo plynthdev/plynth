@@ -18,6 +18,9 @@ export type ApiDeployment = {
   /** TreasuryFactory (todo 14) and the block it was deployed at (treasury log scans start there). */
   treasuryFactory?: Address;
   treasuryFactoryBlock?: bigint;
+  /** Hourly receipts (todo 30) and the templates marketplace registry. */
+  receipts?: Address;
+  templateRegistry?: Address;
 };
 
 /** Addresses the API reads, from deployments/<chainid>.json (written by the deploy scripts). */
@@ -40,6 +43,8 @@ export function apiDeployment(dep: Deployment | undefined, chainId: number): Api
     deployBlock: dep.deployBlock !== undefined ? BigInt(dep.deployBlock) : 0n,
     ...(typeof dep.treasuryFactory === "string" ? { treasuryFactory: getAddress(dep.treasuryFactory) } : {}),
     ...(dep.treasuryFactoryBlock !== undefined ? { treasuryFactoryBlock: BigInt(dep.treasuryFactoryBlock as string | number) } : {}),
+    ...(typeof dep.receipts === "string" && BigInt(dep.receipts) !== 0n ? { receipts: getAddress(dep.receipts) } : {}),
+    ...(typeof dep.templateRegistry === "string" && BigInt(dep.templateRegistry) !== 0n ? { templateRegistry: getAddress(dep.templateRegistry) } : {}),
   };
 }
 

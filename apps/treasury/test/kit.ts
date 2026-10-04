@@ -158,7 +158,10 @@ export class Kit {
       a.accountImpl = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [Z, Z, Z, Z]);
       a.closeImpl = await this.deploy("PeriodClose.sol", "PeriodClose", [Z, Z, Z, Z]);
       a.approvalsImpl = await this.deploy("BoardApprovals.sol", "BoardApprovals", [Z, Z]);
-      a.factory = await this.deploy("TreasuryFactory.sol", "TreasuryFactory", [a.policyImpl, a.accountImpl, a.closeImpl, a.approvalsImpl, a.guard, a.usdg, opts.factory.feeTo, Z]);
+      // Todo 30: the templates marketplace (review committee = deployer) and the shared hourly Receipts.
+      a.templates = await this.deploy("TemplateRegistry.sol", "TemplateRegistry", [d, Z]);
+      a.receipts = await this.deploy("Receipts.sol", "Receipts");
+      a.factory = await this.deploy("TreasuryFactory.sol", "TreasuryFactory", [a.policyImpl, a.accountImpl, a.closeImpl, a.approvalsImpl, a.guard, a.usdg, opts.factory.feeTo, Z, a.templates]);
       this.factoryBlock = await this.pub.getBlockNumber();
       const r = await this.send(a.factory, "TreasuryFactory.sol", "TreasuryFactory", "deploy", [encodeAbiParameters([policyAbiParam], [compiled.policy]), d]);
       const { abi } = artifact("TreasuryFactory.sol", "TreasuryFactory");

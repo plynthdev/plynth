@@ -3,8 +3,23 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TokenFixture} from "./TokenFixture.sol";
-import {FeeRouter, IStakingRewards, IInsuranceFees} from "../../src/token/FeeRouter.sol";
+import {FeeRouter, IStakingRewards, IInsuranceFees, ITemplateFeeSource} from "../../src/token/FeeRouter.sol";
 import {IHooks, IPoolManager, PoolKey} from "../../src/interfaces/IUniswapV4.sol";
+
+/// Stands in for TreasuryFactory.closeAuthor: which account a PeriodClose belongs to, and its template author.
+contract MockTemplateSource is ITemplateFeeSource {
+    mapping(address => address) public acct;
+    mapping(address => address) public auth;
+
+    function set(address close, address account, address author) external {
+        acct[close] = account;
+        auth[close] = author;
+    }
+
+    function closeAuthor(address close) external view returns (address, address) {
+        return (acct[close], auth[close]);
+    }
+}
 
 contract FeeRouterTest is TokenFixture {
     address lp = makeAddr("lp");
@@ -53,27 +68,92 @@ contract FeeRouterTest is TokenFixture {
         assertEq(staking.earned(alice)[0], 500e6);
     }
 
-    function test_authorShareCarvedOutBeforeSplit() public {
+    MockTemplateSource src;
+    address closeT = makeAddr("closeT"); // PeriodClose of a templated treasury
+    address acctT = makeAddr("acctT");
+    address closeP = makeAddr("closeP"); // PeriodClose of a plain treasury
+    address acctP = makeAddr("acctP");
+
+    function _templates(uint16 bps) internal {
+        src = new MockTemplateSource();
+        src.set(closeT, acctT, sink);
+        src.set(closeP, acctP, address(0));
         vm.prank(owner);
-        router.setAuthorShare(sink, 1000); // 10%
-        _lpDeposit(1e6);
-        _fees(1000e6);
-        router.push();
-        assertEq(usdg.balanceOf(sink), 100e6);
-        assertEq(usdg.balanceOf(address(insurance)), 1e6 + 450e6);
+        router.setTemplateFees(ITemplateFeeSource(address(src)), bps);
     }
 
-    function test_authorShareBounds() public {
+    /// A PeriodClose pays `amount` then tells the router (as PeriodClose._fee does).
+    function _closeFee(address close, address account, uint256 amount) internal {
+        _fees(amount);
+        vm.prank(close);
+        router.onCloseFee(account, amount);
+    }
+
+    function test_authorShareCarvedOutBeforeSplit() public {
+        _templates(2000); // 20%
+        _lpDeposit(1e6);
+        _closeFee(closeT, acctT, 1000e6);
+        assertEq(router.authorOwed(sink), 200e6);
+        router.push();
+        // 800 left: 400 to insurance, 400 buys PLTH; the author's 200 stays set aside
+        assertEq(usdg.balanceOf(address(insurance)), 1e6 + 400e6);
+        assertEq(usdg.balanceOf(address(router)), 200e6);
+        vm.prank(sink);
+        assertEq(router.claimAuthor(), 200e6);
+        assertEq(usdg.balanceOf(sink), 200e6);
+        assertEq(usdg.balanceOf(address(router)), 0);
+        vm.prank(sink);
+        vm.expectRevert(FeeRouter.NothingOwed.selector);
+        router.claimAuthor();
+    }
+
+    function test_onlyTemplatedTreasuriesPayAuthors() public {
+        _templates(2000);
+        _closeFee(closeP, acctP, 1000e6); // no template: nothing set aside
+        _fees(500e6); // plain transfer, no hook: nothing set aside
+        assertEq(router.authorReserved(), 0);
+        router.push();
+        assertEq(usdg.balanceOf(sink), 0);
+    }
+
+    function test_onCloseFeeRejectsCallersThatAreNotFactoryCloses() public {
+        _templates(2000);
+        _fees(1000e6);
+        vm.prank(alice); // not a PeriodClose the factory made
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotTreasuryClose.selector, alice));
+        router.onCloseFee(acctT, 1000e6);
+        vm.prank(closeT); // a real close cannot claim for another account
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotTreasuryClose.selector, closeT));
+        router.onCloseFee(acctP, 1000e6);
+    }
+
+    function test_onCloseFeeNeverSetsAsideMoreThanArrived() public {
+        _templates(2000);
+        vm.prank(closeT); // claims a fee that never arrived
+        router.onCloseFee(acctT, 1000e6);
+        assertEq(router.authorReserved(), 0);
+        _fees(10e6);
+        vm.prank(closeT);
+        router.onCloseFee(acctT, 1000e6); // overstated: capped at what is free
+        assertEq(router.authorReserved(), 10e6);
+    }
+
+    function test_authorShareOffWithoutSource() public {
+        _closeFee(closeT, acctT, 1000e6); // no source set: no-op, no revert
+        assertEq(router.authorReserved(), 0);
+    }
+
+    function test_templateFeeBounds() public {
         vm.startPrank(owner);
         vm.expectRevert(FeeRouter.BadParams.selector);
-        router.setAuthorShare(sink, 2001);
+        router.setTemplateFees(ITemplateFeeSource(address(1)), 2001);
         vm.expectRevert(FeeRouter.BadParams.selector);
-        router.setAuthorShare(address(0), 1);
-        router.setAuthorShare(address(0), 0);
+        router.setTemplateFees(ITemplateFeeSource(address(0)), 1);
+        router.setTemplateFees(ITemplateFeeSource(address(0)), 0);
         vm.stopPrank();
         vm.prank(alice);
         vm.expectRevert();
-        router.setAuthorShare(sink, 100);
+        router.setTemplateFees(ITemplateFeeSource(address(1)), 100);
     }
 
     // ------------------------------------------------------------ rate limit
@@ -178,19 +258,19 @@ contract FeeRouterTest is TokenFixture {
         fees = uint64(bound(fees, 0, 1e15));
         authorBps = uint16(bound(authorBps, 0, 2000));
         cap = uint64(bound(cap, 1, 1e15));
-        vm.startPrank(owner);
-        router.setAuthorShare(authorBps == 0 ? address(0) : sink, authorBps);
+        _templates(authorBps);
+        vm.prank(owner);
         router.setBuyParams(100, cap);
-        vm.stopPrank();
         if (depositors) _lpDeposit(1e6);
         uint256 insBefore = usdg.balanceOf(address(insurance));
-        _fees(fees);
+        _closeFee(closeT, acctT, fees);
         router.push();
         uint256 toIns = usdg.balanceOf(address(insurance)) - insBefore;
         uint256 toStakers = staking.queued(0);
         uint256 spent = usdg.balanceOf(address(pm)) - 1_000_000e6;
-        assertEq(usdg.balanceOf(sink) + toIns + toStakers + spent + router.buyCarry(), fees);
-        assertEq(usdg.balanceOf(address(router)), router.buyCarry());
+        assertEq(router.authorOwed(sink), uint256(fees) * authorBps / 10_000);
+        assertEq(router.authorOwed(sink) + toIns + toStakers + spent + router.buyCarry(), fees);
+        assertEq(usdg.balanceOf(address(router)), router.buyCarry() + router.authorReserved());
         assertTrue(depositors ? toStakers == 0 : toIns == 0);
     }
 }

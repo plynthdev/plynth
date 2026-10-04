@@ -26,7 +26,10 @@
     "treasury:close": "bun apps/treasury/close/main.ts",
     "treasury:cfo-pack": "bun apps/treasury/cfo-pack/main.ts",
     "treasury:reconcile": "bun apps/treasury/reconciler/main.ts",
-    "treasury:webhooks": "bun apps/treasury/webhooks/main.ts"
+    "treasury:webhooks": "bun apps/treasury/webhooks/main.ts",
+    "treasury:valuer": "bun apps/treasury/valuer/main.ts",
+    "treasury:receipts": "bun apps/treasury/receipts/main.ts",
+    "mcp": "bun apps/mcp/src/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

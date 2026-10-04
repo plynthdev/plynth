@@ -9,6 +9,7 @@ import {PolicyGuard} from "./PolicyGuard.sol";
 import {PeriodClose} from "./PeriodClose.sol";
 import {BoardApprovals} from "./BoardApprovals.sol";
 import {ITierSource} from "../token/ITierSource.sol";
+import {TemplateRegistry} from "./TemplateRegistry.sol";
 
 /// One call gives a board a working treasury: EIP-1167 clones of TreasuryPolicy, TreasuryAccount, PeriodClose
 /// and BoardApprovals, wired to each other and to the shared PolicyGuard.
@@ -21,8 +22,13 @@ import {ITierSource} from "../token/ITierSource.sol";
 ///
 /// Clone addresses are deterministic per (board, nonce) so a front end can show them before the Safe signs
 /// (`predict`). If someone else deploys for the same board first, the board's transaction still succeeds at the
-/// next nonce; the event is the source of truth. No token, staking or fee router wiring here (not in v1):
-/// `feeRecipient` and `tiers` are factory-wide settings handed to every PeriodClose, and either may be zero.
+/// next nonce; the event is the source of truth. `feeRecipient` and `tiers` are factory-wide settings handed to
+/// every PeriodClose, and either may be zero.
+///
+/// Templates marketplace (todo 30): `deployFromTemplate` builds a treasury from a template the
+/// TemplateRegistry lists. The compiled policy must equal the template with only `controller` filled in
+/// (`templateHash`), and the account records `templateOf` so the FeeRouter can pay the template's author a
+/// share of the treasury's platform fee (`closeAuthor`).
 contract TreasuryFactory {
     /// abi.encode(TreasuryPolicy.Policy): 3 bands x 2 words + 15 single-word fields.
     uint256 public constant POLICY_BYTES = 21 * 32;
@@ -35,9 +41,12 @@ contract TreasuryFactory {
     IERC20Metadata public immutable cash;
     address public immutable feeRecipient; // zero = no platform fee
     ITierSource public immutable tiers; // zero = no tier gating
+    TemplateRegistry public immutable templates; // zero = no templates marketplace
 
     mapping(address board => uint256) public nonceOf;
     mapping(address account => bool) public isTreasury;
+    mapping(address account => uint256) public templateOf; // 0 = not built from a template
+    mapping(address close => address) public accountOfClose;
     address[] private _accounts;
 
     event TreasuryCreated(
@@ -49,10 +58,14 @@ contract TreasuryFactory {
         address approvals,
         bytes32 policyHash
     );
+    event TreasuryFromTemplate(address indexed account, uint256 indexed templateId, bytes32 templateHash);
 
     error ZeroAddress();
     error NoCode(address impl);
     error BadPolicyEncoding(uint256 length);
+    error NoTemplates();
+    error TemplateNotListed(uint256 templateId);
+    error TemplateMismatch(bytes32 want, bytes32 got);
 
     constructor(
         address policyImpl_,
@@ -62,7 +75,8 @@ contract TreasuryFactory {
         PolicyGuard guard_,
         IERC20Metadata cash_,
         address feeRecipient_,
-        ITierSource tiers_
+        ITierSource tiers_,
+        TemplateRegistry templates_
     ) {
         if (address(guard_) == address(0) || address(cash_) == address(0)) revert ZeroAddress();
         _requireCode(policyImpl_);
@@ -77,6 +91,7 @@ contract TreasuryFactory {
         cash = cash_;
         feeRecipient = feeRecipient_;
         tiers = tiers_;
+        templates = templates_;
     }
 
     /// Creates and wires a treasury for `boardSafe`. Reverts with TreasuryPolicy's own error if the policy is
@@ -85,10 +100,54 @@ contract TreasuryFactory {
         external
         returns (address account, address policy, address close)
     {
-        if (boardSafe == address(0)) revert ZeroAddress();
-        if (compiledPolicy.length != POLICY_BYTES) revert BadPolicyEncoding(compiledPolicy.length);
-        TreasuryPolicy.Policy memory p = abi.decode(compiledPolicy, (TreasuryPolicy.Policy));
+        (account, policy, close) = _deploy(_decode(compiledPolicy), compiledPolicy, boardSafe);
+    }
 
+    /// Same as `deploy`, from a listed marketplace template: `compiledPolicy` must be the template with only the
+    /// controller filled in. Records `templateOf[account]` (the author's fee share follows from it).
+    function deployFromTemplate(bytes calldata compiledPolicy, address boardSafe, uint256 templateId)
+        external
+        returns (address account, address policy, address close)
+    {
+        if (address(templates) == address(0)) revert NoTemplates();
+        if (!templates.isListed(templateId)) revert TemplateNotListed(templateId);
+        TreasuryPolicy.Policy memory p = _decode(compiledPolicy);
+        bytes32 want = templates.policyHashOf(templateId);
+        bytes32 got = templateHash(p);
+        if (got != want) revert TemplateMismatch(want, got);
+        (account, policy, close) = _deploy(p, compiledPolicy, boardSafe);
+        templateOf[account] = templateId;
+        emit TreasuryFromTemplate(account, templateId, got);
+    }
+
+    /// The marketplace hash of a policy: keccak256(abi.encode(policy)) with `controller` set to zero, so one
+    /// template serves every treasury whatever controller key it uses.
+    function templateHash(TreasuryPolicy.Policy memory p) public pure returns (bytes32) {
+        address c = p.controller; // `p` may be the caller's struct (memory is by reference): restore it
+        p.controller = address(0);
+        bytes32 h = keccak256(abi.encode(p));
+        p.controller = c;
+        return h;
+    }
+
+    /// For the FeeRouter: the account a PeriodClose belongs to (zero if not made here) and the author of the
+    /// template it was built from (zero if none).
+    function closeAuthor(address close) external view returns (address account, address author) {
+        account = accountOfClose[close];
+        uint256 id = templateOf[account];
+        if (id != 0) author = templates.authorOf(id);
+    }
+
+    function _decode(bytes calldata compiledPolicy) private pure returns (TreasuryPolicy.Policy memory) {
+        if (compiledPolicy.length != POLICY_BYTES) revert BadPolicyEncoding(compiledPolicy.length);
+        return abi.decode(compiledPolicy, (TreasuryPolicy.Policy));
+    }
+
+    function _deploy(TreasuryPolicy.Policy memory p, bytes calldata compiledPolicy, address boardSafe)
+        private
+        returns (address account, address policy, address close)
+    {
+        if (boardSafe == address(0)) revert ZeroAddress();
         uint256 nonce = nonceOf[boardSafe]++;
         policy = Clones.cloneDeterministic(policyImpl, _salt(boardSafe, nonce, 0));
         account = Clones.cloneDeterministic(accountImpl, _salt(boardSafe, nonce, 1));
@@ -101,6 +160,7 @@ contract TreasuryFactory {
         PeriodClose(close).initialize(TreasuryAccount(payable(account)), cash, feeRecipient, tiers);
 
         isTreasury[account] = true;
+        accountOfClose[close] = account;
         _accounts.push(account);
         emit TreasuryCreated(boardSafe, account, msg.sender, policy, close, approvals, keccak256(compiledPolicy));
     }

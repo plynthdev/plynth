@@ -16,7 +16,11 @@ import {
   closeList,
   deskList,
   exceptionsList,
+  marketplaceList,
   navHistory,
+  ReceiptNotFound,
+  receiptsProof,
+  receiptsRoot,
   navLatest,
   policyCurrent,
   policyDiff,
@@ -26,6 +30,7 @@ import {
   treasuryCreate,
   TreasuryNotFound,
 } from "./treasury";
+import { issueMcpToken, listMcpTokens, McpAuthError, McpUnavailable, revokeMcpToken } from "./mcp-tokens";
 import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
 export type Ctx = Deps & { headers: Headers };
@@ -70,7 +75,9 @@ async function treasury<T>(f: () => Promise<T>): Promise<T> {
   try {
     return await f();
   } catch (e) {
-    if (e instanceof TreasuryNotFound) throw new TRPCError({ code: "NOT_FOUND", message: e.message });
+    if (e instanceof TreasuryNotFound || e instanceof ReceiptNotFound) throw new TRPCError({ code: "NOT_FOUND", message: e.message });
+    if (e instanceof McpAuthError) throw new TRPCError({ code: "UNAUTHORIZED", message: e.message });
+    if (e instanceof McpUnavailable) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: e.message });
     if (e instanceof TxInputError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
     if (e instanceof CfoPackRefused) throw new TRPCError({ code: "PRECONDITION_FAILED", message: e.message });
     throw e;
@@ -141,7 +148,7 @@ export const appRouter = t.router({
   treasury: t.router({
     templates: t.procedure.query(() => templates()),
     create: t.procedure
-      .input(templateInput.and(z.object({ board: address })))
+      .input(templateInput.and(z.object({ board: address, templateId: z.coerce.number().int().positive().optional() })))
       .mutation(({ ctx, input }) => treasury(() => treasuryCreate(ctx, input as any))),
   }),
   policy: t.router({
@@ -154,9 +161,38 @@ export const appRouter = t.router({
   }),
   nav: t.router({
     latest: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => navLatest(ctx, input.account))),
+    // 60 s marks from the valuer service (todo 30): 1440 = one day.
     history: t.procedure
-      .input(tAccount.extend({ limit: z.coerce.number().int().min(1).max(120).default(24) }))
-      .query(({ ctx, input }) => treasury(() => navHistory(ctx, input.account, input.limit))),
+      .input(tAccount.extend({ limit: z.coerce.number().int().min(1).max(1440).default(60), from: z.coerce.date().optional(), to: z.coerce.date().optional() }))
+      .query(({ ctx, input }) => treasury(() => navHistory(ctx, input.account, input))),
+  }),
+  receipts: t.router({
+    root: t.procedure
+      .input(tAccount.extend({ hour: z.union([z.string().regex(/^\d{1,12}$/), z.number().int().nonnegative()]).transform((v) => BigInt(v)) }))
+      .query(({ ctx, input }) => treasury(() => receiptsRoot(ctx, input.account, input.hour))),
+    proof: t.procedure
+      .input(tAccount.extend({ actionId: z.coerce.number().int().positive() }))
+      .query(({ ctx, input }) => treasury(() => receiptsProof(ctx, input.account, input.actionId))),
+  }),
+  marketplace: t.router({
+    list: t.procedure.query(({ ctx }) => treasury(() => marketplaceList(ctx))),
+  }),
+  mcpTokens: t.router({
+    // The board signs issueMessage(...) (EOA or Safe/ERC-1271); the token is returned once and never stored.
+    issue: t.procedure
+      .input(
+        tAccount.extend({
+          label: z.string(),
+          issuedAt: z.coerce.number().int().positive(),
+          expiresAt: z.coerce.number().int().positive(),
+          signature: z.string().regex(/^0x[0-9a-fA-F]+$/).transform((s) => s as `0x${string}`),
+        }),
+      )
+      .mutation(({ ctx, input }) => treasury(() => issueMcpToken(ctx, input.account, input))),
+    revoke: t.procedure
+      .input(tAccount.extend({ id: z.string().regex(/^[0-9a-f]{32}$/), issuedAt: z.coerce.number().int().positive(), signature: z.string().regex(/^0x[0-9a-fA-F]+$/).transform((s) => s as `0x${string}`) }))
+      .mutation(({ ctx, input }) => treasury(() => revokeMcpToken(ctx, input.account, input))),
+    list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => listMcpTokens(ctx, input.account))),
   }),
   positions: t.router({
     list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => positionsList(ctx, input.account))),

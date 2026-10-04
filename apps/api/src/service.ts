@@ -8,7 +8,8 @@ import { stockOf, type ApiDeployment, type ApiStock } from "./deployment";
 import { userEvents, type EvRow } from "./events";
 import { day, fixed, iso, usd, usdg, usdgToUsd18 } from "./format";
 
-export type Deps = { chainId: number; pub: PublicClient; db: Db; dep: ApiDeployment; blockTimes: BlockTimes };
+/** `mcpSecret`: HMAC key for MCP API tokens (todo 30); unset = token issuance disabled (503). */
+export type Deps = { chainId: number; pub: PublicClient; db: Db; dep: ApiDeployment; blockTimes: BlockTimes; mcpSecret?: string };
 
 export const MODES = ["open", "quiet", "hidden"] as const;
 export type Mode = (typeof MODES)[number];

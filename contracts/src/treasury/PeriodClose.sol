@@ -13,6 +13,11 @@ import {AssetValuation} from "./AssetValuation.sol";
 import {ISleeve, IPeriodStartNav} from "./interfaces/ISleeve.sol";
 import {ITierSource, Tier} from "../token/ITierSource.sol";
 
+/// Optional hook on the fee recipient (FeeRouter, todo 30).
+interface ICloseFeeHook {
+    function onCloseFee(address account, uint256 amount) external;
+}
+
 /// Every period ends with a statement the chain itself checks. The controller signs a `Close`; `commit`
 /// recomputes, in the same call, everything the statement claims about the account's holdings:
 ///
@@ -325,6 +330,13 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         paid = due < idle ? due : idle;
         owed = due - paid;
         feeOwed = owed;
-        if (paid != 0) account.payCloseFee(address(cash), feeRecipient, paid);
+        if (paid != 0) {
+            account.payCloseFee(address(cash), feeRecipient, paid);
+            // Tell a contract recipient (the FeeRouter) which treasury paid, so it can carve out the template
+            // author's share. Best effort: a recipient without the hook (or one that reverts) never blocks a close.
+            if (feeRecipient.code.length != 0) {
+                try ICloseFeeHook(feeRecipient).onCloseFee(address(account), paid) {} catch {}
+            }
+        }
     }
 }

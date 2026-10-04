@@ -11,8 +11,13 @@ import { join } from "node:path";
 import { decodeEventLog, getAddress, stringToHex, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { WebhookDispatcher, WebhookStore } from "../../treasury/webhooks/dispatcher";
+import { receiptsOnce } from "../../treasury/receipts/service";
+import { ReceiptStore } from "../../treasury/receipts/store";
+import { fileExceptionRequest, issueMessage, revokeMessage } from "../src";
 import { KEYS, Kit, ROOT } from "../../treasury/test/kit";
-import { BlockTimes, createApp, factoryAbi, type ApiDeployment } from "../src";
+import { BlockTimes, createApp, factoryAbi, templateHashOf, type ApiDeployment } from "../src";
+import { artifact } from "../../treasury/test/kit";
+import { compileTemplate } from "@plynth/policy-compiler";
 
 const PORT = 9700 + Math.floor(Math.random() * 50);
 const RPC = `http://127.0.0.1:${PORT}`;
@@ -21,6 +26,7 @@ const PERIOD = 30n * 86_400n;
 const FEE_TO = getAddress("0x00000000000000000000000000000000000fee14");
 const BOARD2 = privateKeyToAccount("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"); // test-key (anvil #3)
 const SECRET = "whsec-test-0123456789abcdef"; // test-key (HMAC secret for a local receiver)
+const MCP_SECRET = "mcp-test-secret-0123456789abcdef-0123456789"; // test-key (HMAC secret for MCP tokens)
 
 let anvil: ReturnType<typeof Bun.spawn> | undefined;
 let kit: Kit;
@@ -30,6 +36,8 @@ let app: ReturnType<typeof createApp>;
 let acct: Address;
 let cfgPath: string;
 let ready = false;
+let deps: Parameters<typeof createApp>[0];
+let receiptHour: bigint;
 
 function run(script: string, args: string[], env: Record<string, string>) {
   const r = Bun.spawnSync(["bun", "run", script, ...args], { cwd: ROOT, env: { ...process.env, DATABASE_URL: dbUrl, TREASURY_RPC_URL: RPC, ...env }, stdout: "pipe", stderr: "pipe" });
@@ -91,12 +99,40 @@ beforeAll(async () => {
   const start = await kit.read<bigint>(kit.a.periodClose!, "PeriodClose.sol", "PeriodClose", "startTime");
   await kit.warpTo(start + PERIOD + 60n);
   await kit.refreshFeeds();
+  // Hourly receipts (todo 30) for the period's desk actions, posted before the close so the bundle carries them.
+  const chainNow = await kit.now();
+  const posted = await receiptsOnce({
+    chain: kit.chain,
+    pub: kit.pub,
+    wallet: kit.wallet(kit.deployer),
+    controller: kit.deployer,
+    receipts: kit.a.receipts!,
+    store: new ReceiptStore(conn.db),
+    accounts: [acct],
+    graceSeconds: 0,
+    now: () => new Date(Number(chainNow) * 1000),
+  });
+  if (!posted.length || posted.some((p) => p.status !== "posted")) throw new Error(`receipts not posted: ${JSON.stringify(posted, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
+  receiptHour = posted[0]!.hour;
   const out = run("treasury:close", ["--once"], { TREASURY_PERIOD_CLOSE: kit.a.periodClose!, TREASURY_CONTROLLER_KEY: KEYS.deployer });
   if (!out.includes('"status":"committed"')) throw new Error(`close did not commit:\n${out}`);
 
   const A = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address;
-  const dep: ApiDeployment = { vault: A(1), crowd: A(2), beacon: A(3), valuer: kit.a.valuer!, usdg: kit.a.usdg!, stocks: [], deployBlock: 0n, treasuryFactory: kit.a.factory!, treasuryFactoryBlock: kit.factoryBlock };
-  app = createApp({ chainId: 31337, pub: kit.pub, db: conn.db, dep, blockTimes: new BlockTimes(kit.pub) });
+  const dep: ApiDeployment = {
+    vault: A(1),
+    crowd: A(2),
+    beacon: A(3),
+    valuer: kit.a.valuer!,
+    usdg: kit.a.usdg!,
+    stocks: [],
+    deployBlock: 0n,
+    treasuryFactory: kit.a.factory!,
+    treasuryFactoryBlock: kit.factoryBlock,
+    receipts: kit.a.receipts!,
+    templateRegistry: kit.a.templates!,
+  };
+  deps = { chainId: 31337, pub: kit.pub, db: conn.db, dep, blockTimes: new BlockTimes(kit.pub), mcpSecret: MCP_SECRET };
+  app = createApp(deps);
   ready = true;
 }, 240_000);
 
@@ -141,10 +177,6 @@ describe("treasury API on a factory-made treasury", () => {
     expect(c.bundleStored).toBe(true);
     expect(c.txHash).toMatch(/^0x[0-9a-f]{64}$/);
 
-    const hist = await ok("nav.history", { account: acct });
-    expect(hist.points).toHaveLength(1);
-    expect(hist.points[0].navUsdRaw).toBe(c.navUsdRaw);
-    expect(hist.points[0].periodEndUnix).toBe(c.periodEndUnix);
 
     const got = await ok("close.get", { account: acct, index: 0 });
     expect(got.bundleVerified).toBe(true);
@@ -328,4 +360,145 @@ describe("signed webhooks", () => {
       server.stop(true);
     }
   }, 60_000);
+});
+
+describe("todo 30: receipts, NAV marks, marketplace, MCP tokens", () => {
+  test("receipts.root / receipts.proof match the chain, and the close bundle carries the period's receipt roots", async () => {
+    if (!ready) return;
+    const root = await ok("receipts.root", { account: acct, hour: receiptHour.toString() });
+    expect(root.matchesRows).toBe(true);
+    expect(root.matchesChain).toBe(true);
+    expect(root.status).toBe("posted");
+    const n = Number((await conn.sql`select count(*)::int as n from desk_actions where account = ${acct.toLowerCase()}`)[0]!.n);
+    expect(root.leafCount).toBe(n); // every desk action of the period happened in that one hour, denial included
+    for (const id of root.actionIds) {
+      const p = await ok("receipts.proof", { account: acct, actionId: id });
+      expect(p.verifiedOnchain).toBe(true);
+      expect(p.root).toBe(root.root);
+    }
+    const denial = (await conn.sql`select id from desk_actions where reason_code = 4 and account = ${acct.toLowerCase()}`)[0]!.id as number;
+    const rest1 = await rest(`/v1/treasury/${acct}/actions/${denial}/proof`);
+    expect(rest1.status).toBe(200);
+    expect(rest1.body.row.reason).toBe("R3_ORDER_CAP");
+    expect((await rest(`/v1/treasury/${acct}/receipts/${receiptHour}`)).body).toEqual(root);
+    expect((await trpc("receipts.root", { account: acct, hour: "1" })).status).toBe(404);
+    expect((await trpc("receipts.proof", { account: acct, actionId: 999999 })).status).toBe(404);
+
+    const got = await ok("close.get", { account: acct, index: 0 });
+    expect(got.bundleVerified).toBe(true);
+    expect(got.bundle.receipts).toEqual([{ hour: receiptHour.toString(), root: root.root.toLowerCase(), leafCount: root.leafCount, txHash: root.txHash }]);
+  }, 60_000);
+
+  test("nav.history reads the valuer's 60 s marks, newest first", async () => {
+    if (!ready) return;
+    for (let i = 0; i < 2; i++) run("treasury:valuer", ["--once"], { TREASURY_ACCOUNTS: acct });
+    const h = await ok("nav.history", { account: acct });
+    expect(h.points.length).toBe(2);
+    expect(Date.parse(h.points[0].at)).toBeGreaterThanOrEqual(Date.parse(h.points[1].at));
+    const nav = await ok("nav.latest", { account: acct });
+    expect(h.points[0].navUsdRaw).toBe(nav.navUsdRaw);
+    expect(h.points[0].cashBps).toBe(nav.bands.cash.bps);
+    expect(h.points[0].equityBps).toBe(nav.bands.equity.bps);
+    expect(h.points[0].hold).toBe(nav.hold);
+    expect((await ok("nav.history", { account: acct, limit: 1 })).points).toHaveLength(1);
+    expect((await ok("nav.history", { account: acct, from: new Date(Date.now() + 3_600_000).toISOString() })).points).toHaveLength(0);
+    expect((await rest(`/v1/treasury/${acct}/nav/history?limit=1`)).body.points).toHaveLength(1);
+  }, 60_000);
+
+  test("marketplace: listed templates by staking priority; create from a template records its id; mismatches are refused", async () => {
+    if (!ready) return;
+    const reg = kit.a.templates!;
+    const compiled = compileTemplate(kit.template as never, { controller: kit.deployer.address });
+    const tHash = templateHashOf(compiled.policy);
+    expect(tHash).toBe(await kit.read(kit.a.factory!, "TreasuryFactory.sol", "TreasuryFactory", "templateHash", [compiled.policy]));
+    await kit.send(reg, "TemplateRegistry.sol", "TemplateRegistry", "submit", [tHash, "ipfs://balanced-local"]); // id 1, author = deployer
+    await kit.send(reg, "TemplateRegistry.sol", "TemplateRegistry", "submit", [`0x${"22".repeat(32)}`, "ipfs://other"]); // id 2, never listed
+    expect((await ok("marketplace.list", {})).templates).toEqual([]);
+    await kit.send(reg, "TemplateRegistry.sol", "TemplateRegistry", "list", [1n]); // committee = deployer in the kit
+    const m = await ok("marketplace.list", {});
+    expect(m.templates).toHaveLength(1);
+    expect(m.templates[0]).toMatchObject({ id: 1, author: kit.deployer.address, policyHash: tHash, metadataURI: "ipfs://balanced-local", priority: 0 });
+    expect((await rest("/v1/treasury/marketplace")).body).toEqual(m);
+
+    // Priority ordering: a registry with a tier source ranks a higher-tier author first.
+    const tiers = await kit.deploy("Marketplace.t.sol", "MockTiers");
+    const reg2 = await kit.deploy("TemplateRegistry.sol", "TemplateRegistry", [kit.deployer.address, tiers]);
+    for (const [author, h] of [[kit.deployer, "33"], [BOARD2, "44"]] as const) {
+      await kit.send(reg2, "TemplateRegistry.sol", "TemplateRegistry", "submit", [`0x${h.repeat(32)}`, `ipfs://${h}`], author);
+    }
+    await kit.send(reg2, "TemplateRegistry.sol", "TemplateRegistry", "list", [1n]);
+    await kit.send(reg2, "TemplateRegistry.sol", "TemplateRegistry", "list", [2n]);
+    await kit.send(tiers, "Marketplace.t.sol", "MockTiers", "set", [BOARD2.address, 2]);
+    const app2 = createApp({ ...deps, dep: { ...deps.dep, templateRegistry: reg2 } });
+    const r2 = (await (await app2.request("/v1/treasury/marketplace")).json()) as any;
+    expect(r2.templates.map((t: any) => [t.id, t.priority])).toEqual([[2, 2], [1, 0]]);
+
+    // Create from template 1: the board's tx goes through deployFromTemplate and records the id.
+    const t = await ok("treasury.create", { template: kit.template, controller: BOARD2.address, board: BOARD2.address, templateId: 1 }, "POST");
+    expect(t.templateId).toBe(1);
+    expect(t.templateHash).toBe(tHash); // another controller, same template
+    const hash = await kit.wallet(BOARD2).sendTransaction({ to: t.tx.to, data: t.tx.data });
+    expect((await kit.pub.waitForTransactionReceipt({ hash })).status).toBe("success");
+    expect(await kit.read<bigint>(kit.a.factory!, "TreasuryFactory.sol", "TreasuryFactory", "templateOf", [t.predicted.account])).toBe(1n);
+
+    const changed = { ...kit.template, limits: { ...(kit.template.limits as object), perOrderUsd: 50_000 } };
+    const bad = await trpc("treasury.create", { template: changed, controller: BOARD2.address, board: BOARD2.address, templateId: 1 }, "POST");
+    expect(bad.status).toBe(400);
+    expect(bad.error.message).toContain("does not match template 1");
+    expect((await trpc("treasury.create", { template: kit.template, controller: BOARD2.address, board: BOARD2.address, templateId: 2 }, "POST")).status).toBe(400);
+  }, 120_000);
+
+  test("MCP tokens: only the board's signature issues one, a signed request works once, revocation sticks", async () => {
+    if (!ready) return;
+    const now = Math.floor(Date.now() / 1000);
+    const req = { label: "ops agent", issuedAt: now, expiresAt: now + 7 * 86_400 };
+    const msg = issueMessage({ chainId: 31337, account: acct, ...req });
+    const signature = await kit.wallet(kit.deployer).signMessage({ account: kit.deployer, message: msg }); // board = deployer
+    const issued = await ok("mcpTokens.issue", { account: acct, ...req, signature }, "POST");
+    expect(issued.token).toMatch(/^pmcp_/);
+    expect(issued.id).toMatch(/^[0-9a-f]{32}$/);
+    // Replay of the same signed request: refused.
+    expect((await trpc("mcpTokens.issue", { account: acct, ...req, signature }, "POST")).status).toBe(400);
+    // Someone else's signature: 401.
+    const other = await kit.wallet(BOARD2).signMessage({ account: BOARD2, message: msg });
+    expect((await trpc("mcpTokens.issue", { account: acct, ...req, signature: other }, "POST")).status).toBe(401);
+    // Stale request, too long a life, bad label: 400.
+    const old = { ...req, issuedAt: now - 3600 };
+    const oldSig = await kit.wallet(kit.deployer).signMessage({ account: kit.deployer, message: issueMessage({ chainId: 31337, account: acct, ...old }) });
+    expect((await trpc("mcpTokens.issue", { account: acct, ...old, signature: oldSig }, "POST")).status).toBe(400);
+    const long = { ...req, expiresAt: now + 91 * 86_400 };
+    const longSig = await kit.wallet(kit.deployer).signMessage({ account: kit.deployer, message: issueMessage({ chainId: 31337, account: acct, ...long }) });
+    expect((await trpc("mcpTokens.issue", { account: acct, ...long, signature: longSig }, "POST")).status).toBe(400);
+    // No secret configured: 503.
+    const noSecret = createApp({ ...deps, mcpSecret: undefined });
+    const r503 = await noSecret.request(`/v1/treasury/${acct}/mcp-tokens`, { method: "POST", body: JSON.stringify({ ...req, signature }), headers: { "content-type": "application/json" } });
+    expect(r503.status).toBe(503);
+
+    const list = await ok("mcpTokens.list", { account: acct });
+    expect(list.tokens.map((x: any) => x.id)).toEqual([issued.id]);
+    expect(JSON.stringify(list)).not.toContain(issued.token);
+    const rv = { id: issued.id, issuedAt: now };
+    const rvSig = await kit.wallet(kit.deployer).signMessage({ account: kit.deployer, message: revokeMessage({ chainId: 31337, account: acct, ...rv }) });
+    expect((await rest(`/v1/treasury/${acct}/mcp-tokens/${issued.id}/revoke`, { method: "POST", body: JSON.stringify({ issuedAt: now, signature: rvSig }), headers: { "content-type": "application/json" } })).status).toBe(200);
+    expect((await ok("mcpTokens.list", { account: acct })).tokens[0].revokedAt).not.toBeNull();
+  }, 60_000);
+
+  test("exception requests filed for the board show up in exceptions.list and never touch the chain", async () => {
+    if (!ready) return;
+    const block = await kit.pub.getBlockNumber();
+    const r = await fileExceptionRequest(deps, acct, "0123456789abcdef0123456789abcdef", { action: "buy", desk: "equity", amountUsd: "150000", reason: "Rebalance needs one order above the per-order cap." });
+    expect(r.status).toBe("pending");
+    expect(await kit.pub.getBlockNumber()).toBe(block);
+    const ex = await ok("exceptions.list", { account: acct });
+    expect(ex.requests[0]).toMatchObject({ id: r.id, action: "buy", desk: "equity", amountUsd: "150000", status: "pending" });
+    await expect(fileExceptionRequest(deps, acct, "x", { action: "Buy!", reason: "long enough reason" })).rejects.toThrow(/action/);
+    await expect(fileExceptionRequest(deps, acct, "x", { action: "buy", reason: "short" })).rejects.toThrow(/reason/);
+  }, 60_000);
+
+  test("new ABI subsets exist in the compiled contracts", () => {
+    if (!ready) return;
+    const names = (file: string, c: string) => new Set(artifact(file, c).abi.map((x: any) => x.name));
+    const f = names("TreasuryFactory.sol", "TreasuryFactory");
+    for (const x of factoryAbi as readonly any[]) expect(f.has(x.name)).toBe(true);
+  });
 });

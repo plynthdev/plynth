@@ -8,7 +8,7 @@
 //
 // The API holds no keys: treasury.create and policy.propose return {to, data, value, chainId} for the board
 // Safe to sign. Nothing here writes to the database.
-import { closes, deskActions, exceptions, juryVerdicts } from "@plynth/db";
+import { closes, deskActions, exceptions, juryVerdicts, navMarks, treasuryExceptionRequests } from "@plynth/db";
 import {
   compileTemplate,
   diff as policyDiffText,
@@ -22,7 +22,9 @@ import {
 } from "@plynth/policy-compiler";
 import { CfoPackRefused, loadStatement, toCsv, toHtml, toJson } from "@plynth/treasury/cfo-pack";
 import { CloseStore } from "@plynth/treasury/close/store";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { receiptProof, receiptRoot, ReceiptNotFound } from "@plynth/treasury/receipts/proof";
+import { ReceiptStore } from "@plynth/treasury/receipts/store";
+import { and, count, desc, eq, gte, lt, lte } from "drizzle-orm";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -30,7 +32,9 @@ import {
   encodeFunctionData,
   getAddress,
   hexToString,
+  keccak256,
   parseAbi,
+  zeroAddress,
   type Address,
   type Hex,
   type PublicClient,
@@ -55,6 +59,9 @@ const CLOSE_STRUCT =
 
 export const factoryAbi = parseAbi([
   "function deploy(bytes compiledPolicy, address boardSafe) returns (address account, address policy, address close)",
+  "function deployFromTemplate(bytes compiledPolicy, address boardSafe, uint256 templateId) returns (address account, address policy, address close)",
+  "function templateOf(address account) view returns (uint256)",
+  "event TreasuryFromTemplate(address indexed account, uint256 indexed templateId, bytes32 templateHash)",
   "function predict(address boardSafe) view returns (address account, address policy, address close, address approvals)",
   "function isTreasury(address account) view returns (bool)",
   "event TreasuryCreated(address indexed board, address indexed account, address indexed creator, address policy, address close, address approvals, bytes32 policyHash)",
@@ -95,6 +102,16 @@ export const tCloseAbi = parseAbi([
   "function nextPeriodEnd() view returns (uint64)",
   "function periodStartNav() view returns (uint256)",
   "function feeOwed() view returns (uint256)",
+]);
+
+export const templateRegistryAbi = parseAbi([
+  "struct Template { address author; bytes32 policyHash; string metadataURI; bool listed; uint64 submittedAt; }",
+  "function listedIds() view returns (uint256[])",
+  "function get(uint256 id) view returns (Template)",
+  "function isListed(uint256 id) view returns (bool)",
+  "function priorityOf(uint256 id) view returns (uint8)",
+  "function policyHashOf(uint256 id) view returns (bytes32)",
+  "function submit(bytes32 policyHash, string metadataURI) returns (uint256 id)",
 ]);
 
 const tokenAbi = parseAbi(["function symbol() view returns (string)", "function decimals() view returns (uint8)"]);
@@ -225,22 +242,60 @@ async function logsChunked<T>(pub: PublicClient, from: bigint, get: (fromBlock: 
 
 // ------------------------------------------------------------------ treasury.create
 
-export async function treasuryCreate(d: Deps, i: TemplateInput & { board: Address }) {
+/** Marketplace hash of a compiled policy: abi.encode(policy) with the controller zeroed (TreasuryFactory.templateHash). */
+export const templateHashOf = (p: Policy): Hex => keccak256(encodePolicy({ ...p, controller: zeroAddress }));
+
+export async function treasuryCreate(d: Deps, i: TemplateInput & { board: Address; templateId?: number }) {
   const factory = d.dep.treasuryFactory;
   if (!factory) throw new TreasuryNotFound("no TreasuryFactory on this deployment");
   if (lc(i.board) === ZERO) throw new TxInputError("board must not be the zero address");
   const c = compileInput(d.chainId, i);
-  const data = encodeFunctionData({ abi: factoryAbi, functionName: "deploy", args: [encodePolicy(c.policy), i.board] });
+  let data: Hex;
+  if (i.templateId !== undefined) {
+    // Marketplace template: the compiled policy must be the listed template with only the controller filled in.
+    const reg = d.dep.templateRegistry;
+    if (!reg) throw new TreasuryNotFound("no TemplateRegistry on this deployment");
+    const id = BigInt(i.templateId);
+    if (!(await d.pub.readContract({ address: reg, abi: templateRegistryAbi, functionName: "isListed", args: [id] }))) throw new TxInputError(`template ${i.templateId} is not listed`);
+    const want = await d.pub.readContract({ address: reg, abi: templateRegistryAbi, functionName: "policyHashOf", args: [id] });
+    const got = templateHashOf(c.policy);
+    if (lc(want) !== lc(got)) throw new TxInputError(`policy does not match template ${i.templateId} (template ${want}, got ${got})`);
+    data = encodeFunctionData({ abi: factoryAbi, functionName: "deployFromTemplate", args: [encodePolicy(c.policy), i.board, id] });
+  } else {
+    data = encodeFunctionData({ abi: factoryAbi, functionName: "deploy", args: [encodePolicy(c.policy), i.board] });
+  }
   const [account, policy, close, approvals] = await d.pub.readContract({ address: factory, abi: factoryAbi, functionName: "predict", args: [i.board] });
   const tx: UnsignedTx = { to: factory, data, value: "0", chainId: d.chainId };
   return {
     tx,
     policyHash: c.hash,
+    templateHash: templateHashOf(c.policy),
+    templateId: i.templateId ?? null,
     policy: policyJson(c.policy),
     summary: summary(c),
     instruments: c.instruments.map((x) => ({ label: x.label, asset: x.asset, kind: x.kindName, proof: x.proof })),
     predicted: { account, policy, close, approvals },
   };
+}
+
+// ------------------------------------------------------------------ marketplace (todo 30)
+
+/** Listed marketplace templates, highest staking-tier priority first (then oldest first). */
+export async function marketplaceList(d: Deps) {
+  const reg = d.dep.templateRegistry;
+  if (!reg) throw new TreasuryNotFound("no TemplateRegistry on this deployment");
+  const ids = await d.pub.readContract({ address: reg, abi: templateRegistryAbi, functionName: "listedIds" });
+  const rows = await Promise.all(
+    ids.map(async (id) => {
+      const [t, priority] = await Promise.all([
+        d.pub.readContract({ address: reg, abi: templateRegistryAbi, functionName: "get", args: [id] }),
+        d.pub.readContract({ address: reg, abi: templateRegistryAbi, functionName: "priorityOf", args: [id] }),
+      ]);
+      return { id: Number(id), author: t.author, policyHash: t.policyHash, metadataURI: t.metadataURI, priority: Number(priority), submittedAt: iso(t.submittedAt) };
+    }),
+  );
+  rows.sort((a, b) => b.priority - a.priority || a.id - b.id);
+  return { registry: reg, templates: rows };
 }
 
 // ------------------------------------------------------------------ policy.*
@@ -368,16 +423,27 @@ export async function navLatest(d: Deps, account: Address) {
   };
 }
 
-export async function navHistory(d: Deps, account: Address, limit: number) {
-  const w = await wiring(d, account);
-  const pc = needClose(w);
-  const n = Number(await d.pub.readContract({ address: pc, abi: tCloseAbi, functionName: "closeCount" }));
-  const idx = Array.from({ length: Math.min(limit, n) }, (_, k) => n - 1 - k);
-  const rows = await Promise.all(idx.map((i) => d.pub.readContract({ address: pc, abi: tCloseAbi, functionName: "closeAt", args: [BigInt(i)] })));
+/** NAV marks written every 60 s by the valuer service (todo 30), newest first. */
+export async function navHistory(d: Deps, account: Address, q: { limit: number; from?: Date; to?: Date }) {
+  await wiring(d, account);
+  const conds = [eq(navMarks.chainId, d.chainId), eq(navMarks.account, lc(account))];
+  if (q.from) conds.push(gte(navMarks.ts, q.from));
+  if (q.to) conds.push(lte(navMarks.ts, q.to));
+  const rows = await d.db.select().from(navMarks).where(and(...conds)).orderBy(desc(navMarks.ts), desc(navMarks.id)).limit(q.limit);
   return {
     account,
-    periodClose: pc,
-    points: rows.map((c, k) => ({ index: idx[k]!, periodEnd: iso(c.periodEnd), periodEndUnix: c.periodEnd.toString(), navUsd: usd(c.navUsd), navUsdRaw: c.navUsd.toString(), cashBps: c.cashBps, equityBps: c.equityBps })),
+    points: rows.map((m) => ({
+      at: m.ts.toISOString(),
+      blockNumber: m.blockNumber.toString(),
+      blockTime: m.blockTime.toISOString(),
+      navUsd: usd(BigInt(m.navUsd)),
+      navUsdRaw: m.navUsd,
+      cashBps: m.cashBps,
+      equityBps: m.equityBps,
+      basisBps: m.basisBps,
+      hold: m.hold,
+      weights: m.weights,
+    })),
   };
 }
 
@@ -456,9 +522,15 @@ export async function exceptionsList(d: Deps, account: Address, status?: string)
     .from(juryVerdicts)
     .where(and(eq(juryVerdicts.chainId, d.chainId), eq(juryVerdicts.account, lc(account))))
     .orderBy(desc(juryVerdicts.id));
+  const reqs = await d.db
+    .select()
+    .from(treasuryExceptionRequests)
+    .where(and(eq(treasuryExceptionRequests.chainId, d.chainId), eq(treasuryExceptionRequests.account, lc(account))))
+    .orderBy(desc(treasuryExceptionRequests.id));
   return {
     account,
     approvals: w.approvals,
+    requests: reqs.map((r) => ({ id: r.id, desk: r.desk, action: r.action, asset: r.asset, amountUsd: r.amountUsd, reason: r.reason, status: r.status, tokenId: r.tokenId, at: r.createdAt.toISOString() })),
     reconcile: ex.map((e) => ({
       id: e.id,
       kind: e.kind,
@@ -582,4 +654,48 @@ export async function cfoPack(d: Deps, account: Address, periodEnd: bigint, form
   return { format, contentType: "text/html; charset=utf-8", filename: `${base}.html`, body: toHtml(s) };
 }
 
-export { CfoPackRefused };
+export { CfoPackRefused, ReceiptNotFound };
+
+// ------------------------------------------------------------------ receipts (todo 30)
+
+const receiptDeps = (d: Deps) => ({ pub: d.pub, store: new ReceiptStore(d.db), chainId: d.chainId, receipts: d.dep.receipts });
+
+export async function receiptsRoot(d: Deps, account: Address, hour: bigint) {
+  await wiring(d, account);
+  return receiptRoot(receiptDeps(d), account, hour);
+}
+
+export async function receiptsProof(d: Deps, account: Address, actionId: number) {
+  await wiring(d, account);
+  return receiptProof(receiptDeps(d), account, actionId);
+}
+
+// ------------------------------------------------------------------ exception requests (MCP, todo 30)
+
+/** Pending requests one MCP token may have open at once (a runaway agent cannot flood the board). */
+export const MAX_PENDING_REQUESTS = 20;
+
+export type ExceptionRequestInput = { action: string; desk?: string; asset?: Address; amountUsd?: string; reason: string };
+
+/**
+ * Files an exception request for the board. It changes nothing on-chain and grants nothing: the board still
+ * decides (BoardApprovals); this only puts the ask in front of it (exceptions.list -> requests).
+ */
+export async function fileExceptionRequest(d: Deps, account: Address, tokenId: string, i: ExceptionRequestInput) {
+  await wiring(d, account);
+  if (!/^[a-z_]{1,32}$/.test(i.action)) throw new TxInputError("action: 1-32 lower-case letters or _");
+  if (i.desk !== undefined && !/^[a-z0-9_-]{1,32}$/.test(i.desk)) throw new TxInputError("desk: 1-32 lower-case letters, digits, _ or -");
+  if (i.amountUsd !== undefined && !/^\d{1,15}(\.\d{1,2})?$/.test(i.amountUsd)) throw new TxInputError("amountUsd: decimal USD, at most 2 decimals");
+  const reason = i.reason.trim();
+  if (reason.length < 10 || reason.length > 2000) throw new TxInputError("reason: 10-2000 characters");
+  const [{ n }] = (await d.db
+    .select({ n: count() })
+    .from(treasuryExceptionRequests)
+    .where(and(eq(treasuryExceptionRequests.tokenId, tokenId), eq(treasuryExceptionRequests.status, "pending")))) as [{ n: number }];
+  if (n >= MAX_PENDING_REQUESTS) throw new TxInputError(`this token already has ${n} pending requests (max ${MAX_PENDING_REQUESTS})`);
+  const [row] = await d.db
+    .insert(treasuryExceptionRequests)
+    .values({ chainId: d.chainId, account: lc(account), tokenId, desk: i.desk ?? null, action: i.action, asset: i.asset ? lc(i.asset) : null, amountUsd: i.amountUsd ?? null, reason, status: "pending" })
+    .returning();
+  return { id: row!.id, status: "pending" as const, needs: "board approval", at: row!.createdAt.toISOString() };
+}

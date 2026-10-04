@@ -114,6 +114,8 @@ export async function buildClose(ctx: Pick<CloseContext, "chain" | "pub" | "peri
   const deskActions = await ctx.store.deskActionsSince(ctx.chain.id, account, afterId);
   const lastDeskActionId = deskActions.length ? deskActions[deskActions.length - 1]!.id : afterId;
 
+  const receipts = await ctx.store.receiptRoots(ctx.chain.id, account, BigInt(periodStart), periodEnd);
+
   const bundle: Bundle = {
     schema: BUNDLE_SCHEMA,
     chainId: ctx.chain.id,
@@ -131,6 +133,7 @@ export async function buildClose(ctx: Pick<CloseContext, "chain" | "pub" | "peri
     deskActions,
     guardDenials: deskActions.filter((a) => a.status === "rejected" || a.status === "reverted"),
     deskActionRange: { afterId, toId: lastDeskActionId },
+    receipts,
     fee: { bps: 25, recipient: feeRecipient.toLowerCase() },
     preview: { block: blockNumber.toString(), timestamp: Number(block.timestamp) },
   };

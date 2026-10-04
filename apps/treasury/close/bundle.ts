@@ -34,6 +34,9 @@ export type BundleDeskAction = {
   at: string;
 };
 
+/** An hourly receipt root (todo 30) posted for an hour inside the period. */
+export type BundleReceipt = { hour: string; root: string; leafCount: number; txHash: string | null };
+
 export type Bundle = {
   schema: typeof BUNDLE_SCHEMA;
   chainId: number;
@@ -51,6 +54,8 @@ export type Bundle = {
   deskActions: BundleDeskAction[];
   guardDenials: BundleDeskAction[];
   deskActionRange: { afterId: number; toId: number };
+  /** Hourly receipt roots posted for hours in [periodStart, periodEnd) when the close was built (todo 30). */
+  receipts?: BundleReceipt[];
   fee: { bps: number; recipient: string };
   preview: { block: string; timestamp: number };
 };

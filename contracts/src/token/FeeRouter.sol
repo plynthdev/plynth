@@ -12,6 +12,11 @@ interface IStakingRewards {
     function notifyReward(address token, uint256 amount) external;
 }
 
+/// The TreasuryFactory view the router uses to attribute a close fee to a template author.
+interface ITemplateFeeSource {
+    function closeAuthor(address close) external view returns (address account, address author);
+}
+
 interface IInsuranceFees {
     function totalShares() external view returns (uint256);
     function depositFees(uint256 amount) external;
@@ -19,7 +24,11 @@ interface IInsuranceFees {
 
 /// Receives platform fees in USDG (PeriodClose pays its 25 bps/yr fee here) and splits them on `push()`:
 ///
-/// 1. the template-author share (`authorBps` of new fees, at most 20%) goes to `authorSink` first;
+/// 1. the template-author share comes off first: when a PeriodClose of a treasury built from a marketplace
+///    template pays its fee, it calls `onCloseFee` and `authorBps` (20% in production, at most 20%) of that fee
+///    is set aside for the template's author (`authorOwed`, claimed with `claimAuthor`). The router checks with
+///    the TreasuryFactory (`closeAuthor`) that the caller is a PeriodClose it made, so nobody can claim fees
+///    for a treasury they do not close. Set-aside USDG is never part of a push;
 /// 2. half of the rest buys PLTH on the PLTH/USDG Uniswap v4 pool and the PLTH goes to stakers;
 /// 3. the other half goes to the ExceptionInsurancePool, unless the pool has no depositors (no LP shares):
 ///    then it goes to stakers as USDG, so the first LP cannot walk in and take fees nobody was insuring.
@@ -33,7 +42,7 @@ interface IInsuranceFees {
 /// beforehand; the per-push cap is what bounds the loss to a sandwich, and the hourly rate limit bounds how
 /// often it can be tried. Whatever is not spent (over the cap, or a buy that would breach the slippage
 /// bound, which is skipped instead of reverting the push) is carried in `buyCarry` for the next push and is
-/// never re-split. The router keeps no other balance between pushes.
+/// never re-split. The router keeps no other balance between pushes (besides the authors' set-aside USDG).
 contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     using SafeERC20 for IERC20;
     using V4Constants for int256;
@@ -52,8 +61,11 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     bool public immutable usdgIs0;
     PoolKey private _key;
 
-    address public authorSink;
+    ITemplateFeeSource public templateSource; // the TreasuryFactory; zero = no author share
     uint16 public authorBps;
+    uint256 public authorReserved; // USDG set aside for authors, not yet claimed
+    uint256 public authorSincePush; // author share set aside since the last push (reported in Pushed)
+    mapping(address author => uint256) public authorOwed;
     uint16 public maxSlippageBps;
     uint256 public perPushCap; // USDG raw units spent on PLTH per push at most
     uint256 public buyCarry; // USDG earmarked for buys, not yet spent
@@ -69,7 +81,9 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         uint256 buyCarry
     );
     event BuySkipped(uint256 usdgIn, uint256 minOut);
-    event AuthorShareSet(address sink, uint16 bps);
+    event TemplateFeesSet(address source, uint16 bps);
+    event AuthorAccrued(address indexed account, address indexed author, uint256 amount);
+    event AuthorClaimed(address indexed author, uint256 amount);
     event BuyParamsSet(uint16 maxSlippageBps, uint256 perPushCap);
 
     error ZeroAddress();
@@ -80,6 +94,8 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     error NotSelf();
     error PartialFill(uint256 wanted, uint256 used);
     error Slippage(uint256 minOut, uint256 got);
+    error NotTreasuryClose(address caller);
+    error NothingOwed();
 
     constructor(
         IERC20 usdg_,
@@ -111,16 +127,45 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
 
     // ---------------------------------------------------------------- owner
 
-    /// Template-author carve-out (todo 30 wires the real sink). `sink` zero turns it off.
-    function setAuthorShare(address sink, uint16 bps) external onlyOwner {
-        if (bps > MAX_AUTHOR_BPS || (sink == address(0) && bps != 0)) revert BadParams();
-        authorSink = sink;
+    /// Template-author carve-out: `source` is the TreasuryFactory, `bps` the author share of a templated
+    /// treasury's fee (at most 20%). `source` zero turns it off.
+    function setTemplateFees(ITemplateFeeSource source, uint16 bps) external onlyOwner {
+        if (bps > MAX_AUTHOR_BPS || (address(source) == address(0) && bps != 0)) revert BadParams();
+        templateSource = source;
         authorBps = bps;
-        emit AuthorShareSet(sink, bps);
+        emit TemplateFeesSet(address(source), bps);
     }
 
     function setBuyParams(uint16 maxSlippageBps_, uint256 perPushCap_) external onlyOwner {
         _setBuyParams(maxSlippageBps_, perPushCap_);
+    }
+
+    // ---------------------------------------------------------------- template authors
+
+    /// Called by a PeriodClose right after it paid `amount` USDG here for `account`. Sets the author share aside
+    /// if the treasury was built from a template; does nothing otherwise.
+    function onCloseFee(address account, uint256 amount) external {
+        if (address(templateSource) == address(0) || authorBps == 0) return;
+        (address acct, address author) = templateSource.closeAuthor(msg.sender);
+        if (acct == address(0) || acct != account) revert NotTreasuryClose(msg.sender);
+        if (author == address(0)) return;
+        uint256 cut = amount * authorBps / BPS;
+        uint256 free = usdg.balanceOf(address(this)) - buyCarry - authorReserved;
+        if (cut > free) cut = free; // never set aside USDG that is not here
+        if (cut == 0) return;
+        authorOwed[author] += cut;
+        authorReserved += cut;
+        authorSincePush += cut;
+        emit AuthorAccrued(account, author, cut);
+    }
+
+    function claimAuthor() external nonReentrant returns (uint256 amount) {
+        amount = authorOwed[msg.sender];
+        if (amount == 0) revert NothingOwed();
+        authorOwed[msg.sender] = 0;
+        authorReserved -= amount;
+        usdg.safeTransfer(msg.sender, amount);
+        emit AuthorClaimed(msg.sender, amount);
     }
 
     // ---------------------------------------------------------------- push
@@ -130,10 +175,10 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         if (lastPush != 0 && block.timestamp < next) revert TooSoon(next);
         lastPush = uint64(block.timestamp);
 
-        uint256 fees = usdg.balanceOf(address(this)) - buyCarry;
-        uint256 toAuthor = authorBps == 0 ? 0 : fees * authorBps / BPS;
-        if (toAuthor != 0) usdg.safeTransfer(authorSink, toAuthor);
-        uint256 rest = fees - toAuthor;
+        uint256 rest = usdg.balanceOf(address(this)) - buyCarry - authorReserved;
+        uint256 toAuthor = authorSincePush;
+        authorSincePush = 0;
+        uint256 fees = rest + toAuthor;
         uint256 toBuy = rest / 2;
         uint256 insHalf = rest - toBuy;
 

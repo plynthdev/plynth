@@ -2,7 +2,8 @@
 // activity). Only the treasury service writes these tables.
 import { and, asc, desc, eq, gt } from "drizzle-orm";
 import { closes, deskActions, type Db } from "@plynth/db";
-import type { BundleDeskAction } from "./bundle";
+import type { BundleDeskAction, BundleReceipt } from "./bundle";
+import { ReceiptStore } from "../receipts/store";
 
 export type CloseRow = typeof closes.$inferSelect;
 
@@ -68,6 +69,12 @@ export class CloseStore {
       txHash: r.txHash,
       at: r.createdAt.toISOString(),
     }));
+  }
+
+  /** Hourly receipt roots already posted for hours starting in [fromTs, toTs). */
+  async receiptRoots(chainId: number, account: string, fromTs: bigint, toTs: bigint): Promise<BundleReceipt[]> {
+    const rows = await new ReceiptStore(this.db).postedBetween(chainId, account, fromTs, toTs);
+    return rows.map((r) => ({ hour: r.hour.toString(), root: r.root.toLowerCase(), leafCount: r.leafCount, txHash: r.txHash }));
   }
 
   async byBundleHash(chainId: number, periodClose: string, bundleHash: string): Promise<CloseRow | undefined> {

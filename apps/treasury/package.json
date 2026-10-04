@@ -9,7 +9,9 @@
     "cfo-pack": "bun cfo-pack/main.ts",
     "risk": "bun risk/main.ts",
     "reconcile": "bun reconciler/main.ts",
-    "webhooks": "bun webhooks/main.ts"
+    "webhooks": "bun webhooks/main.ts",
+    "valuer": "bun valuer/main.ts",
+    "receipts": "bun receipts/main.ts"
   },
   "dependencies": {
     "@plynth/chain": "workspace:*",

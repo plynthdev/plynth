@@ -85,6 +85,13 @@
       "when": 1791124190862,
       "tag": "0011_treasury_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791125866392,
+      "tag": "0012_treasury_receipts_marks_mcp",
+      "breakpoints": true
     }
   ]
 }
