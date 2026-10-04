@@ -6,8 +6,29 @@ leave it.
 | Import | What it does |
 | --- | --- |
 | `@plynth/sdk/stealth` | ERC-5564 / ERC-6538 stealth addresses: meta-addresses, scanning announcements, relayed claims. |
-| `@plynth/sdk/vault` | Hidden Vault: keys from one wallet signature, encrypted notes, local tree sync, Noir proofs, ShieldedPool transactions. |
+| `@plynth/sdk/vault` | Hidden Vault: keys from one wallet signature, encrypted notes, local tree sync, Noir proofs, ShieldedPool transactions, private sell/buy/park (ShieldedTrade). |
 | `@plynth/sdk/statements` | Viewing-key statements, scoped disclosure and threshold proofs for Hidden Vault notes. |
+
+## Private sell, buy and park
+
+```ts
+state = await syncPool(pub, pool, state, { trade });              // also reads PartialNoteFilled
+const note = myNotes(state, keys).find((n) => n.asset === tsla && !n.spent)!;
+const s = await proveSwap({ keys, tree: state.tree, note, amountIn, assetOut: usdg, minOut, deadline, relayerFee });
+await send(swapTx(trade, s, 100));                                 // any account (a relayer) can submit
+```
+
+- One `swap` proof covers sell (Stock Token -> USDG), buy (USDG -> Stock Token), park (USDG -> park shares) and
+  unpark (park shares -> USDG); the pair decides which. `amountIn`, both assets, `minOut`, the relayer fee and the
+  deadline are public; the owner and the remaining balance are not.
+- The output is a v2 note: its amount is only known on-chain, so the proof fixes `H(asset, ownerPk, blinding)` and
+  ShieldedTrade appends the amount (`PartialNoteFilled`). Encrypted notes for it use version byte 2. `myNotes`
+  returns it with `version: 2` once synced with `trade`.
+- A v2 note can be swapped again directly. Transfer, withdraw, statements (`decryptNote` is v1 only) and threshold
+  proofs need it settled first: `proveSettle` + `settleTx` (one extra transaction, nothing public but a
+  nullifier and a commitment).
+- `parkValue(pub, trade, shareToken, shares)` shows a park position in USDG (ERC-4626 `convertToAssets`, Morpho
+  share price including interest accrued since the market's last update).
 
 ## Statements
 

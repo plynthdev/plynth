@@ -14,7 +14,7 @@ nargo --version | grep -q "nargo version = $(want nargo)$" || { echo "nargo $(wa
 [ "$(bb --version)" = "$(want bb)" ] || { echo "bb $(want bb) required (bbup -v $(want bb))" >&2; exit 1; }
 
 (cd "$here/poseidon2_fixture" && nargo compile --silence-warnings >/dev/null)
-for c in transfer withdraw threshold_holdings threshold_savings; do
+for c in transfer withdraw threshold_holdings threshold_savings swap settle; do
   Name="$(perl -pe 's/(?:^|_)(.)/\u$1/g' <<<"$c")"
   (cd "$here/$c" && nargo compile --silence-warnings >/dev/null)
   bb write_vk -b "$here/$c/target/$c.json" -o "$here/$c/target" -t evm >/dev/null 2>&1

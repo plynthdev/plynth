@@ -46,6 +46,8 @@ export function hash(inputs: readonly bigint[]): bigint {
 export const ownerPk = (spendingSecret: bigint) => hash([spendingSecret]);
 export const commitment = (assetId: bigint, rawAmount: bigint, ownerPk: bigint, blinding: bigint) =>
   hash([assetId, rawAmount, ownerPk, blinding]);
+export const partialCommitment = (assetId: bigint, ownerPk: bigint, blinding: bigint) => hash([assetId, ownerPk, blinding]);
+export const commitmentV2 = (partial: bigint, rawAmount: bigint) => hash([partial, rawAmount]);
 export const nullifier = (commitment: bigint, spendingSecret: bigint, leafIndex: bigint) =>
   hash([commitment, spendingSecret, leafIndex]);
 export const hashNode = (l: bigint, r: bigint) => hash([l, r]);

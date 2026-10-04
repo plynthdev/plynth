@@ -31,6 +31,11 @@ interface IHonkVerifier {
 /// Caps start at 0 (no deposits); lowering applies at once, raising only after CAP_DELAY (48h). This vault
 /// needs a human audit before any cap is raised on mainnet; deploy scripts leave mainnet caps at 0.
 ///
+/// Private sell/buy/park (todo 25) live in one ShieldedTrade module that the owner can set exactly once, and
+/// only before the first deposit (so before any user has funds here). The module may spend nullifiers against
+/// known roots, move a pool asset out (to swap it) and back in, and insert leaves; it carries its own swap and
+/// settle verifiers. Treat its code as part of this contract for audit purposes.
+///
 /// Encrypted notes (ECIES to the owner's viewing key, see packages/sdk vault) are opaque bytes here, at
 /// most MAX_NOTE_BYTES each, emitted in `NoteEncrypted` keyed by commitment.
 contract ShieldedPool is Ownable2Step, ReentrancyGuard {
@@ -88,6 +93,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     IHonkVerifier public immutable withdrawVerifier;
 
     address public crowd;
+    address public trade; // ShieldedTrade module (set once, before any deposit)
     bool public depositsPaused;
 
     // Commitment tree (incremental Merkle tree, Poseidon2 nodes, HiddenConstants zero subtrees).
@@ -108,6 +114,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     mapping(address asset => uint256) public shielded;
 
     event CrowdSet(address indexed crowd);
+    event TradeSet(address indexed trade);
     event DepositsPaused(bool paused);
     event CapProposed(address indexed asset, uint256 cap, uint64 eta);
     event CapApplied(address indexed asset, uint256 cap);
@@ -127,6 +134,8 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     error ZeroAddress();
     error AlreadySet();
     error NotCrowd();
+    error NotTrade();
+    error TooLate();
     error Paused();
     error BadAmount();
     error NoteTooLarge();
@@ -145,6 +154,11 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     modifier onlyCrowd() {
         if (msg.sender != crowd || msg.sender == address(0)) revert NotCrowd();
+        _;
+    }
+
+    modifier onlyTrade() {
+        if (msg.sender != trade || msg.sender == address(0)) revert NotTrade();
         _;
     }
 
@@ -170,6 +184,15 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         if (crowd_ == address(0)) revert ZeroAddress();
         crowd = crowd_;
         emit CrowdSet(crowd_);
+    }
+
+    /// Set once, and only while the pool has never taken a deposit: the ShieldedTrade module.
+    function setTrade(address trade_) external onlyOwner {
+        if (trade != address(0)) revert AlreadySet();
+        if (trade_ == address(0)) revert ZeroAddress();
+        if (nextLeaf != 0 || _pending.length != 0) revert TooLate();
+        trade = trade_;
+        emit TradeSet(trade_);
     }
 
     /// Pauses or resumes new deposits only. Nothing else in this contract can be paused.
@@ -330,6 +353,47 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         uint256 toRecipient = pub.amount - pub.relayerFee;
         if (toRecipient != 0) token.safeTransfer(pub.recipient, toRecipient);
         if (pub.relayerFee != 0) token.safeTransfer(msg.sender, pub.relayerFee);
+    }
+
+    // ---------------------------------------------------------------- ShieldedTrade hooks
+
+    /// Spends `nullifier` against a known `root`. The module verifies the proof in the same transaction.
+    function tradeSpend(bytes32 root, bytes32 nullifier) external nonReentrant onlyTrade {
+        _knownRoot(root);
+        _spend(nullifier);
+    }
+
+    /// Sends `amount` of `asset` (taken out of a spent note) to the module for a swap, park or unpark.
+    function tradeTake(address asset, uint256 amount) external nonReentrant onlyTrade {
+        shielded[asset] -= amount;
+        IERC20(asset).safeTransfer(msg.sender, amount);
+    }
+
+    /// Pulls `amount` of `asset` (a swap output) from the module. `capped` applies the deposit cap (every
+    /// swap output except an unpark, which is an exit back to USDG and never gated).
+    function tradeCredit(address asset, uint256 amount, bool capped) external nonReentrant onlyTrade {
+        uint256 held = shielded[asset];
+        if (capped && held + amount > cap[asset]) revert CapExceeded(held, amount, cap[asset]);
+        shielded[asset] = held + amount;
+        IERC20 token = IERC20(asset);
+        uint256 before = token.balanceOf(address(this));
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = token.balanceOf(address(this)) - before;
+        if (received != amount) revert TransferAmountMismatch(received, amount);
+    }
+
+    /// Inserts `leaves` (with their encrypted notes) and publishes one new root.
+    function tradeInsert(bytes32[] calldata leaves, bytes[] calldata notes) external nonReentrant onlyTrade {
+        uint256 n = leaves.length;
+        if (n == 0 || notes.length != n) revert BadAmount();
+        bytes32 root;
+        for (uint256 i; i < n; ++i) {
+            if (notes[i].length > MAX_NOTE_BYTES) revert NoteTooLarge();
+            _field(leaves[i]);
+            (, root) = _insert(leaves[i]);
+            emit NoteEncrypted(leaves[i], notes[i]);
+        }
+        _publishRoot(root);
     }
 
     // ---------------------------------------------------------------- views

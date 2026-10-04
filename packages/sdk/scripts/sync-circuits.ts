@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..", "..", "..");
-export const CIRCUITS = ["transfer", "withdraw", "threshold_holdings", "threshold_savings"] as const;
+export const CIRCUITS = ["transfer", "withdraw", "threshold_holdings", "threshold_savings", "swap", "settle"] as const;
 
 export function compactArtifact(circuit: string): string {
   const full = JSON.parse(readFileSync(join(root, "circuits", circuit, "target", `${circuit}.json`), "utf8"));

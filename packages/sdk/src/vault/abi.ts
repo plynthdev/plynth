@@ -52,3 +52,38 @@ export const nullifierSpentEvent = parseAbiItem("event NullifierSpent(bytes32 in
 export const depositQueuedEvent = parseAbiItem(
   "event DepositQueued(uint256 indexed pendingId, address indexed asset, address indexed origin, uint256 raw, bytes32 commitment)",
 );
+
+// ShieldedTrade (contracts/src/consumer/ShieldedTrade.sol): private sell / buy / park / unpark and settle.
+export const shieldedTradeAbi = parseAbi([
+  "struct PublicSwap { bytes32 root; bytes32 nullifier; bytes32 changeCommitment; address assetIn; uint256 amountIn; uint256 relayerFee; address assetOut; uint256 minOut; bytes32 outPartial; uint64 deadline; }",
+  "function swap(bytes proof, PublicSwap pub, uint16 maxSlippageBps, bytes encryptedChange, bytes encryptedOut) returns (uint256 out, bytes32 outCommitment)",
+  "function settle(bytes proof, bytes32 root, bytes32 nullifier, bytes32 outCommitment, bytes encryptedOut)",
+  "function kindOf(address assetIn, address assetOut) view returns (uint8)",
+  "function parkValue(address shareToken, uint256 shares) view returns (uint256)",
+  "function adapterOf(address shareToken) view returns (address)",
+  "function parkEnabled(address adapter) view returns (bool)",
+  "function commitmentV2(bytes32 outPartial, uint256 amount) pure returns (bytes32)",
+  "function proposeAdapter(address adapter)",
+  "function applyAdapter(address shareToken)",
+  "function disablePark(address adapter)",
+  "function usdg() view returns (address)",
+  "function pool() view returns (address)",
+  "event Swapped(uint8 indexed kind, address indexed assetIn, address indexed assetOut, uint256 amountIn, uint256 relayerFee, uint256 amountOut, bytes32 outCommitment)",
+  "event PartialNoteFilled(bytes32 indexed outPartial, bytes32 commitment, uint256 amount)",
+  "event Settled(bytes32 indexed nullifier, bytes32 commitment)",
+  "error BadPair(address assetIn, address assetOut)",
+  "error BadAmount()",
+  "error Expired(uint64 deadline)",
+  "error Paused()",
+  "error ParkDisabled(address adapter)",
+  "error Slippage(uint256 minOut, uint256 got)",
+  "error InputNotConsumed(uint256 left)",
+  "error NotAFieldElement()",
+  "error InvalidProof()",
+  "error UnknownRoot(bytes32 root)",
+  "error NullifierAlreadySpent(bytes32 nullifier)",
+  "error CapExceeded(uint256 shielded, uint256 raw, uint256 cap)",
+  "error MarketOnHold(address token)",
+]);
+
+export const partialNoteFilledEvent = parseAbiItem("event PartialNoteFilled(bytes32 indexed outPartial, bytes32 commitment, uint256 amount)");

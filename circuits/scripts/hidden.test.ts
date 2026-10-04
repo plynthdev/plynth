@@ -9,7 +9,7 @@ import constants from "../constants.json" with { type: "json" };
 import { CONSTANTS_SOL, FIXTURE_PATH, computeFixtures, constantsSol } from "./fixtures";
 import { keccak256, toHex } from "viem";
 import { P, hex, buildTree, commitment, hash, initNote, nullifier, ownerPk, permutation, zeroHashes, TREE_DEPTH } from "./note";
-import { prove, transferInputs, withdrawInputs } from "./prove";
+import { prove, settleInputs, swapInputs, transferInputs, withdrawInputs } from "./prove";
 
 const circuits = join(import.meta.dir, "..");
 const home = process.env.HOME ?? "";
@@ -82,7 +82,7 @@ describe.skipIf(!toolchain)("generated artifacts are fresh", () => {
     const out = mkdtempSync(join(tmpdir(), "plynth-verifiers-"));
     const r = spawnSync("bash", [join(circuits, "scripts/build.sh")], { env: { ...process.env, PATH, OUT_DIR: out }, encoding: "utf8" });
     expect(r.status).toBe(0);
-    for (const name of ["TransferVerifier.sol", "WithdrawVerifier.sol", "ThresholdHoldingsVerifier.sol", "ThresholdSavingsVerifier.sol"]) {
+    for (const name of ["TransferVerifier.sol", "WithdrawVerifier.sol", "ThresholdHoldingsVerifier.sol", "ThresholdSavingsVerifier.sol", "SwapVerifier.sol", "SettleVerifier.sol"]) {
       const committed = readFileSync(join(circuits, "../contracts/src/consumer/verifiers", name), "utf8");
       expect(readFileSync(join(out, name), "utf8")).toBe(committed);
     }
@@ -95,7 +95,7 @@ describe.skipIf(!toolchain)("generated artifacts are fresh", () => {
 
 describe.skipIf(!toolchain)("client-side proving", () => {
   const LIMIT_MS = 10_000;
-  for (const [name, inputs] of [["transfer", transferInputs], ["withdraw", withdrawInputs]] as const) {
+  for (const [name, inputs] of [["transfer", transferInputs], ["withdraw", withdrawInputs], ["swap", swapInputs], ["settle", settleInputs]] as const) {
     test(`${name}: proof verifies and proving stays under 10 s`, async () => {
       const r = await prove(name, inputs());
       console.log(`${name}: witness ${r.witnessMs} ms, prove ${r.proveMs} ms`);
@@ -116,6 +116,21 @@ describe.skipIf(!toolchain)("client-side proving", () => {
     const i = withdrawInputs();
     i.root = "0x" + (BigInt(i.root) + 1n).toString(16);
     await expect(prove("withdraw", i)).rejects.toThrow(/input note not in tree/);
+  }, 60_000);
+  test("swap: the output asset is bound by out_partial", async () => {
+    const i = swapInputs();
+    i.asset_out = "0x" + (BigInt(i.asset_out) + 1n).toString(16);
+    await expect(prove("swap", i)).rejects.toThrow(/bad output note/);
+  }, 60_000);
+  test("swap: cannot sell more than the note holds", async () => {
+    const i = swapInputs();
+    i.amount_in = "0x" + (1_000_001n).toString(16);
+    await expect(prove("swap", i)).rejects.toThrow(/value not conserved/);
+  }, 60_000);
+  test("settle: the amount cannot grow", async () => {
+    const i = settleInputs();
+    i.amount = "0x" + (1_234_568n).toString(16);
+    await expect(prove("settle", i)).rejects.toThrow(/input note not in tree/);
   }, 60_000);
   test("nullifier/commitment helpers match the transfer fixture", () => {
     const i = transferInputs();

@@ -46,7 +46,10 @@ export async function proveCircuit(program: { bytecode: string; abi: unknown }, 
 
 const f = (x: bigint) => toBytes32(x);
 
-function spendable(n: OwnedNote, tree: NoteTree): asserts n is OwnedNote & { leafIndex: number } {
+/** Throws unless `n` is inserted, unspent and in the local tree. v2 notes (swap outputs) need `allowV2`
+ * (the swap circuit); transfer/withdraw take v1 only, so settle a v2 note first (proveSettle). */
+export function spendable(n: OwnedNote, tree: NoteTree, allowV2 = false): asserts n is OwnedNote & { leafIndex: number } {
+  if (n.version === 2 && !allowV2) throw new Error("v2 note (swap output): settle it first (proveSettle)");
   if (n.leafIndex === null) throw new Error("note is still pending (not in the tree yet)");
   if (n.spent) throw new Error("note already spent");
   if (tree.leaf(n.leafIndex) !== n.commitment) throw new Error("local tree does not hold this note: sync first");

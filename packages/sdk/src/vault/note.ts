@@ -45,6 +45,9 @@ export function hash(inputs: readonly bigint[]): bigint {
 
 export const ownerPkOf = (spendingSecret: bigint) => hash([spendingSecret]);
 export const commitmentOf = (assetId: bigint, raw: bigint, ownerPk: bigint, blinding: bigint) => hash([assetId, raw, ownerPk, blinding]);
+/** v2 ("partial") notes, made by ShieldedTrade swaps: the amount is appended on-chain (circuits/hidden lib.nr). */
+export const partialCommitmentOf = (assetId: bigint, ownerPk: bigint, blinding: bigint) => hash([assetId, ownerPk, blinding]);
+export const commitmentV2Of = (partial: bigint, raw: bigint) => hash([partial, raw]);
 export const nullifierOf = (commitment: bigint, spendingSecret: bigint, leafIndex: bigint) => hash([commitment, spendingSecret, leafIndex]);
 export const hashNode = (l: bigint, r: bigint) => hash([l, r]);
 
@@ -65,6 +68,9 @@ export function randomField(): bigint {
 
 export const toBytes32 = (x: bigint): `0x${string}` => `0x${x.toString(16).padStart(64, "0")}`;
 
-/** A note: raw token base units of `asset`, owned by `ownerPk`. */
-export type Note = { asset: `0x${string}`; raw: bigint; ownerPk: bigint; blinding: bigint };
-export const noteCommitment = (n: Note) => commitmentOf(BigInt(n.asset), n.raw, n.ownerPk, n.blinding);
+/** A note: raw token base units of `asset`, owned by `ownerPk`. `version` 2 = a swap output (default 1). */
+export type Note = { asset: `0x${string}`; raw: bigint; ownerPk: bigint; blinding: bigint; version?: 1 | 2 };
+export const noteCommitment = (n: Note) =>
+  n.version === 2
+    ? commitmentV2Of(partialCommitmentOf(BigInt(n.asset), n.ownerPk, n.blinding), n.raw)
+    : commitmentOf(BigInt(n.asset), n.raw, n.ownerPk, n.blinding);

@@ -13,6 +13,13 @@ import {IShieldedDeposit} from "../src/consumer/CrowdBuy.sol";
 import {TransferVerifier} from "../src/consumer/verifiers/TransferVerifier.sol";
 import {WithdrawVerifier} from "../src/consumer/verifiers/WithdrawVerifier.sol";
 import {ThresholdVerifier} from "../src/consumer/ThresholdVerifier.sol";
+import {ShieldedTrade} from "../src/consumer/ShieldedTrade.sol";
+import {SwapVerifier} from "../src/consumer/verifiers/SwapVerifier.sol";
+import {SettleVerifier} from "../src/consumer/verifiers/SettleVerifier.sol";
+import {ERC4626Park} from "../src/consumer/park/ERC4626Park.sol";
+import {IParkAdapter} from "../src/consumer/park/IParkAdapter.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {MockUsdgVault} from "../test/mocks/MockUsdgVault.sol";
 import {ThresholdHoldingsVerifier} from "../src/consumer/verifiers/ThresholdHoldingsVerifier.sol";
 import {ThresholdSavingsVerifier} from "../src/consumer/verifiers/ThresholdSavingsVerifier.sol";
 import {IERC5564Announcer} from "../src/interfaces/IERC5564Announcer.sol";
@@ -34,6 +41,9 @@ import {Multicall3Lite} from "../test/mocks/Multicall3Lite.sol";
 /// Registry are also etched at their canonical addresses, StealthClaims is deployed and wired for Quiet delivery.
 /// The Hidden Vault (ShieldedPool + real verifiers) is always deployed and wired to CrowdBuy; caps for mUSDG and
 /// both stocks are proposed here and apply 48h later (`applyCap`), exactly as on any other chain.
+///
+/// ShieldedTrade (private sell/buy/park, real swap + settle verifiers) is set on the pool, with one ERC4626Park
+/// over a mock USDG ERC-4626 vault proposed (applies after 48h via applyAdapter) and a cap proposed for its shares.
 ///
 /// Env: KEEPER_ADDRESS (required), MIN_CROWD (default 3), MAX_STALENESS (seconds, default 3650 days: the
 /// tests warp time by weeks and the feeds are not refreshed).
@@ -59,6 +69,9 @@ contract LocalConsumer is Script {
         address crowd;
         address stealthClaims;
         address shieldedPool;
+        address shieldedTrade;
+        address parkVault;
+        address parkAdapter;
         address thresholdVerifier;
         address multicall3;
         address tsla;
@@ -135,6 +148,7 @@ contract LocalConsumer is Script {
         ShieldedPool pool = ShieldedPool(_deployHidden(deployer, o.crowd, assets, caps));
         CrowdBuy(o.crowd).setShieldedPool(IShieldedDeposit(address(pool)));
         o.shieldedPool = address(pool);
+        _trade(o, pool, deployer);
         // Same as ThresholdProofs.s.sol.
         o.thresholdVerifier = address(
             new ThresholdVerifier(
@@ -143,6 +157,23 @@ contract LocalConsumer is Script {
                 IHonkVerifier(address(new ThresholdSavingsVerifier()))
             )
         );
+    }
+
+    function _trade(Out memory o, ShieldedPool pool, address owner) private {
+        ShieldedTrade trade = new ShieldedTrade(
+            pool,
+            IHonkVerifier(address(new SwapVerifier())),
+            IHonkVerifier(address(new SettleVerifier())),
+            StockRouter(o.router),
+            owner
+        );
+        pool.setTrade(address(trade));
+        o.shieldedTrade = address(trade);
+        o.parkVault = address(new MockUsdgVault(IERC20(o.usdg)));
+        ERC4626Park park = new ERC4626Park(IERC4626(o.parkVault), o.usdg);
+        o.parkAdapter = address(park);
+        trade.proposeAdapter(IParkAdapter(address(park)));
+        pool.proposeCap(o.parkVault, type(uint128).max);
     }
 
     function _deployHidden(address owner, address crowd, address[] memory assets, uint256[] memory caps)
@@ -199,6 +230,9 @@ contract LocalConsumer is Script {
         vm.serializeAddress(r, "multicall3", o.multicall3);
         vm.serializeAddress(r, "shieldedPool", o.shieldedPool);
         vm.serializeAddress(r, "thresholdVerifier", o.thresholdVerifier);
+        vm.serializeAddress(r, "shieldedTrade", o.shieldedTrade);
+        vm.serializeAddress(r, "parkVault", o.parkVault);
+        vm.serializeAddress(r, "parkAdapter", o.parkAdapter);
         if (o.stealthClaims != address(0)) {
             vm.serializeAddress(r, "stealthClaims", o.stealthClaims);
             vm.serializeAddress(r, "erc5564Announcer", ANNOUNCER);

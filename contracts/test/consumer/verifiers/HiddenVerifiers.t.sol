@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {Test, console2} from "forge-std/Test.sol";
 import {TransferVerifier} from "../../../src/consumer/verifiers/TransferVerifier.sol";
 import {WithdrawVerifier} from "../../../src/consumer/verifiers/WithdrawVerifier.sol";
+import {SwapVerifier} from "../../../src/consumer/verifiers/SwapVerifier.sol";
+import {SettleVerifier} from "../../../src/consumer/verifiers/SettleVerifier.sol";
 
 interface IHonk {
     function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
@@ -132,5 +134,52 @@ contract WithdrawVerifierTest is VerifierCase {
         bad = _copy(pub);
         bad[4] = bytes32(uint256(700_000));
         assertFalse(_accepts(proof, bad));
+    }
+}
+
+contract SwapVerifierTest is VerifierCase {
+    function _name() internal pure override returns (string memory) {
+        return "swap";
+    }
+
+    function _deploy() internal override returns (IHonk) {
+        return IHonk(address(new SwapVerifier()));
+    }
+
+    /// ShieldedTrade order: root, nullifier, changeCommitment, assetIn, amountIn, relayerFee, assetOut, minOut,
+    /// outPartial, deadline.
+    function test_publicInputLayout() public view {
+        assertEq(pub.length, 10);
+        assertEq(uint256(pub[3]), uint256(uint160(0x5FbDB2315678afecb367f032d93F642f64180aa3)));
+        assertEq(uint256(pub[4]), 600_000);
+        assertEq(uint256(pub[5]), 1_000);
+        assertEq(uint256(pub[6]), uint256(uint160(0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512)));
+        assertEq(uint256(pub[7]), 990_000);
+        assertEq(uint256(pub[9]), 1_800_000_000);
+    }
+
+    /// A relayer cannot lower the minimum, change the output asset, raise its fee or extend the deadline.
+    function test_relayerCannotChangeTerms() public view {
+        uint256[4] memory idx = [uint256(7), 6, 5, 9];
+        uint256[4] memory val = [uint256(1), uint256(uint160(address(0xBAD))), 2_000, 1_900_000_000];
+        for (uint256 i; i < 4; ++i) {
+            bytes32[] memory bad = _copy(pub);
+            bad[idx[i]] = bytes32(val[i]);
+            assertFalse(_accepts(proof, bad), vm.toString(idx[i]));
+        }
+    }
+}
+
+contract SettleVerifierTest is VerifierCase {
+    function _name() internal pure override returns (string memory) {
+        return "settle";
+    }
+
+    function _deploy() internal override returns (IHonk) {
+        return IHonk(address(new SettleVerifier()));
+    }
+
+    function test_publicInputLayout() public view {
+        assertEq(pub.length, 3);
     }
 }

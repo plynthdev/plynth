@@ -1,9 +1,16 @@
 // Hidden Vault note model, shared by the transfer and withdraw circuits.
 //
 //   ownerPk    = H(spendingSecret)
-//   commitment = H(assetId, rawAmount, ownerPk, blinding)
+//   commitment = H(assetId, rawAmount, ownerPk, blinding)                 (note v1)
+//   partial    = H(assetId, ownerPk, blinding)
+//   commitment = H(partial, rawAmount)                                    (note v2, "partial note")
 //   nullifier  = H(commitment, spendingSecret, leafIndex)
 //   node       = H(left, right)
+//
+// A v2 note is created by ShieldedTrade when the amount is only known on-chain (the output of a private
+// sell/buy/park/unpark): the proof fixes `partial`, the contract appends the amount it received. v1 and v2
+// commitments never collide: the sponge IV encodes the input length (4 vs 2). v2 notes are spent by the
+// swap circuit (directly) or turned into a v1 note by the settle circuit; transfer/withdraw take v1 only.
 //
 // H is the Poseidon2 sponge (bn254, t = 4, rate 3, capacity 1, IV = len << 64) exactly as
 // in Noir's stdlib Poseidon2Hasher, so contracts/src/consumer/verifiers/Poseidon2.sol can
@@ -38,6 +45,23 @@ pub fn owner_pk(spending_secret: Field) -> Field {
 
 pub fn commitment(asset_id: Field, raw_amount: Field, owner_pk: Field, blinding: Field) -> Field {
     hash([asset_id, raw_amount, owner_pk, blinding])
+}
+
+pub fn partial_commitment(asset_id: Field, owner_pk: Field, blinding: Field) -> Field {
+    hash([asset_id, owner_pk, blinding])
+}
+
+pub fn commitment_v2(partial: Field, raw_amount: Field) -> Field {
+    hash([partial, raw_amount])
+}
+
+/// Commitment of a note of either version: v2 when `is_v2`, v1 otherwise.
+pub fn commitment_any(is_v2: bool, asset_id: Field, raw_amount: Field, owner_pk: Field, blinding: Field) -> Field {
+    if is_v2 {
+        commitment_v2(partial_commitment(asset_id, owner_pk, blinding), raw_amount)
+    } else {
+        commitment(asset_id, raw_amount, owner_pk, blinding)
+    }
 }
 
 pub fn nullifier(commitment: Field, spending_secret: Field, leaf_index: Field) -> Field {
@@ -118,6 +142,14 @@ pub fn small_tree<let M: u32>(leaves: [Field; M]) -> (Field, [[Field; TREE_DEPTH
 fn sponge_matches_stdlib_known_digest() {
     // Same vector as noir_stdlib/src/hash/poseidon2.nr finish_ref_matches_known_digest.
     assert(hash([1, 2, 3, 4, 5]) == 0x2247be7014a54d17342a7ef677f58d28877780d203860396967f5d0a18d259db); // not-a-key
+}
+
+#[test]
+fn v1_and_v2_commitments_differ() {
+    let pk = owner_pk(5);
+    assert(commitment_any(true, 9, 100, pk, 7) == commitment_v2(partial_commitment(9, pk, 7), 100));
+    assert(commitment_any(false, 9, 100, pk, 7) == commitment(9, 100, pk, 7));
+    assert(commitment_any(true, 9, 100, pk, 7) != commitment_any(false, 9, 100, pk, 7));
 }
 
 #[test]

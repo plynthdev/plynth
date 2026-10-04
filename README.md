@@ -75,6 +75,14 @@ bun run eligibility                                      # eligibility screen: P
   `bun circuits/scripts/fixtures.ts` regenerates the Poseidon2 fixtures and `HiddenConstants.sol`;
   `circuits/scripts/prove.ts` is the client-side prover (noir_js + bb.js). `Poseidon2.sol` equals Noir's hash.
   Testnet and forks only until an external audit (mainnet deposit cap 0).
+- Private sell / buy / park (`ShieldedTrade`, circuits `swap` + `settle`): a swap proof spends one note, sends
+  `amountIn` through StockRouter (oracle guard) or a park adapter, and fixes the output note except its amount
+  (`H(H(asset, ownerPk, blinding), amount)`, a "v2" note the contract completes with what it received, after
+  checking the proven `minOut`). Any revert (slippage, oracle hold, cap, deadline) leaves the note unspent.
+  `settle` turns a v2 note into a normal note for transfer/withdraw. Park adapters (`contracts/src/consumer/park/`):
+  `ERC4626Park` (any allow-listed USDG ERC-4626 vault, e.g. Steakhouse USDG) and `MorphoBluePark` (USDG lender in
+  one Morpho Blue market). Adding an adapter takes 48h; unparking is never gated, and park shares can also be
+  withdrawn from the pool as shares and redeemed at the adapter directly.
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
 - `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
@@ -98,6 +106,12 @@ What you have to trust, per component. Later components add their own entries he
   attestation from the attester key; the owner sets the registry once and can rotate the attester, who can
   revoke. Exits (withdraw, cancel, claims) never check eligibility, so a revoked user can always leave. The
   screen is not KYC: it trusts the wallet's statement, an IP database and the public sanctions list.
+- **Private trade and park (ShieldedTrade).** The pool owner sets the module once, before any deposit; after that
+  its code is as trusted as the pool's (it can move pool assets after a valid proof). Its owner can only add park
+  adapters (48h timelock) or stop new parks. Swaps trust StockRouter's oracle guard plus the user's own proven
+  `minOut`; parked USDG carries the chosen vault's or Morpho market's risk (curator, oracle, liquidity: an
+  unpark can wait for liquidity). Buys, sells and parks stop when pool deposits are paused and count against
+  caps; unpark and settle never stop.
 
 IP geolocation by [DB-IP](https://db-ip.com) (IP to Country Lite, licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Sanctions data: the OFAC SDN list (US Treasury).
