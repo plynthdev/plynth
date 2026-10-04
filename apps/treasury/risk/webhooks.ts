@@ -5,6 +5,18 @@ import { createHmac, randomUUID } from "node:crypto";
 
 export type WebhookEvent = { type: string; data: unknown };
 
+/** Anything that accepts events: the URL-list `Webhooks` below or the DB-subscription dispatcher (webhooks/). */
+export interface WebhookSink {
+  emit(e: WebhookEvent): Promise<unknown>;
+}
+
+/** Sends every event to each sink in turn. */
+export const fanout = (...sinks: (WebhookSink | undefined)[]): WebhookSink | undefined => {
+  const live = sinks.filter((s): s is WebhookSink => s !== undefined);
+  if (live.length === 0) return undefined;
+  return { emit: async (e) => Promise.all(live.map((s) => s.emit(e))) };
+};
+
 export type Delivery = { url: string; ok: boolean; status: number | null; attempts: number; error?: string };
 
 export type WebhookOptions = {
@@ -22,7 +34,7 @@ export function sign(secret: string, body: string): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
-export class Webhooks {
+export class Webhooks implements WebhookSink {
   constructor(readonly opts: WebhookOptions) {}
 
   async emit(e: WebhookEvent, now = new Date()): Promise<Delivery[]> {

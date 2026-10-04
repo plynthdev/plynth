@@ -8,6 +8,7 @@
 import { robinhood, robinhoodTestnet } from "@plynth/chain";
 import { connect, databaseUrl } from "@plynth/db";
 import { readDeployment } from "@plynth/indexer";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPublicClient, http, type PublicClient } from "viem";
 import { eligibilityFromEnv } from "@plynth/eligibility";
@@ -31,7 +32,11 @@ const pub = createPublicClient({
   batch: chainName === "local" ? undefined : { multicall: true },
 }) as PublicClient;
 const chainId = await pub.getChainId();
-const dep = apiDeployment(readDeployment(process.env.API_DEPLOYMENTS_DIR || join(import.meta.dir, "..", "..", "..", "deployments"), chainId), chainId);
+const depDir = process.env.API_DEPLOYMENTS_DIR || join(import.meta.dir, "..", "..", "..", "deployments");
+// deployments/<chainid>-treasury.json (TreasuryFactory.s.sol) adds the treasury factory when present.
+const treasuryFile = join(depDir, `${chainId}-treasury.json`);
+const baseDep = readDeployment(depDir, chainId);
+const dep = apiDeployment(baseDep && existsSync(treasuryFile) ? { ...baseDep, ...JSON.parse(readFileSync(treasuryFile, "utf8")), chainId } : baseDep, chainId);
 const { db } = connect(databaseUrl());
 // Eligibility screening (POST /v1/eligibility/check) is enabled when ELIGIBILITY_REGISTRY is set; it then
 // needs the attester key (see apps/eligibility/src/config.ts). The rest of the API stays keyless.

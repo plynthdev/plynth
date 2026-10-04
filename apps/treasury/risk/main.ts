@@ -9,6 +9,7 @@
 //                                    (stand-in until the Orderly/Arcus readers of todo 29 exist)
 //   RISK_WEBHOOK_URLS                comma-separated URLs for drawdown.state / risk.alert
 //   RISK_WEBHOOK_SECRET              HMAC secret for x-plinth-signature
+//   DATABASE_URL                     optional: also deliver drawdown.state/risk.alert to treasury_webhooks subscribers
 //   RISK_INTERVAL_SEC                tick interval (default 30)
 //   RISK_HYSTERESIS_BPS              drawdown hysteresis (default 50)
 //   RISK_ONCE=1                      one tick, print the report, exit
@@ -17,7 +18,9 @@ import { createPublicClient, createWalletClient, getAddress, http, type Address,
 import { loadDeskAccount } from "../desks/keys";
 import { MirrorPusher, StaticVenueReader, type VenueReader } from "./mirror";
 import { RiskService } from "./service";
-import { stringify, Webhooks } from "./webhooks";
+import { connect } from "@plynth/db";
+import { WebhookDispatcher } from "../webhooks/dispatcher";
+import { fanout, stringify, Webhooks } from "./webhooks";
 
 function need(name: string): string {
   const v = process.env[name];
@@ -54,7 +57,9 @@ async function main() {
     pusher = new MirrorPusher(pub, wallet, controller, getAddress(mirror) as Address);
   }
   const urls = (process.env.RISK_WEBHOOK_URLS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  const webhooks = urls.length ? new Webhooks({ urls, secret: process.env.RISK_WEBHOOK_SECRET }) : undefined;
+  const direct = urls.length ? new Webhooks({ urls, secret: process.env.RISK_WEBHOOK_SECRET }) : undefined;
+  const subscribed = process.env.DATABASE_URL ? new WebhookDispatcher(connect(process.env.DATABASE_URL).db, { chainId }) : undefined;
+  const webhooks = fanout(direct, subscribed);
   const svc = new RiskService(
     pub,
     { account, readers, hysteresisBps: Number(process.env.RISK_HYSTERESIS_BPS ?? 50) },

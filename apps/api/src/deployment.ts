@@ -15,6 +15,9 @@ export type ApiDeployment = {
   /** Threshold-proof verifier (todo 24) for the same pool. */
   thresholdVerifier?: Address;
   deployBlock: bigint;
+  /** TreasuryFactory (todo 14) and the block it was deployed at (treasury log scans start there). */
+  treasuryFactory?: Address;
+  treasuryFactoryBlock?: bigint;
 };
 
 /** Addresses the API reads, from deployments/<chainid>.json (written by the deploy scripts). */
@@ -35,6 +38,8 @@ export function apiDeployment(dep: Deployment | undefined, chainId: number): Api
     ...(typeof dep.shieldedPool === "string" ? { shieldedPool: getAddress(dep.shieldedPool) } : {}),
     ...(typeof dep.thresholdVerifier === "string" ? { thresholdVerifier: getAddress(dep.thresholdVerifier) } : {}),
     deployBlock: dep.deployBlock !== undefined ? BigInt(dep.deployBlock) : 0n,
+    ...(typeof dep.treasuryFactory === "string" ? { treasuryFactory: getAddress(dep.treasuryFactory) } : {}),
+    ...(dep.treasuryFactoryBlock !== undefined ? { treasuryFactoryBlock: BigInt(dep.treasuryFactoryBlock as string | number) } : {}),
   };
 }
 

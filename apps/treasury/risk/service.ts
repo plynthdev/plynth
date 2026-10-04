@@ -18,7 +18,7 @@ import { DrawdownMachine, type DrawdownStep } from "./drawdown";
 import { computeExposure, type ExposureReport, type SpotRead, type VenueRead } from "./exposure";
 import { FundingWatch, signedRate, type FundingEvent, type FundingRead, type FundingSign } from "./funding";
 import type { MirrorPusher, PushResult, VenueReader } from "./mirror";
-import type { Webhooks } from "./webhooks";
+import type { WebhookSink } from "./webhooks";
 
 const KIND_STOCK_TOKEN = 2;
 
@@ -53,7 +53,7 @@ export class RiskService {
   constructor(
     readonly pub: PublicClient,
     readonly cfg: RiskConfig,
-    readonly deps: { pusher?: MirrorPusher; webhooks?: Webhooks; log?: (msg: string, extra?: unknown) => void } = {},
+    readonly deps: { pusher?: MirrorPusher; webhooks?: WebhookSink; log?: (msg: string, extra?: unknown) => void } = {},
   ) {
     this.drawdown = new DrawdownMachine(cfg.hysteresisBps ?? 50);
   }

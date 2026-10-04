@@ -13,6 +13,9 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 /// Tier 2 (T2, `maxLeverageX10 > 0`) enables them: a basis band, a net-delta overlay band (signed bps of NAV),
 /// a per-venue cap and a venue allow-list (leaves keccak256(abi.encode(venueAdapter))).
 /// Non-upgradeable. The board is a plain address (a Safe in production).
+///
+/// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once).
+/// All-zero constructor arguments (board 0 and controller 0) deploy a locked implementation for the factory.
 contract TreasuryPolicy {
     uint64 public constant TIMELOCK = 48 hours;
     uint16 public constant BPS = 10_000;
@@ -52,7 +55,8 @@ contract TreasuryPolicy {
         address controller;
     }
 
-    address public immutable board;
+    address public board;
+    bool private _initialized;
 
     uint32 private _version; // latest active version, starts at 1
     mapping(uint32 version => Policy) private _policies;
@@ -84,6 +88,7 @@ contract TreasuryPolicy {
     error FloatCapTooHigh();
     error BadDrawdown();
     error BadPeriod();
+    error AlreadyInitialized();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -91,7 +96,22 @@ contract TreasuryPolicy {
     }
 
     constructor(address board_, Policy memory initial) {
+        if (board_ == address(0) && initial.controller == address(0)) {
+            _initialized = true; // implementation for clones: never usable itself
+            return;
+        }
+        _init(board_, initial);
+    }
+
+    /// Clone setup (TreasuryFactory). Callable once; the factory clones and initializes in one transaction.
+    function initialize(address board_, Policy calldata initial) external {
+        _init(board_, initial);
+    }
+
+    function _init(address board_, Policy memory initial) private {
+        if (_initialized) revert AlreadyInitialized();
         if (board_ == address(0)) revert ZeroAddress();
+        _initialized = true;
         board = board_;
         validate(initial);
         _activate(initial, keccak256(abi.encode(initial)));

@@ -6,7 +6,7 @@
 // webhook the first hour it appears. PeriodClose refuses to commit while an unexplained break is open.
 import { getAddress, type Address, type PublicClient } from "viem";
 import { positionMirrorAbi } from "../risk/abi";
-import type { Webhooks } from "../risk/webhooks";
+import type { WebhookSink } from "../risk/webhooks";
 import type { PerpVenueClient, VenueStatement } from "../venues/types";
 import type { Break, BreakKind, ExceptionStore, FillLedger } from "./store";
 
@@ -41,7 +41,7 @@ export class Reconciler {
   constructor(
     readonly pub: PublicClient | null,
     readonly cfg: ReconcileConfig,
-    readonly deps: { store: ExceptionStore; ledger: FillLedger; webhooks?: Webhooks; log?: (m: string, extra?: unknown) => void },
+    readonly deps: { store: ExceptionStore; ledger: FillLedger; webhooks?: WebhookSink; log?: (m: string, extra?: unknown) => void },
   ) {}
 
   private brk(kind: BreakKind, venue: string, underlying: Address | null, detail: Record<string, unknown>): Break {

@@ -7,6 +7,25 @@ import { indexedBlock } from "./events";
 import { listStatements, StatementsUnavailable, verifyStatementBundle } from "./statements";
 import { proofNonce, verifyThreshold } from "./proofs";
 import { activity, crowdBooks, habit, MODES, overview, RANGES, settings, type Deps, type Range } from "./service";
+import {
+  actionsList,
+  CFO_FORMATS,
+  CfoPackRefused,
+  cfoPack,
+  closeGet,
+  closeList,
+  deskList,
+  exceptionsList,
+  navHistory,
+  navLatest,
+  policyCurrent,
+  policyDiff,
+  policyPropose,
+  positionsList,
+  templates,
+  treasuryCreate,
+  TreasuryNotFound,
+} from "./treasury";
 import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
 export type Ctx = Deps & { headers: Headers };
@@ -45,6 +64,28 @@ async function hidden<T>(f: () => Promise<T>): Promise<T> {
     throw e;
   }
 }
+
+/** Treasury errors: not a treasury / nothing committed -> 404, bad template -> 400, bundle mismatch -> 412. */
+async function treasury<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f();
+  } catch (e) {
+    if (e instanceof TreasuryNotFound) throw new TRPCError({ code: "NOT_FOUND", message: e.message });
+    if (e instanceof TxInputError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
+    if (e instanceof CfoPackRefused) throw new TRPCError({ code: "PRECONDITION_FAILED", message: e.message });
+    throw e;
+  }
+}
+
+const tAccount = z.object({ account: address });
+const templateInput = z
+  .object({
+    templateName: z.string().optional(),
+    template: z.record(z.string(), z.unknown()).optional(),
+    controller: address,
+    network: z.enum(["mainnet", "testnet"]).optional(),
+  })
+  .refine((v) => (v.templateName === undefined) !== (v.template === undefined), "pass exactly one of templateName or template");
 
 export const appRouter = t.router({
   account: t.router({
@@ -96,6 +137,56 @@ export const appRouter = t.router({
       .input(z.object({ proof: z.unknown(), verifier: address, requestId: bytes32 }))
       .mutation(({ ctx, input }) => hidden(() => verifyThreshold(ctx, input.proof, input.verifier, input.requestId))),
     nonce: t.procedure.input(z.object({ verifier: address, requestId: bytes32 })).query(({ ctx, input }) => hidden(async () => proofNonce(ctx, input.verifier, input.requestId))),
+  }),
+  treasury: t.router({
+    templates: t.procedure.query(() => templates()),
+    create: t.procedure
+      .input(templateInput.and(z.object({ board: address })))
+      .mutation(({ ctx, input }) => treasury(() => treasuryCreate(ctx, input as any))),
+  }),
+  policy: t.router({
+    current: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => policyCurrent(ctx, input.account))),
+    diff: t.procedure.input(tAccount.and(templateInput)).query(({ ctx, input }) => treasury(() => policyDiff(ctx, input.account, input as any))),
+    propose: t.procedure.input(tAccount.and(templateInput)).mutation(({ ctx, input }) => treasury(() => policyPropose(ctx, input.account, input as any))),
+  }),
+  desk: t.router({
+    list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => deskList(ctx, input.account))),
+  }),
+  nav: t.router({
+    latest: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => navLatest(ctx, input.account))),
+    history: t.procedure
+      .input(tAccount.extend({ limit: z.coerce.number().int().min(1).max(120).default(24) }))
+      .query(({ ctx, input }) => treasury(() => navHistory(ctx, input.account, input.limit))),
+  }),
+  positions: t.router({
+    list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => positionsList(ctx, input.account))),
+  }),
+  actions: t.router({
+    list: t.procedure
+      .input(
+        tAccount.extend({
+          desk: z.string().regex(/^[a-z0-9_-]{1,32}$/).optional(),
+          cursor: z.coerce.number().int().positive().optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+        }),
+      )
+      .query(({ ctx, input }) => treasury(() => actionsList(ctx, input.account, input))),
+  }),
+  exceptions: t.router({
+    list: t.procedure
+      .input(tAccount.extend({ status: z.enum(["open", "explained", "resolved"]).optional() }))
+      .query(({ ctx, input }) => treasury(() => exceptionsList(ctx, input.account, input.status))),
+  }),
+  close: t.router({
+    list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => closeList(ctx, input.account))),
+    get: t.procedure
+      .input(tAccount.extend({ index: z.coerce.number().int().min(0) }))
+      .query(({ ctx, input }) => treasury(() => closeGet(ctx, input.account, input.index))),
+  }),
+  cfo: t.router({
+    pack: t.procedure
+      .input(tAccount.extend({ periodEnd: z.union([z.string().regex(/^\d{1,20}$/), z.number().int().nonnegative()]).transform((v) => BigInt(v)), format: z.enum(CFO_FORMATS).default("json") }))
+      .query(({ ctx, input }) => treasury(() => cfoPack(ctx, input.account, input.periodEnd, input.format))),
   }),
   meta: t.router({
     eligibility: t.procedure.query(({ ctx }) => eligibility(ctx.headers)),

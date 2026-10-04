@@ -9,3 +9,4 @@ export * from "./tx";
 export * from "./roundups";
 export * from "./statements";
 export * from "./proofs";
+export * from "./treasury";

@@ -37,6 +37,9 @@ import {ITierSource, Tier} from "../token/ITierSource.sol";
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
+///
+/// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once; the
+/// EIP-712 domain uses the clone's own address). All-zero constructor arguments deploy a locked implementation.
 contract PeriodClose is EIP712, IPeriodStartNav {
     struct Close {
         uint64 periodEnd;
@@ -65,14 +68,15 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     uint256 private constant BPS = 10_000;
     uint32 public constant WEEKLY_BELOW = 28 days;
 
-    TreasuryAccount public immutable account;
-    TreasuryPolicy public immutable policy;
-    Valuer public immutable valuer;
-    IERC20 public immutable cash;
-    uint8 public immutable cashDecimals;
-    address public immutable feeRecipient; // zero = no fee
-    uint64 public immutable startTime; // fee accrual start of the first period
-    ITierSource public immutable tiers; // zero = no tier gating (weekly close always allowed)
+    TreasuryAccount public account;
+    TreasuryPolicy public policy;
+    Valuer public valuer;
+    IERC20 public cash;
+    uint8 public cashDecimals;
+    address public feeRecipient; // zero = no fee
+    uint64 public startTime; // fee accrual start of the first period
+    ITierSource public tiers; // zero = no tier gating (weekly close always allowed)
+    bool private _initialized;
 
     Close[] private _closes;
     uint256 public periodStartNav;
@@ -93,11 +97,34 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     error PositionsMismatch(bytes32 expected);
     error BadSignature();
     error TierTooLow(address board);
+    error AlreadyInitialized();
 
     constructor(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_, ITierSource tiers_)
         EIP712("Plynth PeriodClose", "1")
     {
+        if (
+            address(account_) == address(0) && address(cash_) == address(0) && feeRecipient_ == address(0)
+                && address(tiers_) == address(0)
+        ) {
+            _initialized = true; // implementation for clones: never usable itself
+            return;
+        }
+        _init(account_, cash_, feeRecipient_, tiers_);
+    }
+
+    /// Clone setup (TreasuryFactory), once. The account must already be initialized (policy and guard are read).
+    function initialize(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_, ITierSource tiers_)
+        external
+    {
+        _init(account_, cash_, feeRecipient_, tiers_);
+    }
+
+    function _init(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_, ITierSource tiers_)
+        private
+    {
+        if (_initialized) revert AlreadyInitialized();
         if (address(account_) == address(0) || address(cash_) == address(0)) revert ZeroAddress();
+        _initialized = true;
         account = account_;
         policy = account_.policy();
         valuer = account_.guard().valuer();

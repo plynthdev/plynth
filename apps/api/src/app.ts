@@ -46,6 +46,20 @@ export const REST: Proc[] = [
   { method: "POST", path: "/v1/proofs/verify", call: async (k, c) => k.proofs.verify((await body(c)) as any) },
   { method: "POST", path: "/proofs/verify", call: async (k, c) => k.proofs.verify((await body(c)) as any) },
   { method: "GET", path: "/v1/proofs/nonce", call: (k, c) => k.proofs.nonce(q(c) as any) },
+  { method: "GET", path: "/v1/treasury/templates", call: (k) => k.treasury.templates() },
+  { method: "POST", path: "/v1/treasury/create", call: async (k, c) => k.treasury.create((await body(c)) as any) },
+  { method: "GET", path: "/v1/treasury/:account/policy", call: (k, c) => k.policy.current({ account: c.req.param("account")! }) },
+  { method: "POST", path: "/v1/treasury/:account/policy/diff", call: async (k, c) => k.policy.diff({ ...(await body(c)), account: c.req.param("account")! } as any) },
+  { method: "POST", path: "/v1/treasury/:account/policy/propose", call: async (k, c) => k.policy.propose({ ...(await body(c)), account: c.req.param("account")! } as any) },
+  { method: "GET", path: "/v1/treasury/:account/desks", call: (k, c) => k.desk.list({ account: c.req.param("account")! }) },
+  { method: "GET", path: "/v1/treasury/:account/nav", call: (k, c) => k.nav.latest({ account: c.req.param("account")! }) },
+  { method: "GET", path: "/v1/treasury/:account/nav/history", call: (k, c) => k.nav.history({ ...q(c), account: c.req.param("account")! } as any) },
+  { method: "GET", path: "/v1/treasury/:account/positions", call: (k, c) => k.positions.list({ account: c.req.param("account")! }) },
+  { method: "GET", path: "/v1/treasury/:account/actions", call: (k, c) => k.actions.list({ ...q(c), account: c.req.param("account")! } as any) },
+  { method: "GET", path: "/v1/treasury/:account/exceptions", call: (k, c) => k.exceptions.list({ ...q(c), account: c.req.param("account")! } as any) },
+  { method: "GET", path: "/v1/treasury/:account/closes", call: (k, c) => k.close.list({ account: c.req.param("account")! }) },
+  { method: "GET", path: "/v1/treasury/:account/closes/:index", call: (k, c) => k.close.get({ account: c.req.param("account")!, index: c.req.param("index") } as any) },
+  { method: "GET", path: "/v1/treasury/:account/cfo-pack/:periodEnd", call: (k, c) => k.cfo.pack({ ...q(c), account: c.req.param("account")!, periodEnd: c.req.param("periodEnd") } as any) },
   { method: "GET", path: "/v1/meta/eligibility", call: (k) => k.meta.eligibility() },
   { method: "GET", path: "/v1/meta/health", call: (k) => k.meta.health() },
 ];
@@ -88,6 +102,17 @@ export function createApp(deps: Deps, opts: { corsOrigins?: string[]; eligibilit
     if (p.method === "GET") app.get(p.path, handler);
     else app.post(p.path, handler);
   }
+  // The CFO pack as a file (same procedure as /v1/treasury/:account/cfo-pack/:periodEnd, body unwrapped).
+  app.get("/v1/treasury/:account/cfo-pack/:periodEnd/download", async (c) => {
+    try {
+      const p = await appRouter.createCaller(ctxOf(c)).cfo.pack({ ...q(c), account: c.req.param("account")!, periodEnd: c.req.param("periodEnd") } as any);
+      return c.body(p.body, 200, { "content-type": p.contentType, "content-disposition": `attachment; filename="${p.filename}"` });
+    } catch (e) {
+      const err = e instanceof TRPCError ? e : new TRPCError({ code: "INTERNAL_SERVER_ERROR", cause: e });
+      const status = getHTTPStatusCodeFromError(err);
+      return c.json({ error: { code: err.code, message: status >= 500 ? "internal error" : err.message } }, status as 400);
+    }
+  });
   if (opts.eligibility) {
     app.route("/eligibility", opts.eligibility);
     app.route("/v1/eligibility", opts.eligibility);

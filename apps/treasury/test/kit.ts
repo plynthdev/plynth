@@ -1,10 +1,10 @@
 // Test kit for the desks on plain anvil: mock USDG, three mock Stock Tokens (per-share feeds + uiMultiplier,
 // like the testnet kit), a fixed-rate MockPoolManager behind the real StockRouter, an OpenZeppelin ERC-4626
 // mock vault, and a treasury built from the balanced template with the real sleeves and a JitterBeacon.
-import { compileTemplate, loadTemplate } from "@plynth/policy-compiler";
+import { compileTemplate, loadTemplate, policyAbiParam, type Policy } from "@plynth/policy-compiler";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createPublicClient, createWalletClient, defineChain, http, stringToHex, type Abi, type Address, type Hex, type PublicClient } from "viem";
+import { createPublicClient, createWalletClient, decodeEventLog, defineChain, encodeAbiParameters, http, stringToHex, type Abi, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 
 export const ROOT = join(import.meta.dir, "..", "..", "..");
@@ -93,8 +93,17 @@ export class Kit {
     return key;
   }
 
-  /** Deploys everything and funds the treasury with `funding` USDG (6dp). Returns the desk config path. */
-  async setup(dir: string, funding: bigint): Promise<string> {
+  /** The policy template (this chain's addresses) the treasury was built from. */
+  template: Record<string, unknown> = {};
+  /** Block the TreasuryFactory was deployed at (factory setups only). */
+  factoryBlock = 0n;
+
+  /**
+   * Deploys everything and funds the treasury with `funding` USDG (6dp). Returns the desk config path.
+   * `opts.factory`: build the treasury through TreasuryFactory clones (todo 14) instead of direct deploys; the
+   * factory's PeriodClose clone (fee to `feeTo`) is then `a.periodClose` and already wired to the account.
+   */
+  async setup(dir: string, funding: bigint, opts: { factory?: { feeTo: Address } } = {}): Promise<string> {
     const d = this.deployer.address;
     const a = this.a;
     a.usdg = await this.deploy("MockUSDG.sol", "MockUSDG");
@@ -137,17 +146,43 @@ export class Kit {
     };
     const tplPath = join(dir, "policy.yaml");
     writeFileSync(tplPath, JSON.stringify(tpl, null, 2)); // JSON is YAML
+    this.template = tpl;
     const compiled = compileTemplate(tpl as never, { controller: d });
 
-    a.policy = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [d, compiled.policy]);
     a.guard = await this.deploy("PolicyGuard.sol", "PolicyGuard", [a.registry, a.valuer, 200]);
-    a.approvals = await this.deploy("BoardApprovals.sol", "BoardApprovals", [d, a.guard]);
-    a.account = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [d, a.policy, a.guard, a.approvals]);
+    if (opts.factory) {
+      const Z = "0x0000000000000000000000000000000000000000" as Address;
+      const zb = { minBps: 0, maxBps: 0 };
+      const none: Policy = { cash: zb, equity: zb, basis: zb, netDeltaMinBps: 0, netDeltaMaxBps: 0, maxLeverageX10: 0, perOrderCapUsd: 0n, perDayCapUsd: 0n, perNameFloatCapBps: 0, perVenueCapBps: 0, noNewRiskOffHours: false, pauseNewRiskAtDrawdownBps: 0, deriskAtDrawdownBps: 0, approvalAboveUsd: 0n, periodSeconds: 0, instrumentAllowRoot: `0x${"0".repeat(64)}`, venueAllowRoot: `0x${"0".repeat(64)}`, controller: Z };
+      a.policyImpl = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [Z, none]);
+      a.accountImpl = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [Z, Z, Z, Z]);
+      a.closeImpl = await this.deploy("PeriodClose.sol", "PeriodClose", [Z, Z, Z, Z]);
+      a.approvalsImpl = await this.deploy("BoardApprovals.sol", "BoardApprovals", [Z, Z]);
+      a.factory = await this.deploy("TreasuryFactory.sol", "TreasuryFactory", [a.policyImpl, a.accountImpl, a.closeImpl, a.approvalsImpl, a.guard, a.usdg, opts.factory.feeTo, Z]);
+      this.factoryBlock = await this.pub.getBlockNumber();
+      const r = await this.send(a.factory, "TreasuryFactory.sol", "TreasuryFactory", "deploy", [encodeAbiParameters([policyAbiParam], [compiled.policy]), d]);
+      const { abi } = artifact("TreasuryFactory.sol", "TreasuryFactory");
+      for (const l of r.logs) {
+        try {
+          const ev = decodeEventLog({ abi, data: l.data, topics: l.topics }) as { eventName: string; args: Record<string, Address> };
+          if (ev.eventName !== "TreasuryCreated") continue;
+          a.account = ev.args.account!;
+          a.policy = ev.args.policy!;
+          a.periodClose = ev.args.close!;
+          a.approvals = ev.args.approvals!;
+        } catch {}
+      }
+      if (!a.account) throw new Error("no TreasuryCreated event");
+    } else {
+      a.policy = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [d, compiled.policy]);
+      a.approvals = await this.deploy("BoardApprovals.sol", "BoardApprovals", [d, a.guard]);
+      a.account = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [d, a.policy, a.guard, a.approvals]);
+    }
     a.cashSleeve = await this.deploy("CashSleeve.sol", "CashSleeve", [a.valuer, a.usdg, [a.vault]]);
     a.equitySleeve = await this.deploy("EquitySleeve.sol", "EquitySleeve", [a.router, this.stocks.map((s) => s.token)]);
     a.beacon = await this.deploy("JitterBeacon.sol", "JitterBeacon", [this.equityKey.address, d]);
 
-    await this.send(a.approvals, "BoardApprovals.sol", "BoardApprovals", "bindAccount", [a.account]);
+    if (!opts.factory) await this.send(a.approvals, "BoardApprovals.sol", "BoardApprovals", "bindAccount", [a.account]);
     await this.send(a.account, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("cash", { size: 32 }), this.cashKey.address, [a.cashSleeve]]);
     await this.send(a.account, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("equity", { size: 32 }), this.equityKey.address, [a.equitySleeve]]);
     await this.send(a.usdg, "MockUSDG.sol", "MockUSDG", "mint", [a.account, funding]);

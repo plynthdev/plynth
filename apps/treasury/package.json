@@ -8,7 +8,8 @@
     "close": "bun close/main.ts",
     "cfo-pack": "bun cfo-pack/main.ts",
     "risk": "bun risk/main.ts",
-    "reconcile": "bun reconciler/main.ts"
+    "reconcile": "bun reconciler/main.ts",
+    "webhooks": "bun webhooks/main.ts"
   },
   "dependencies": {
     "@plynth/chain": "workspace:*",

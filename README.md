@@ -10,6 +10,10 @@ Two products share one core (`contracts/src/core/`, `packages/chain/`).
   the saver. Contracts in `contracts/src/consumer/`.
 - **Plinth (treasury).** A board sets an on-chain policy; desk bots may only trade inside it, and each
   period closes with an on-chain NAV statement. Contracts in `contracts/src/treasury/`.
+  `TreasuryFactory` creates a board's treasury in one transaction (EIP-1167 clones of the policy, account,
+  period close and approvals contracts, all owned by the board). The API serves it under `/v1/treasury/*`
+  (create and policy proposals return unsigned transactions for the board Safe), and
+  `bun run treasury:webhooks` delivers HMAC-signed `guard.denied`, `drawdown.state` and `close.committed` events.
 
 | Network | Chain ID | Public RPC | Explorer |
 |---|---|---|---|

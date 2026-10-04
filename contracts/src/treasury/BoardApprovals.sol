@@ -32,8 +32,9 @@ contract BoardApprovals {
         Status status;
     }
 
-    address public immutable board;
-    address public immutable guard;
+    address public board;
+    address public guard;
+    bool private _initialized;
     address public account;
     uint256 public ticketCount;
     mapping(bytes32 ticket => Ticket) private _tickets;
@@ -57,14 +58,34 @@ contract BoardApprovals {
     error Expired();
     error InvalidTicket();
     error CidTooLong();
+    error AlreadyInitialized();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
         _;
     }
 
+    /// All-zero arguments deploy a locked implementation for TreasuryFactory clones.
     constructor(address board_, address guard_) {
+        if (board_ == address(0) && guard_ == address(0)) {
+            _initialized = true; // implementation for clones: never usable itself
+            return;
+        }
+        _init(board_, guard_);
+    }
+
+    /// Clone setup (TreasuryFactory), once, already bound to `account_` (the factory knows it up front).
+    function initialize(address board_, address guard_, address account_) external {
+        _init(board_, guard_);
+        if (account_ == address(0)) revert ZeroAddress();
+        account = account_;
+        emit AccountBound(account_);
+    }
+
+    function _init(address board_, address guard_) private {
+        if (_initialized) revert AlreadyInitialized();
         if (board_ == address(0) || guard_ == address(0)) revert ZeroAddress();
+        _initialized = true;
         board = board_;
         guard = guard_;
     }

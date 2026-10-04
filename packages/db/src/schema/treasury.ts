@@ -1,7 +1,7 @@
 // OWNER: apps/treasury (todos 10-14). Only the treasury service writes these tables.
 // Tables still to come from later treasury todos: treasuries, policies, desk_keys, nav_marks, positions,
 // feeds.
-import { bigint, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 /**
  * One row per desk decision (todo 12): every operation a desk planned, whether it was sent, rejected by the
@@ -149,3 +149,54 @@ export const venueFills = pgTable(
   },
   (t) => [index("venue_fills_pos_idx").on(t.chainId, t.account, t.venue, t.underlying)],
 );
+
+/**
+ * Outgoing webhook subscriptions (todo 14). One row per (account, url): `events` is the list of event types the
+ * receiver wants (guard.denied | drawdown.state | close.committed). Every POST carries
+ * `x-plinth-signature: sha256=<hex HMAC-SHA256(secret, raw body)>`. The secret is stored as given (it must be
+ * readable to sign); treat this table like a credentials table.
+ */
+export const treasuryWebhooks = pgTable(
+  "treasury_webhooks",
+  {
+    id: serial("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    account: text("account").notNull(), // lower-case TreasuryAccount
+    url: text("url").notNull(),
+    secret: text("secret").notNull(),
+    events: text("events").array().notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("treasury_webhooks_uq").on(t.chainId, t.account, t.url), index("treasury_webhooks_account_idx").on(t.chainId, t.account, t.active)],
+);
+
+/**
+ * One row per (subscription, event): `event_key` is stable per source event (e.g. guard.denied:desk_action:42,
+ * close.committed:<periodClose>:<index>), so a delivery is never sent twice once it succeeded. Failed deliveries
+ * are retried on later polls until `attempts` reaches the dispatcher's limit.
+ */
+export const treasuryWebhookDeliveries = pgTable(
+  "treasury_webhook_deliveries",
+  {
+    id: serial("id").primaryKey(),
+    webhookId: integer("webhook_id").notNull(),
+    eventKey: text("event_key").notNull(),
+    type: text("type").notNull(),
+    body: text("body").notNull(), // exact signed body
+    ok: boolean("ok").notNull(),
+    status: integer("status"),
+    attempts: integer("attempts").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("treasury_webhook_deliveries_uq").on(t.webhookId, t.eventKey), index("treasury_webhook_deliveries_retry_idx").on(t.ok, t.attempts)],
+);
+
+/** Poll cursors of the webhook dispatcher (e.g. "desk_actions" -> last scanned desk_actions.id). */
+export const treasuryWebhookCursors = pgTable("treasury_webhook_cursors", {
+  name: text("name").primaryKey(),
+  lastId: integer("last_id").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

@@ -16,6 +16,9 @@ import {IPositionSleeve} from "./interfaces/IPerpVenue.sol";
 ///
 /// The board can always take assets out with `withdrawToBoard`; nothing (pause, drawdown, stale feeds,
 /// revoked desks) gates it. Non-upgradeable.
+///
+/// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once).
+/// All-zero constructor arguments deploy a locked implementation for the factory.
 contract TreasuryAccount is ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -38,10 +41,11 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         address[] adapters;
     }
 
-    address public immutable board;
-    TreasuryPolicy public immutable policy;
-    PolicyGuard public immutable guard;
-    address public immutable approvals;
+    address public board;
+    TreasuryPolicy public policy;
+    PolicyGuard public guard;
+    address public approvals;
+    bool private _initialized;
     address public periodClose;
 
     mapping(bytes32 deskId => Desk) private _desks;
@@ -71,6 +75,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error DuplicateAsset(address asset);
     error GuardRejected(uint8 code);
     error NotPeriodClose();
+    error AlreadyInitialized();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -79,9 +84,37 @@ contract TreasuryAccount is ReentrancyGuardTransient {
 
     constructor(address board_, TreasuryPolicy policy_, PolicyGuard guard_, address approvals_) {
         if (
+            board_ == address(0) && address(policy_) == address(0) && address(guard_) == address(0)
+                && approvals_ == address(0)
+        ) {
+            _initialized = true; // implementation for clones: never usable itself
+            return;
+        }
+        _init(board_, policy_, guard_, approvals_);
+    }
+
+    /// Clone setup (TreasuryFactory), once. `periodClose_` may be zero (drawdown rule off until the board sets it).
+    function initialize(
+        address board_,
+        TreasuryPolicy policy_,
+        PolicyGuard guard_,
+        address approvals_,
+        address periodClose_
+    ) external {
+        _init(board_, policy_, guard_, approvals_);
+        if (periodClose_ != address(0)) {
+            periodClose = periodClose_;
+            emit PeriodCloseSet(periodClose_);
+        }
+    }
+
+    function _init(address board_, TreasuryPolicy policy_, PolicyGuard guard_, address approvals_) private {
+        if (_initialized) revert AlreadyInitialized();
+        if (
             board_ == address(0) || address(policy_) == address(0) || address(guard_) == address(0)
                 || approvals_ == address(0)
         ) revert ZeroAddress();
+        _initialized = true;
         board = board_;
         policy = policy_;
         guard = guard_;
