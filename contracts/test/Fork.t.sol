@@ -28,7 +28,7 @@ contract ForkTest is Test {
     function test_valuerPricesRealTokenWithItsLiveMultiplier() public {
         StockTokenRegistry reg = new StockTokenRegistry(address(this));
         Valuer valuer = new Valuer(reg, 30 minutes);
-        MockFeed feed = new MockFeed(8, 200e8); // real feed address TBD (VERIFY); multiplier is live
+        MockFeed feed = new MockFeed(8, 200e8); // per-share mock feed: exercises the multiplierEmbedded = false path
         reg.list(AAPL, address(feed), false);
         uint256 m = IStockToken(AAPL).uiMultiplier();
         assertEq(valuer.quote(AAPL).priceUsdPerToken, 200e18 * m / 1e18);
