@@ -1,0 +1,16 @@
+{
+  "name": "@plynth/treasury",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "desks/index.ts",
+  "scripts": {
+    "desks": "bun desks/main.ts"
+  },
+  "dependencies": {
+    "@plynth/chain": "workspace:*",
+    "@plynth/db": "workspace:*",
+    "@plynth/policy-compiler": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "viem": "^2.57.2"
+  }
+}

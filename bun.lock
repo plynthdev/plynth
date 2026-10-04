@@ -83,6 +83,17 @@
         "viem": "^2.57.2",
       },
     },
+    "apps/treasury": {
+      "name": "@plynth/treasury",
+      "version": "0.0.0",
+      "dependencies": {
+        "@plynth/chain": "workspace:*",
+        "@plynth/db": "workspace:*",
+        "@plynth/policy-compiler": "workspace:*",
+        "drizzle-orm": "^0.45.3",
+        "viem": "^2.57.2",
+      },
+    },
     "circuits": {
       "name": "@plynth/circuits",
       "dependencies": {
@@ -264,6 +275,8 @@
     "@plynth/relayer": ["@plynth/relayer@workspace:apps/relayer"],
 
     "@plynth/sdk": ["@plynth/sdk@workspace:packages/sdk"],
+
+    "@plynth/treasury": ["@plynth/treasury@workspace:apps/treasury"],
 
     "@scure/base": ["@scure/base@1.2.6", "", {}, "sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg=="],
 

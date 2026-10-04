@@ -21,7 +21,8 @@
     "api": "bun apps/api/src/main.ts",
     "relayer": "bun apps/relayer/src/main.ts",
     "eligibility": "bun apps/eligibility/src/main.ts",
-    "circuits:build": "bash circuits/scripts/build.sh"
+    "circuits:build": "bash circuits/scripts/build.sh",
+    "treasury:desks": "bun apps/treasury/desks/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
