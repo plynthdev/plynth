@@ -38,6 +38,7 @@ RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com bun run test:contrac
 bun test                                                 # TypeScript tests
 bun run verify:chain                                     # re-check every address against the live chain
 bun run indexer --once && bun run keeper --once          # one indexer + keeper pass (see .env.example)
+bun run api                                              # dashboard API: tRPC at /trpc, REST mirror at /v1
 ```
 
 ## Layout
@@ -46,6 +47,9 @@ bun run indexer --once && bun run keeper --once          # one indexer + keeper 
   (Chainlink price x ERC-8056 `uiMultiplier()`, applied exactly once; stale feed -> `hold`, not revert).
 - `apps/keeper/` Round-ups, weekly top-ups, sweeps into crowd books, JitterBeacon commit-reveal and crowd
   execution. Every action is pre-simulated; the contracts bound what the keeper can do.
+- `apps/api/` Read-only dashboard API (Hono + tRPC, REST mirror under `/v1`): account overview, saving habit,
+  activity, settings, Crowd Buy books, health. Transactions come back unsigned (`{to, data, value, chainId}`)
+  for the user's own wallet; the API holds no keys. `meta.eligibility` is a self-attestation stub, not KYC.
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
 - `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;

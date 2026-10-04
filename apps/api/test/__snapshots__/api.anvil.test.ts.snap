@@ -1,0 +1,148 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`account.overview values holdings with Valuer math, splits USDG, reports week round-ups and mode; REST mirror identical 1`] = `
+{
+  "allocation": {
+    "availableUsdg": "string",
+    "parkUsd": "string",
+    "queuedUsdg": "string",
+    "stockTokensUsd": "string",
+    "vaultUsdg": "string",
+  },
+  "holdings": [
+    {
+      "claimableRaw": "string",
+      "hold": "boolean",
+      "multiplier": "string",
+      "raw": "string",
+      "symbol": "string",
+      "token": "string",
+      "usd": "string",
+      "walletRaw": "string",
+    },
+  ],
+  "mode": "string",
+  "totalHoldingsUsd": "string",
+  "weekRoundups": "string",
+  "weeklyCap": "string",
+}
+`;
+
+exports[`account.habit daily cumulative saved USDG per range; REST mirror identical 1`] = `
+{
+  "points": [
+    {
+      "date": "string",
+      "savedUsdg": "string",
+    },
+  ],
+  "range": "string",
+  "unit": "string",
+}
+`;
+
+exports[`account.activity rows use the site wording and paginate by cursor; REST mirror identical 1`] = `
+{
+  "nextCursor": "null",
+  "rows": [
+    {
+      "amount": "string",
+      "at": "string",
+      "detail": "null|string",
+      "id": "string",
+      "kind": "string",
+      "label": "string",
+      "status": "string",
+      "txHash": "string",
+      "unit": "string",
+    },
+  ],
+}
+`;
+
+exports[`account.settings + crowd.books + meta settings mirror the vault; REST identical 1`] = `
+{
+  "configured": "boolean",
+  "fixedTopUp": "string",
+  "mix": [
+    {
+      "symbol": "string",
+      "token": "string",
+      "weightBps": "number",
+    },
+  ],
+  "mode": "string",
+  "multiplier": "number",
+  "roundTo": "number",
+  "weeklyCap": "string",
+}
+`;
+
+exports[`account.settings + crowd.books + meta crowd.books: open book vs MIN_CROWD, next window, revealed executeAfter, executed history; REST identical 1`] = `
+{
+  "books": [
+    {
+      "asset": "string",
+      "executed": [
+        {
+          "accounts": "number",
+          "at": "string",
+          "bookId": "string",
+          "rawOut": "string",
+          "txHash": "string",
+          "usdgTotal": "string",
+        },
+      ],
+      "open": {
+        "accounts": "number",
+        "bookId": "string",
+        "executeAfter": "string",
+        "executedThisWindow": "boolean",
+        "minCrowd": "number",
+        "openedAt": "string",
+        "usdgTotal": "string",
+      },
+      "symbol": "string",
+    },
+  ],
+  "now": "string",
+  "window": {
+    "end": "string",
+    "next": "string",
+    "start": "string",
+  },
+}
+`;
+
+exports[`account.settings + crowd.books + meta meta.health reports chain head and indexer lag; REST identical 1`] = `
+{
+  "chainId": "number",
+  "db": "boolean",
+  "head": "string",
+  "indexer": {
+    "lagBlocks": "string",
+    "lastBlock": "string",
+  },
+  "ok": "boolean",
+}
+`;
+
+exports[`account.settings + crowd.books + meta meta.eligibility shape; REST identical 1`] = `
+{
+  "allowed": "boolean",
+  "ipCountry": "null",
+  "kyc": "boolean",
+  "note": "string",
+  "reason": "string",
+  "residency": "string",
+}
+`;
+
+exports[`tx builders every builder decodes against the compiled ABI to the intended call, and REST == tRPC 1`] = `
+{
+  "chainId": "number",
+  "data": "string",
+  "to": "string",
+  "value": "string",
+}
+`;
