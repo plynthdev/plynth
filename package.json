@@ -1,14 +1,21 @@
 {
   "name": "plynth",
   "private": true,
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "guard": "./scripts/public-guard.sh",
     "test": "bun test",
     "test:contracts": "cd contracts && forge test",
     "test:all": "forge test --root contracts && bun test",
-    "verify:chain": "bun packages/chain/src/verify.ts"
+    "verify:chain": "bun packages/chain/src/verify.ts",
+    "db:create": "bun packages/db/src/create.ts",
+    "db:generate": "bun run --cwd packages/db generate",
+    "db:migrate": "bun packages/db/src/migrate.ts",
+    "indexer": "bun apps/indexer/src/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

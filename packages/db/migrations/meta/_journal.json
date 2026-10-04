@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1791107592043,
+      "tag": "0000_indexer",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791107592342,
+      "tag": "0001_keeper_placeholder",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791107592632,
+      "tag": "0002_treasury_placeholder",
+      "breakpoints": true
+    }
+  ]
+}

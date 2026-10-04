@@ -130,6 +130,9 @@ contract TestnetKit is Script {
         }
         string memory root = "root";
         vm.serializeUint(root, "chainId", block.chainid);
+        // First block the indexer must scan (apps/indexer uses it as fromBlock). vm.getBlockNumber, not
+        // block.number: on Arbitrum Orbit block.number is the parent-chain block, not the L2 block.
+        vm.serializeUint(root, "deployBlock", vm.getBlockNumber());
         vm.serializeAddress(root, "deployer", d.deployer);
         vm.serializeAddress(root, "poolManager", POOL_MANAGER);
         vm.serializeAddress(root, "usdg", address(d.usdg));
