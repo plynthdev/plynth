@@ -60,7 +60,8 @@ export const accountAbi = [
 ] as const;
 
 export const guardAbi = parseAbi([
-  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; }",
+  "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; }",
+  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; }",
   "function snapshot(address account) view returns (Snapshot)",
   "function dayTotal(address account) view returns (uint256)",
   "function maxOpLossBps() view returns (uint16)",

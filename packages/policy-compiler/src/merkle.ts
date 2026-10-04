@@ -11,6 +11,11 @@ export function instrumentLeaf(asset: Address, kind: number): Hex {
   return keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint8" }], [asset, kind]));
 }
 
+/** keccak256(abi.encode(address venue)), matching TreasuryPolicy.venueLeaf (a venue adapter address). */
+export function venueLeaf(venue: Address): Hex {
+  return keccak256(encodeAbiParameters([{ type: "address" }], [venue]));
+}
+
 export function hashPair(a: Hex, b: Hex): Hex {
   return BigInt(a) < BigInt(b) ? keccak256(concat([a, b])) : keccak256(concat([b, a]));
 }

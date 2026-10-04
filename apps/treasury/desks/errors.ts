@@ -13,6 +13,11 @@ export const GUARD_CODES: Record<number, string> = {
   9: "R8_PAUSED",
   10: "R8_DERISK",
   11: "R9_APPROVAL",
+  12: "R5_NET_DELTA",
+  13: "R5_LEVERAGE",
+  14: "R6_VENUE_NOT_ALLOWED",
+  15: "R6_VENUE_CAP",
+  16: "R6_STALE_VENUE",
 };
 
 export type Rejection = { code: number | null; reason: string; args?: unknown[] };

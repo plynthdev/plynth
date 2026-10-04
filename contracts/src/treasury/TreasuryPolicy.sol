@@ -9,13 +9,17 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 /// waits `TIMELOCK` in public, and is then activated by anyone. Every activated version is kept forever so
 /// a period close can prove which policy was in force at any timestamp (`versionAt`).
 ///
-/// Tier 1 (T1) has no venues, no perps and no hedge overlay, so those fields must be zero.
+/// Tier 1 (T1, `maxLeverageX10 == 0`) has no venues, no perps and no hedge overlay, so those fields must be zero.
+/// Tier 2 (T2, `maxLeverageX10 > 0`) enables them: a basis band, a net-delta overlay band (signed bps of NAV),
+/// a per-venue cap and a venue allow-list (leaves keccak256(abi.encode(venueAdapter))).
 /// Non-upgradeable. The board is a plain address (a Safe in production).
 contract TreasuryPolicy {
     uint64 public constant TIMELOCK = 48 hours;
     uint16 public constant BPS = 10_000;
     uint16 public constant MAX_NAME_FLOAT_BPS = 200;
     uint32 public constant MIN_PERIOD = 1 days;
+    /// Most leverage a T2 policy may allow, x10 (3.0x). Templates default to it.
+    uint16 public constant MAX_LEVERAGE_X10 = 30;
 
     /// Instrument kinds used in `instrumentAllowRoot` leaves: keccak256(abi.encode(asset, uint8(kind))).
     uint8 public constant KIND_CASH = 0; // a dollar stablecoin held directly (USDG)
@@ -72,8 +76,11 @@ contract TreasuryPolicy {
     error BadBandSums();
     error T1Basis();
     error T1NetDelta();
-    error T1Leverage();
     error T1Venue();
+    error LeverageTooHigh();
+    error BadNetDelta();
+    error BadVenueCap();
+    error NoVenues();
     error FloatCapTooHigh();
     error BadDrawdown();
     error BadPeriod();
@@ -160,6 +167,11 @@ contract TreasuryPolicy {
         return keccak256(abi.encode(asset, kind));
     }
 
+    /// Leaf of `venueAllowRoot` for a venue adapter.
+    function venueLeaf(address venue) public pure returns (bytes32) {
+        return keccak256(abi.encode(venue));
+    }
+
     /// True if (asset, kind) is in the current policy's instrument allowlist (sorted-pair Merkle proof).
     function isInstrumentAllowed(address asset, uint8 kind, bytes32[] calldata proof) external view returns (bool) {
         return MerkleProof.verifyCalldata(proof, _policies[_version].instrumentAllowRoot, instrumentLeaf(asset, kind));
@@ -174,10 +186,21 @@ contract TreasuryPolicy {
         uint256 sumMax = uint256(p.cash.maxBps) + p.equity.maxBps + p.basis.maxBps;
         if (sumMin > BPS || sumMax < BPS) revert BadBandSums();
 
-        if (p.basis.minBps != 0 || p.basis.maxBps != 0) revert T1Basis();
-        if (p.netDeltaMinBps != 0 || p.netDeltaMaxBps != 0) revert T1NetDelta();
-        if (p.maxLeverageX10 != 0) revert T1Leverage();
-        if (p.perVenueCapBps != 0 || p.venueAllowRoot != bytes32(0)) revert T1Venue();
+        if (p.maxLeverageX10 == 0) {
+            // T1: no overlay, no venues.
+            if (p.basis.minBps != 0 || p.basis.maxBps != 0) revert T1Basis();
+            if (p.netDeltaMinBps != 0 || p.netDeltaMaxBps != 0) revert T1NetDelta();
+            if (p.perVenueCapBps != 0 || p.venueAllowRoot != bytes32(0)) revert T1Venue();
+        } else {
+            // T2: hedge overlay and perp venues.
+            if (p.maxLeverageX10 > MAX_LEVERAGE_X10) revert LeverageTooHigh();
+            if (
+                p.netDeltaMinBps > p.netDeltaMaxBps || p.netDeltaMinBps < -10_000
+                    || p.netDeltaMaxBps > 10_000
+            ) revert BadNetDelta();
+            if (p.perVenueCapBps == 0 || p.perVenueCapBps > BPS) revert BadVenueCap();
+            if (p.venueAllowRoot == bytes32(0)) revert NoVenues();
+        }
         if (p.perNameFloatCapBps > MAX_NAME_FLOAT_BPS) revert FloatCapTooHigh();
 
         if (!(p.deriskAtDrawdownBps < p.pauseNewRiskAtDrawdownBps && p.pauseNewRiskAtDrawdownBps <= 0)) {

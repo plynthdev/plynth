@@ -47,7 +47,7 @@ describe("encoding and reason codes", () => {
     expect(packProofs([[h, h], []])).toEqual([`0x${"0".repeat(63)}2`, h, h, `0x${"0".repeat(64)}`]);
   });
   test("every PolicyGuard reason code has a name", () => {
-    for (let c = 1; c <= 11; c++) expect(GUARD_CODES[c]).toBeDefined();
+    for (let c = 1; c <= 16; c++) expect(GUARD_CODES[c]).toBeDefined();
   });
   test("non-viem errors decode to a reason with no code", () => {
     expect(decodeRejection(new Error("boom"))).toEqual({ code: null, reason: "boom" });

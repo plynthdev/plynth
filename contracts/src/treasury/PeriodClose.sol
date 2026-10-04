@@ -236,8 +236,9 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint256 equityUsd;
         for (uint256 i; i < sl.length; ++i) {
             (uint256 v,) = ISleeve(sl[i]).valueOf(address(account));
-            if (ISleeve(sl[i]).band() == 0) cashUsd += v;
-            else equityUsd += v;
+            uint8 band = ISleeve(sl[i]).band();
+            if (band == 0) cashUsd += v;
+            else if (band == 1) equityUsd += v; // a basis sleeve (2) is in NAV but in neither weight
         }
         cashBps = uint16(cashUsd * BPS / nav);
         equityBps = uint16(equityUsd * BPS / nav);

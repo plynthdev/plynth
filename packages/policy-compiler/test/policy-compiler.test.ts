@@ -6,7 +6,7 @@ import { keccak256, toHex, type Hex } from "viem";
 import { stockTokens } from "@plynth/chain";
 import {
   buildTree, compileFile, compileTemplate, diff, getProof, instrumentLeaf, loadTemplate, policyHash, summary,
-  validate, verify, PolicyError, ZERO32, type Policy,
+  validate, verify, PolicyError, ZERO32, hashPair, venueLeaf, type Policy,
 } from "../src/index";
 import { FIXTURE_CONTROLLER, FIXTURE_PATH, REPO, TEMPLATES, fixtureText } from "../src/fixture";
 
@@ -99,7 +99,8 @@ describe("template loading", () => {
     const base = loadTemplate(tpl("conservative"));
     expect(() => compileTemplate({ ...base, instruments: [...base.instruments, base.instruments[0]!] }, { controller: C })).toThrow(/duplicate/);
     expect(() => compileTemplate({ ...base, instruments: [{ asset: "NOPE", kind: "cash" }] }, { controller: C })).toThrow(/unknown asset/);
-    expect(() => compileTemplate({ ...base, venues: [{}] }, { controller: C })).toThrow(/T1Venue/);
+    expect(() => compileTemplate({ ...base, venues: ["0x00000000000000000000000000000000000000aa"] }, { controller: C })).toThrow(/T1Venue/);
+    expect(() => compileTemplate({ ...base, venues: [{}] as never }, { controller: C })).toThrow(/BadVenue/);
     expect(() => compileTemplate({ ...base, bands: { cash: [70.001, 90], equity: [10, 30] } }, { controller: C })).toThrow(/whole bps/);
   });
 
@@ -108,7 +109,8 @@ describe("template loading", () => {
     const bad = (patch: object) => () => compileTemplate({ ...base, ...patch }, { controller: C });
     expect(bad({ bands: { cash: [80, 90], equity: [30, 40] } })).toThrow(/BadBandSums/);
     expect(bad({ bands: { cash: [70, 90], equity: [10, 30], basis: [0, 5] } })).toThrow(/T1Basis/);
-    expect(bad({ hedge: { maxLeverageX10: 10 } })).toThrow(/T1Leverage/);
+    expect(bad({ hedge: { maxLeverageX10: 10 } })).toThrow(/BadVenueCap/); // leverage switches to T2 rules
+    expect(bad({ hedge: { maxLeverageX10: 40 } })).toThrow(/LeverageTooHigh/);
     expect(bad({ risk: { noNewRiskOffHours: true, pauseNewRiskAtDrawdownBps: -600, deriskAtDrawdownBps: -300 } })).toThrow(/BadDrawdown/);
     expect(bad({ periodDays: 0.5 })).toThrow(/BadPeriod/);
     expect(bad({ limits: { ...base.limits, perNameFloatBps: 201 } })).toThrow(/FloatCapTooHigh/);
@@ -132,6 +134,31 @@ describe("validate mirrors TreasuryPolicy.validate", () => {
     expect(code({ ...good(), pauseNewRiskAtDrawdownBps: 1 })).toBe("BadDrawdown");
     expect(code({ ...good(), periodSeconds: 86_399 })).toBe("BadPeriod");
     expect(code({ ...good(), controller: "0x0000000000000000000000000000000000000000" })).toBe("ZeroAddress");
+  });
+
+  test("T2 rules (leverage set)", () => {
+    const t2 = (): Policy => ({ ...good(), cash: { minBps: 5000, maxBps: 8000 }, basis: { minBps: 0, maxBps: 2000 }, netDeltaMinBps: -500, netDeltaMaxBps: 2500, maxLeverageX10: 30, perVenueCapBps: 2000, venueAllowRoot: `0x${"0".repeat(63)}1` });
+    expect(code(t2())).toBe("ok");
+    expect(code({ ...t2(), maxLeverageX10: 31 })).toBe("LeverageTooHigh");
+    expect(code({ ...t2(), netDeltaMinBps: 100, netDeltaMaxBps: 50 })).toBe("BadNetDelta");
+    expect(code({ ...t2(), netDeltaMinBps: -10_001 })).toBe("BadNetDelta");
+    expect(code({ ...t2(), perVenueCapBps: 0 })).toBe("BadVenueCap");
+    expect(code({ ...t2(), perVenueCapBps: 10_001 })).toBe("BadVenueCap");
+    expect(code({ ...t2(), venueAllowRoot: ZERO32 })).toBe("NoVenues");
+  });
+
+  test("a T2 template compiles venues into venueAllowRoot with proofs", () => {
+    const base = loadTemplate(tpl("balanced"));
+    const venues = ["0x00000000000000000000000000000000000000aa", "0x00000000000000000000000000000000000000bb"];
+    const c = compileTemplate(
+      { ...base, bands: { cash: [40, 70], equity: [30, 60], basis: [0, 10] }, hedge: { netDeltaBps: [1000, 4500], maxLeverageX10: 30 }, limits: { ...base.limits, perVenueBps: 2000 }, venues },
+      { controller: C },
+    );
+    expect(c.policy.maxLeverageX10).toBe(30);
+    expect(c.venues.length).toBe(2);
+    expect(c.venues[0]!.leaf).toBe(venueLeaf(venues[0] as `0x${string}`));
+    expect(c.policy.venueAllowRoot).toBe(hashPair(c.venues[0]!.leaf, c.venues[1]!.leaf));
+    expect(c.venues[0]!.proof).toEqual([c.venues[1]!.leaf]);
   });
 
   test("fuzz: band rules match the reference model", () => {

@@ -7,6 +7,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 import {PolicyGuard} from "./PolicyGuard.sol";
 import {IAdapter, ISleeve} from "./interfaces/ISleeve.sol";
+import {IPositionSleeve} from "./interfaces/IPerpVenue.sol";
 
 /// The treasury's wallet. Desks are plain keys that call `execute`: the account checks the desk's scope,
 /// snapshots its state, runs the adapter with `call` (exact approvals, reset afterwards), then asks the
@@ -20,6 +21,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
 
     uint8 public constant BAND_CASH = 0;
     uint8 public constant BAND_EQUITY = 1;
+    uint8 public constant BAND_BASIS = 2;
     uint256 public constant MAX_SLEEVES = 8;
     uint256 public constant MAX_ADAPTERS_PER_DESK = 8;
     uint256 public constant MAX_ASSETS_PER_SLEEVE = 16;
@@ -46,6 +48,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     mapping(address key => uint256) private _activeDesksOfKey;
     address[] private _sleeves; // every adapter ever registered; never removed so its holdings stay in NAV
     mapping(address sleeve => bool) public isSleeve;
+    address[] private _positionSleeves; // sleeves whose value sits at perp venues (IPositionSleeve)
     mapping(address asset => bool) private _assetTaken;
 
     event DeskRegistered(bytes32 indexed deskId, address indexed key, address[] adapters);
@@ -219,6 +222,11 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         return _sleeves;
     }
 
+    /// The registered sleeves that hold positions at perp venues; the guard reads their venues directly.
+    function positionSleeves() external view returns (address[] memory) {
+        return _positionSleeves;
+    }
+
     function desk(bytes32 deskId) external view returns (Desk memory) {
         return _desks[deskId];
     }
@@ -242,7 +250,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         if (sleeve == address(0) || sleeve.code.length == 0) revert BadSleeve(sleeve);
         if (_sleeves.length >= MAX_SLEEVES) revert TooManySleeves();
         uint8 band = ISleeve(sleeve).band();
-        if (band > BAND_EQUITY) revert BadSleeve(sleeve);
+        if (band > BAND_BASIS) revert BadSleeve(sleeve);
         (address[] memory assets, uint8[] memory kinds) = ISleeve(sleeve).assets();
         if (assets.length != kinds.length || assets.length > MAX_ASSETS_PER_SLEEVE) revert BadSleeve(sleeve);
         for (uint256 i; i < assets.length; ++i) {
@@ -250,8 +258,20 @@ contract TreasuryAccount is ReentrancyGuardTransient {
             if (kinds[i] > 2) revert BadSleeve(sleeve);
             _assetTaken[assets[i]] = true;
         }
+        if (_isPositionSleeve(sleeve)) {
+            if (IPositionSleeve(sleeve).account() != address(this)) revert BadSleeve(sleeve);
+            _positionSleeves.push(sleeve);
+        }
         _sleeves.push(sleeve);
         isSleeve[sleeve] = true;
         emit SleeveAdded(sleeve, band);
+    }
+
+    function _isPositionSleeve(address sleeve) private view returns (bool) {
+        try IPositionSleeve(sleeve).isPositionSleeve() returns (bool yes) {
+            return yes;
+        } catch {
+            return false;
+        }
     }
 }

@@ -290,10 +290,59 @@ contract TreasuryPolicyTest is Test {
         _expectInvalid(p, TreasuryPolicy.T1NetDelta.selector);
     }
 
-    function test_validate_t1NoLeverage() public {
+    /// Leverage is the T1/T2 switch: with leverage set, the overlay fields are validated as T2 instead.
+    function test_validate_leverageSwitchesToT2() public {
         TreasuryPolicy.Policy memory p = _good();
         p.maxLeverageX10 = 10;
-        _expectInvalid(p, TreasuryPolicy.T1Leverage.selector);
+        _expectInvalid(p, TreasuryPolicy.BadVenueCap.selector); // T2 needs a venue cap and venues
+    }
+
+    function _t2() internal view returns (TreasuryPolicy.Policy memory p) {
+        p = _good();
+        p.cash = TreasuryPolicy.Band(5000, 8000);
+        p.basis = TreasuryPolicy.Band(0, 2000);
+        p.netDeltaMinBps = -500;
+        p.netDeltaMaxBps = 2500;
+        p.maxLeverageX10 = 30;
+        p.perVenueCapBps = 2000;
+        p.venueAllowRoot = keccak256("venues");
+    }
+
+    function test_validate_t2GoodPolicyPasses() public {
+        tp.validate(_t2());
+        TreasuryPolicy t = new TreasuryPolicy(board, _t2());
+        (TreasuryPolicy.Policy memory cur,,) = t.current();
+        assertEq(cur.maxLeverageX10, 30);
+        assertEq(t.venueLeaf(address(this)), keccak256(abi.encode(address(this))));
+    }
+
+    function test_validate_t2LeverageAtMost3x() public {
+        TreasuryPolicy.Policy memory p = _t2();
+        p.maxLeverageX10 = 31;
+        _expectInvalid(p, TreasuryPolicy.LeverageTooHigh.selector);
+    }
+
+    function test_validate_t2NetDeltaBand() public {
+        TreasuryPolicy.Policy memory p = _t2();
+        (p.netDeltaMinBps, p.netDeltaMaxBps) = (100, 50);
+        _expectInvalid(p, TreasuryPolicy.BadNetDelta.selector);
+        (p.netDeltaMinBps, p.netDeltaMaxBps) = (-10_001, 0);
+        _expectInvalid(p, TreasuryPolicy.BadNetDelta.selector);
+        (p.netDeltaMinBps, p.netDeltaMaxBps) = (0, 10_001);
+        _expectInvalid(p, TreasuryPolicy.BadNetDelta.selector);
+        (p.netDeltaMinBps, p.netDeltaMaxBps) = (-10_000, 10_000);
+        tp.validate(p);
+    }
+
+    function test_validate_t2VenueCapAndRoot() public {
+        TreasuryPolicy.Policy memory p = _t2();
+        p.perVenueCapBps = 0;
+        _expectInvalid(p, TreasuryPolicy.BadVenueCap.selector);
+        p.perVenueCapBps = 10_001;
+        _expectInvalid(p, TreasuryPolicy.BadVenueCap.selector);
+        p.perVenueCapBps = 10_000;
+        p.venueAllowRoot = bytes32(0);
+        _expectInvalid(p, TreasuryPolicy.NoVenues.selector);
     }
 
     function test_validate_t1NoVenues() public {
@@ -378,7 +427,7 @@ contract TreasuryPolicyTest is Test {
         tp.validate(p);
     }
 
-    /// Fuzz the T1 zero-field rules: any nonzero value is rejected.
+    /// Fuzz the T1/T2 overlay rules against a reference model.
     function testFuzz_validate_t1Fields(int16 dMin, int16 dMax, uint16 lev, uint16 venueCap, bytes32 venueRoot)
         public
     {
@@ -388,9 +437,19 @@ contract TreasuryPolicyTest is Test {
         p.maxLeverageX10 = lev;
         p.perVenueCapBps = venueCap;
         p.venueAllowRoot = venueRoot;
-        if (dMin != 0 || dMax != 0) vm.expectRevert(TreasuryPolicy.T1NetDelta.selector);
-        else if (lev != 0) vm.expectRevert(TreasuryPolicy.T1Leverage.selector);
-        else if (venueCap != 0 || venueRoot != bytes32(0)) vm.expectRevert(TreasuryPolicy.T1Venue.selector);
+        if (lev == 0) {
+            // T1: every overlay field must be zero.
+            if (dMin != 0 || dMax != 0) vm.expectRevert(TreasuryPolicy.T1NetDelta.selector);
+            else if (venueCap != 0 || venueRoot != bytes32(0)) vm.expectRevert(TreasuryPolicy.T1Venue.selector);
+        } else if (lev > 30) {
+            vm.expectRevert(TreasuryPolicy.LeverageTooHigh.selector);
+        } else if (dMin > dMax || dMin < -10_000 || dMax > 10_000) {
+            vm.expectRevert(TreasuryPolicy.BadNetDelta.selector);
+        } else if (venueCap == 0 || venueCap > 10_000) {
+            vm.expectRevert(TreasuryPolicy.BadVenueCap.selector);
+        } else if (venueRoot == bytes32(0)) {
+            vm.expectRevert(TreasuryPolicy.NoVenues.selector);
+        }
         tp.validate(p);
     }
 

@@ -6,7 +6,8 @@
   "scripts": {
     "desks": "bun desks/main.ts",
     "close": "bun close/main.ts",
-    "cfo-pack": "bun cfo-pack/main.ts"
+    "cfo-pack": "bun cfo-pack/main.ts",
+    "risk": "bun risk/main.ts"
   },
   "dependencies": {
     "@plynth/chain": "workspace:*",

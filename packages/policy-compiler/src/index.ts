@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { encodeAbiParameters, getAddress, isAddress, keccak256, type Address, type Hex } from "viem";
 import { contracts, stockTokens, usdg, type Network } from "@plynth/chain";
-import { buildTree, getProof, instrumentLeaf, ZERO32 } from "./merkle";
+import { buildTree, getProof, instrumentLeaf, venueLeaf, ZERO32 } from "./merkle";
 
 export * from "./merkle";
 
@@ -75,6 +75,8 @@ export class PolicyError extends Error {
 }
 
 const U16 = 0xffff;
+/** TreasuryPolicy.MAX_LEVERAGE_X10: 3.0x, also the T2 default. */
+export const MAX_LEVERAGE_X10 = 30;
 const U32 = 0xffffffff;
 const U64 = (1n << 64n) - 1n;
 
@@ -109,10 +111,20 @@ export function validate(p: Policy): void {
   if (sumMin > 10_000 || sumMax < 10_000) {
     throw new PolicyError("BadBandSums", `band mins sum to ${sumMin} and maxes to ${sumMax}; need mins <= 10000 <= maxes`);
   }
-  if (p.basis.minBps !== 0 || p.basis.maxBps !== 0) throw new PolicyError("T1Basis", "basis band must be 0..0 in T1");
-  if (p.netDeltaMinBps !== 0 || p.netDeltaMaxBps !== 0) throw new PolicyError("T1NetDelta", "net delta must be 0 in T1");
-  if (p.maxLeverageX10 !== 0) throw new PolicyError("T1Leverage", "leverage must be 0 in T1");
-  if (p.perVenueCapBps !== 0 || BigInt(p.venueAllowRoot) !== 0n) throw new PolicyError("T1Venue", "no venues in T1");
+  if (p.maxLeverageX10 === 0) {
+    // T1: no overlay, no venues.
+    if (p.basis.minBps !== 0 || p.basis.maxBps !== 0) throw new PolicyError("T1Basis", "basis band must be 0..0 in T1");
+    if (p.netDeltaMinBps !== 0 || p.netDeltaMaxBps !== 0) throw new PolicyError("T1NetDelta", "net delta must be 0 in T1");
+    if (p.perVenueCapBps !== 0 || BigInt(p.venueAllowRoot) !== 0n) throw new PolicyError("T1Venue", "no venues in T1");
+  } else {
+    // T2: hedge overlay and perp venues.
+    if (p.maxLeverageX10 > MAX_LEVERAGE_X10) throw new PolicyError("LeverageTooHigh", `${p.maxLeverageX10 / 10}x > 3x`);
+    if (p.netDeltaMinBps > p.netDeltaMaxBps || p.netDeltaMinBps < -10_000 || p.netDeltaMaxBps > 10_000) {
+      throw new PolicyError("BadNetDelta", `net delta ${p.netDeltaMinBps}..${p.netDeltaMaxBps}`);
+    }
+    if (p.perVenueCapBps === 0 || p.perVenueCapBps > 10_000) throw new PolicyError("BadVenueCap", `per-venue cap ${p.perVenueCapBps}`);
+    if (BigInt(p.venueAllowRoot) === 0n) throw new PolicyError("NoVenues", "T2 needs at least one allowed venue");
+  }
   if (p.perNameFloatCapBps > 200) throw new PolicyError("FloatCapTooHigh", `${p.perNameFloatCapBps} > 200`);
   if (!(p.deriskAtDrawdownBps < p.pauseNewRiskAtDrawdownBps && p.pauseNewRiskAtDrawdownBps <= 0)) {
     throw new PolicyError("BadDrawdown", "need derisk < pause <= 0");
@@ -138,10 +150,13 @@ export type Template = {
   periodDays: number;
   controller?: string | null;
   instruments: { asset: string; kind: KindName }[];
-  venues?: unknown[];
+  /** T2 only: venue adapter addresses (InHousePerpVenue / MirroredPerpVenue) allowed for new risk. */
+  venues?: string[];
 };
 
 export type Instrument = { label: string; asset: Address; kind: number; kindName: KindName; leaf: Hex; proof: Hex[] };
+
+export type Venue = { address: Address; leaf: Hex; proof: Hex[] };
 
 export type Compiled = {
   name: string;
@@ -150,6 +165,7 @@ export type Compiled = {
   policy: Policy;
   hash: Hex;
   instruments: Instrument[];
+  venues: Venue[];
 };
 
 /** Parses YAML and resolves `extends: other` (a sibling file other.yaml) by shallow top-level merge. */
@@ -193,7 +209,14 @@ export function compileTemplate(t: Template, opts: CompileOptions = {}): Compile
   const network: Network = opts.network ?? t.network ?? "mainnet";
   const controller = opts.controller ?? t.controller ?? undefined;
   if (!controller || !isAddress(controller, { strict: false })) throw new PolicyError("ZeroAddress", "controller missing: set it in the template or pass --controller");
-  if (t.venues && t.venues.length > 0) throw new PolicyError("T1Venue", "no venues in T1");
+  const venueList = (t.venues ?? []).map((v) => {
+    if (typeof v !== "string" || !isAddress(v, { strict: false })) throw new PolicyError("BadVenue", `venue ${JSON.stringify(v)} is not an address`);
+    return getAddress(v);
+  });
+  // Venues only exist in T2 (maxLeverageX10 > 0); validate() names the rule.
+  if (venueList.length > 0 && !(t.hedge?.maxLeverageX10 ?? 0)) throw new PolicyError("T1Venue", "no venues in T1");
+  const venueTree = buildTree(venueList.map((v) => venueLeaf(v)));
+  const venues: Venue[] = venueList.map((v) => ({ address: v, leaf: venueLeaf(v), proof: getProof(venueTree, venueLeaf(v)) }));
 
   const kinds = t.instruments.map((i) => {
     if (!(i.kind in KINDS)) throw new Error(`unknown instrument kind ${i.kind}`);
@@ -225,11 +248,11 @@ export function compileTemplate(t: Template, opts: CompileOptions = {}): Compile
     approvalAboveUsd: BigInt(t.limits.approvalAboveUsd),
     periodSeconds: Math.round(t.periodDays * 86_400),
     instrumentAllowRoot: tree.root,
-    venueAllowRoot: ZERO32,
+    venueAllowRoot: venueTree.root,
     controller: getAddress(controller),
   };
   validate(policy);
-  return { name: t.name, description: t.description ?? "", network, policy, hash: policyHash(policy), instruments };
+  return { name: t.name, description: t.description ?? "", network, policy, hash: policyHash(policy), instruments, venues };
 }
 
 export function compileFile(path: string, opts: CompileOptions = {}): Compiled {

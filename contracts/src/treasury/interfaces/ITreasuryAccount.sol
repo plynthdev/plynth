@@ -11,5 +11,7 @@ interface ITreasuryAccount {
     function periodClose() external view returns (address);
     function isDeskKey(address key) external view returns (bool);
     /// Every asset of every sleeve the account has ever registered, with its kind and band.
+    /// Registered sleeves whose value sits at perp venues (IPositionSleeve).
+    function positionSleeves() external view returns (address[] memory);
     function trackedAssets() external view returns (address[] memory assets, uint8[] memory kinds, uint8[] memory bands);
 }
