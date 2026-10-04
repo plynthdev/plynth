@@ -6,6 +6,7 @@ import {PeriodClose} from "../../src/treasury/PeriodClose.sol";
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
+import {ITierSource} from "../../src/token/ITierSource.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 contract PeriodCloseTest is TreasuryFixture {
@@ -17,7 +18,7 @@ contract PeriodCloseTest is TreasuryFixture {
     function setUp() public override {
         super.setUp();
         assertEq(vm.addr(controllerKey), controller);
-        pc = new PeriodClose(account, IERC20Metadata(address(usdg)), feeTo);
+        pc = new PeriodClose(account, IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0)));
         vm.prank(board);
         account.setPeriodClose(address(pc));
     }
@@ -326,7 +327,7 @@ contract PeriodCloseTest is TreasuryFixture {
     }
 
     function test_zeroFeeRecipientMeansNoFee() public {
-        PeriodClose free = new PeriodClose(account, IERC20Metadata(address(usdg)), address(0));
+        PeriodClose free = new PeriodClose(account, IERC20Metadata(address(usdg)), address(0), ITierSource(address(0)));
         vm.prank(board);
         account.setPeriodClose(address(free));
         pc = free;

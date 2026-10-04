@@ -54,6 +54,17 @@ contract MockPoolManager {
         rate1Per0X18[keccak256(abi.encode(key))] = r;
     }
 
+    mapping(bytes32 slot => bytes32) private _slots;
+
+    /// Stores slot0 (sqrtPriceX96 in the low 160 bits) where the real PoolManager keeps it, for `extsload`.
+    function setSqrtPrice(PoolKey memory key, uint160 sqrtPriceX96) external {
+        _slots[keccak256(abi.encode(keccak256(abi.encode(key)), bytes32(uint256(6))))] = bytes32(uint256(sqrtPriceX96));
+    }
+
+    function extsload(bytes32 slot) external view returns (bytes32) {
+        return _slots[slot];
+    }
+
     function setFillBps(uint256 b) external {
         fillBps = b;
     }

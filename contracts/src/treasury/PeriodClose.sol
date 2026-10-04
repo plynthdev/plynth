@@ -11,6 +11,7 @@ import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 import {TreasuryAccount} from "./TreasuryAccount.sol";
 import {AssetValuation} from "./AssetValuation.sol";
 import {ISleeve, IPeriodStartNav} from "./interfaces/ISleeve.sol";
+import {ITierSource, Tier} from "../token/ITierSource.sol";
 
 /// Every period ends with a statement the chain itself checks. The controller signs a `Close`; `commit`
 /// recomputes, in the same call, everything the statement claims about the account's holdings:
@@ -31,7 +32,11 @@ import {ISleeve, IPeriodStartNav} from "./interfaces/ISleeve.sol";
 ///
 /// After the checks a platform fee of navUsd x 25 bps x elapsed / 365 days is paid from the account's idle
 /// cash (USDG) to `feeRecipient`; what idle cash cannot cover is carried as `feeOwed` to the next close.
-/// `periodStartNav` (read by the PolicyGuard drawdown rule) becomes the NAV after the fee. Non-upgradeable.
+/// `periodStartNav` (read by the PolicyGuard drawdown rule) becomes the NAV after the fee. The fee recipient
+/// is the FeeRouter in production.
+///
+/// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
+/// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
 contract PeriodClose is EIP712, IPeriodStartNav {
     struct Close {
         uint64 periodEnd;
@@ -58,6 +63,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     uint256 public constant FEE_BPS = 25;
     uint256 public constant YEAR = 365 days;
     uint256 private constant BPS = 10_000;
+    uint32 public constant WEEKLY_BELOW = 28 days;
 
     TreasuryAccount public immutable account;
     TreasuryPolicy public immutable policy;
@@ -66,6 +72,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     uint8 public immutable cashDecimals;
     address public immutable feeRecipient; // zero = no fee
     uint64 public immutable startTime; // fee accrual start of the first period
+    ITierSource public immutable tiers; // zero = no tier gating (weekly close always allowed)
 
     Close[] private _closes;
     uint256 public periodStartNav;
@@ -85,8 +92,9 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     error WeightsMismatch(uint16 cashBps, uint16 equityBps);
     error PositionsMismatch(bytes32 expected);
     error BadSignature();
+    error TierTooLow(address board);
 
-    constructor(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_)
+    constructor(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_, ITierSource tiers_)
         EIP712("Plynth PeriodClose", "1")
     {
         if (address(account_) == address(0) || address(cash_) == address(0)) revert ZeroAddress();
@@ -97,6 +105,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         cashDecimals = cash_.decimals();
         feeRecipient = feeRecipient_;
         startTime = uint64(block.timestamp);
+        tiers = tiers_;
     }
 
     // ---------------------------------------------------------------- commit
@@ -104,6 +113,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     function commit(Close calldata c, bytes calldata controllerSig) external {
         uint64 prevEnd = _checkTiming(c.periodEnd);
         address controller = _checkPolicy(c);
+        _checkTier(prevEnd, c.periodEnd);
 
         (bytes32 posHash,) = _positions(true);
         (uint256 nav,) = account.navUsd();
@@ -205,6 +215,18 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         (TreasuryPolicy.Policy memory p, bytes32 h,) = policy.policyAt(v);
         if (c.policyVersion != v || c.policyHash != h) revert PolicyMismatch(h, v);
         controller = p.controller;
+    }
+
+    /// The period length is the one in force at the period's start (`prevEnd`), as in `nextPeriodEnd`; before
+    /// the first policy version it is the one in force at `periodEnd`.
+    function _checkTier(uint64 prevEnd, uint64 periodEnd) private view {
+        if (address(tiers) == address(0)) return;
+        uint32 v = policy.versionAt(prevEnd);
+        if (v == 0) v = policy.versionAt(periodEnd);
+        (TreasuryPolicy.Policy memory p,,) = policy.policyAt(v);
+        if (p.periodSeconds >= WEEKLY_BELOW) return;
+        address board = account.board();
+        if (!tiers.tierOf(board).weeklyClose) revert TierTooLow(board);
     }
 
     function _weights(uint256 nav) private view returns (uint16 cashBps, uint16 equityBps) {

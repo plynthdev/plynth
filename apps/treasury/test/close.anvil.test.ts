@@ -69,7 +69,7 @@ beforeAll(async () => {
   // Some equity so a held feed can be on hold: 40 mTSLA (~$10k).
   const tsla = kit.stocks.find((s) => s.sym === "mTSLA")!;
   await kit.send(tsla.token, "MockStockToken.sol", "MockStockToken", "mint", [kit.a.account, 40n * 10n ** 18n]);
-  pc = await kit.deploy("PeriodClose.sol", "PeriodClose", [kit.a.account, kit.a.usdg, FEE_TO]);
+  pc = await kit.deploy("PeriodClose.sol", "PeriodClose", [kit.a.account, kit.a.usdg, FEE_TO, "0x0000000000000000000000000000000000000000"]);
   await kit.send(kit.a.account!, "TreasuryAccount.sol", "TreasuryAccount", "setPeriodClose", [pc]);
   // One desk action in the period, logged as the desks would (a guard denial).
   await conn.sql`insert into desk_actions (chain_id, account, desk, action, status, reason_code, reason) values (31337, ${kit.a.account!.toLowerCase()}, 'cash', 'deposit', 'rejected', 6, 'R4_BAND')`;

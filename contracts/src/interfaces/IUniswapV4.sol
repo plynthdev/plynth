@@ -42,6 +42,9 @@ interface IPoolManager {
     function sync(address currency) external;
     function settle() external payable returns (uint256 paid);
     function take(address currency, address to, uint256 amount) external;
+    /// Raw storage read (selector 0x1e2eaeaf). Pool state lives at keccak256(abi.encode(poolId, POOLS_SLOT));
+    /// its low 160 bits are sqrtPriceX96 (verified on 4663 against StateView.getSlot0, 2026-10-04).
+    function extsload(bytes32 slot) external view returns (bytes32);
 }
 
 interface IUnlockCallback {
@@ -49,6 +52,9 @@ interface IUnlockCallback {
 }
 
 library V4Constants {
+    /// Storage slot of PoolManager's `_pools` mapping (v4-core StateLibrary.POOLS_SLOT).
+    bytes32 internal constant POOLS_SLOT = bytes32(uint256(6));
+
     // TickMath.MIN_SQRT_PRICE + 1 and MAX_SQRT_PRICE - 1: "no price limit" for each direction.
     uint160 internal constant MIN_SQRT_PRICE_LIMIT = 4295128739 + 1;
     uint160 internal constant MAX_SQRT_PRICE_LIMIT = 1461446703485210103287273052203988822378723970342 - 1;
