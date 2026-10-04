@@ -1,8 +1,10 @@
 import { connect, createDatabaseIfMissing, databaseUrl, dropDatabase, runMigrations, withDatabase } from "./index";
 
-/** Fresh, migrated plynth_test_* database on the DATABASE_URL server. Call drop() after. */
+/** Fresh, migrated database on the DATABASE_URL server, named <prefix><label>_... where prefix is
+ *  PLYNTH_TEST_DB_PREFIX (default plynth_test_) so parallel lanes can keep to their own namespace. Call drop() after. */
 export async function createTestDb(label = "run") {
-  const name = `plynth_test_${label}_${process.pid}_${Math.floor(Math.random() * 1e9)}`.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+  const prefix = process.env.PLYNTH_TEST_DB_PREFIX ?? "plynth_test_";
+  const name = `${prefix}${label}_${process.pid}_${Math.floor(Math.random() * 1e9)}`.toLowerCase().replace(/[^a-z0-9_]/g, "_");
   const url = withDatabase(databaseUrl(), name);
   await createDatabaseIfMissing(url);
   await runMigrations(url);
