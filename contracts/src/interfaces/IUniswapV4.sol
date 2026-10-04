@@ -25,7 +25,18 @@ struct SwapParams {
     uint160 sqrtPriceLimitX96;
 }
 
+struct ModifyLiquidityParams {
+    int24 tickLower;
+    int24 tickUpper;
+    int256 liquidityDelta;
+    bytes32 salt;
+}
+
 interface IPoolManager {
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external returns (int24 tick);
+    function modifyLiquidity(PoolKey memory key, ModifyLiquidityParams memory params, bytes calldata hookData)
+        external
+        returns (int256 callerDelta, int256 feesAccrued);
     function unlock(bytes calldata data) external returns (bytes memory);
     function swap(PoolKey memory key, SwapParams memory params, bytes calldata hookData) external returns (int256 swapDelta);
     function sync(address currency) external;

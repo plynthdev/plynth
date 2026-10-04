@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IStockToken} from "../src/interfaces/IStockToken.sol";
 import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
 import {Valuer} from "../src/core/Valuer.sol";
-import {MockFeed} from "./mocks/Mocks.sol";
+import {MockFeed} from "../src/testnet/MockFeed.sol";
 
 /// Runs against a fork of Robinhood Chain mainnet (4663). Skipped when RHC_MAINNET_RPC_URL is unset.
 contract ForkTest is Test {
@@ -28,7 +28,7 @@ contract ForkTest is Test {
     function test_valuerPricesRealTokenWithItsLiveMultiplier() public {
         StockTokenRegistry reg = new StockTokenRegistry(address(this));
         Valuer valuer = new Valuer(reg, 30 minutes);
-        MockFeed feed = new MockFeed(8, 200e8); // per-share mock feed: exercises the multiplierEmbedded = false path
+        MockFeed feed = new MockFeed(8, 200e8, "mock"); // per-share mock feed: exercises the multiplierEmbedded = false path
         reg.list(AAPL, address(feed), false);
         uint256 m = IStockToken(AAPL).uiMultiplier();
         assertEq(valuer.quote(AAPL).priceUsdPerToken, 200e18 * m / 1e18);

@@ -8,7 +8,7 @@ import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
 import {Valuer} from "../src/core/Valuer.sol";
 import {StockRouter} from "../src/core/StockRouter.sol";
 import {IHooks, IPoolManager, PoolKey} from "../src/interfaces/IUniswapV4.sol";
-import {MockFeed} from "./mocks/Mocks.sol";
+import {MockFeed} from "../src/testnet/MockFeed.sol";
 import {MockERC20, MockPoolManager, MockStockERC20} from "./mocks/MockV4.sol";
 
 contract StockRouterTest is Test {
@@ -32,7 +32,7 @@ contract StockRouterTest is Test {
         vm.warp(1_800_000_000);
         reg = new StockTokenRegistry(board);
         valuer = new Valuer(reg, 30 minutes);
-        feed = new MockFeed(8, 250e8);
+        feed = new MockFeed(8, 250e8, "mock");
         tok = new MockStockERC20("TSLA", 18);
         usdg = new MockERC20("USDG", 6);
         vm.prank(board);
@@ -99,7 +99,8 @@ contract StockRouterTest is Test {
     // ---------- R2 hold ----------
 
     function test_R2_staleFeedBlocksBuyAndSell() public {
-        feed.set(250e8, block.timestamp - 31 minutes);
+        feed.set(250e8);
+        feed.setUpdatedAt(block.timestamp - 31 minutes);
         (, bool hold) = router.quoteMinOut(address(tok), 100e6, true, 100);
         assertTrue(hold);
         vm.startPrank(alice);
@@ -181,7 +182,7 @@ contract StockRouterTest is Test {
 
         MockStockERC20 t = new MockStockERC20("T", tokDec);
         MockERC20 u = new MockERC20("U", usdDec);
-        MockFeed f = new MockFeed(18, int256(price));
+        MockFeed f = new MockFeed(18, int256(price), "mock");
         vm.prank(board);
         reg.list(address(t), address(f), true);
         StockRouter r = new StockRouter(IPoolManager(address(pm)), reg, valuer, IERC20Metadata(address(u)), board);
@@ -201,7 +202,8 @@ contract StockRouterTest is Test {
         usdgIn = bound(usdgIn, 1, 1e18);
         price = bound(price, 1e16, 1e24);
         bps = uint16(bound(bps, 0, 500));
-        feed.set(int256(price / 1e10), block.timestamp);
+        feed.set(int256(price / 1e10));
+        feed.setUpdatedAt(block.timestamp);
         (uint256 minOut,) = router.quoteMinOut(address(tok), usdgIn, true, bps);
         (uint256 usd,) = valuer.value(address(tok), minOut);
         assertLe(usd, usdgIn * 1e12); // USDG 6dp -> 1e18
