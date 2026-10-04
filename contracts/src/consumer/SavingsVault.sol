@@ -10,6 +10,7 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {ISignatureTransfer, IAllowanceTransfer} from "../interfaces/IPermit2.sol";
+import {IEligibility} from "../interfaces/IEligibility.sol";
 
 interface ICanonicalRegistry {
     function isCanonical(address token) external view returns (bool);
@@ -26,6 +27,11 @@ interface ICanonicalRegistry {
 /// available at most once per 7 days. Only CrowdBuy can take funds out (sweep), and only into CrowdBuy.
 /// The CrowdBuy address is set once. The owner can rotate the keeper and nothing else: there is no
 /// pause, no rescue and no owner path that moves user funds. withdraw never consults the owner or keeper.
+///
+/// Eligibility: once the owner sets the EligibilityRegistry (set once), choosing a buy mix (setMix) and
+/// joining a crowd buy (CrowdBuy.join reads `eligibility` here) require `isEligible(user)`. Nothing on the
+/// exit side (withdraw, cancel, claims) ever checks it, so a revoked or expired user can always leave.
+/// Deploy scripts must call setEligibility before Stock Tokens are offered; while unset, buys are ungated.
 contract SavingsVault is Ownable2Step, EIP712 {
     using SafeERC20 for IERC20;
 
@@ -63,6 +69,7 @@ contract SavingsVault is Ownable2Step, EIP712 {
 
     address public keeper;
     address public crowd;
+    IEligibility public eligibility;
 
     mapping(address user => Account) private _accounts;
     mapping(address user => Settings) private _settings;
@@ -73,6 +80,7 @@ contract SavingsVault is Ownable2Step, EIP712 {
 
     event KeeperSet(address indexed keeper);
     event CrowdSet(address indexed crowd);
+    event EligibilitySet(address indexed eligibility);
     event Deposited(address indexed user, uint256 amount, bool viaPermit2);
     event Withdrawn(address indexed user, address indexed to, uint256 amount, uint256 fromAvailable, uint256 fromPending);
     event SettingsSet(
@@ -104,6 +112,8 @@ contract SavingsVault is Ownable2Step, EIP712 {
     error NoFixedTopUp();
     error TopUpTooSoon(uint256 nextAt);
     error NoMix();
+    error NotEligible(address user);
+    error EligibilityAlreadySet();
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -144,6 +154,20 @@ contract SavingsVault is Ownable2Step, EIP712 {
         if (crowd_ == address(0)) revert ZeroAddress();
         crowd = crowd_;
         emit CrowdSet(crowd_);
+    }
+
+    /// One-time: fixing the registry stops the owner from swapping in one that gates differently.
+    function setEligibility(IEligibility eligibility_) external onlyOwner {
+        if (address(eligibility) != address(0)) revert EligibilityAlreadySet();
+        if (address(eligibility_) == address(0)) revert ZeroAddress();
+        eligibility = eligibility_;
+        emit EligibilitySet(address(eligibility_));
+    }
+
+    /// True when no registry is set yet, otherwise the registry's answer. Used for buying only.
+    function canBuy(address user) public view returns (bool) {
+        IEligibility e = eligibility;
+        return address(e) == address(0) || e.isEligible(user);
     }
 
     // ---------------------------------------------------------------- user
@@ -196,6 +220,7 @@ contract SavingsVault is Ownable2Step, EIP712 {
     }
 
     function setMix(MixEntry[] calldata mix) external {
+        if (!canBuy(msg.sender)) revert NotEligible(msg.sender);
         uint256 n = mix.length;
         if (n == 0 || n > MAX_MIX) revert InvalidMix();
         uint256 sum;

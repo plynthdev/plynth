@@ -40,6 +40,8 @@ bun run verify:chain                                     # re-check every addres
 bun run indexer --once && bun run keeper --once          # one indexer + keeper pass (see .env.example)
 bun run api                                              # dashboard API: tRPC at /trpc, REST mirror at /v1
 bun run relayer                                          # gasless Quiet claims: POST /claim on :8789
+bun apps/eligibility/scripts/download-dbip.ts            # monthly: free IP-to-country database into data/
+bun run eligibility                                      # eligibility screen: POST /eligibility/check on :8790
 ```
 
 ## Layout
@@ -54,6 +56,12 @@ bun run relayer                                          # gasless Quiet claims:
 - `apps/relayer/` Gasless claims for Quiet delivery: verifies the stealth key's EIP-712 signature off-chain,
   simulates, and sends `StealthClaims.claim` from its own wallet. Rate-limited per IP and per stealth address;
   refuses claims into Plynth contracts.
+- `contracts/src/core/EligibilityRegistry.sol` + `apps/eligibility/` Eligibility screening with free sources:
+  an EIP-712 self-attestation signed by the wallet, the IP's country (MMDB database, plus `CF-IPCountry`
+  behind Cloudflare) and the OFAC SDN digital-currency addresses (refreshed daily; fails closed when stale).
+  A pass returns a 30-day attestation signed by the attester key that anyone can submit to the registry.
+  Screens are pluggable, so a KYC vendor can be added as one more. Decisions are stored without the IP.
+  The API also serves the route at `/v1/eligibility/check` when `ELIGIBILITY_REGISTRY` is set.
 - `packages/sdk/` ERC-5564 scheme 1 stealth addresses (keys from a wallet signature, meta-address, ERC-6538
   registration calldata, announcement scanning with view tags, stealth keys, claim signing). Matches the ERC's
   reference vector.
@@ -75,6 +83,14 @@ What you have to trust, per component. Later components add their own entries he
   Quiet users trust the keeper to use their meta-address (a wrong one shows up in the user's own scan as a
   missing balance). Credited balances move only with the stealth key's signature; the relayer cannot redirect
   them. Funding and book membership stay public; the user and a stealth address never share a transaction.
+
+- **Eligibility (EligibilityRegistry).** Buying (`SavingsVault.setMix`, `CrowdBuy.join`) needs a current
+  attestation from the attester key; the owner sets the registry once and can rotate the attester, who can
+  revoke. Exits (withdraw, cancel, claims) never check eligibility, so a revoked user can always leave. The
+  screen is not KYC: it trusts the wallet's statement, an IP database and the public sanctions list.
+
+IP geolocation by [DB-IP](https://db-ip.com) (IP to Country Lite, licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Sanctions data: the OFAC SDN list (US Treasury).
 
 ## Still to verify
 

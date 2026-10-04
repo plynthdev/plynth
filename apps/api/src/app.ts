@@ -45,7 +45,11 @@ export const REST: Proc[] = [
   { method: "GET", path: "/v1/meta/health", call: (k) => k.meta.health() },
 ];
 
-export function createApp(deps: Deps, opts: { corsOrigins?: string[] } = {}): Hono {
+/**
+ * opts.eligibility: the screening routes from @plynth/eligibility (eligibilityFromEnv(...).routes). When given,
+ * they are served at /eligibility/check and /v1/eligibility/check behind the same CORS allow-list.
+ */
+export function createApp(deps: Deps, opts: { corsOrigins?: string[]; eligibility?: Hono } = {}): Hono {
   const allowed = new Set(opts.corsOrigins ?? DEFAULT_CORS_ORIGINS);
   const app = new Hono();
 
@@ -77,6 +81,10 @@ export function createApp(deps: Deps, opts: { corsOrigins?: string[] } = {}): Ho
     };
     if (p.method === "GET") app.get(p.path, handler);
     else app.post(p.path, handler);
+  }
+  if (opts.eligibility) {
+    app.route("/eligibility", opts.eligibility);
+    app.route("/v1/eligibility", opts.eligibility);
   }
   app.notFound((c) => c.json({ error: { code: "NOT_FOUND", message: "no such route" } }, 404));
   return app;

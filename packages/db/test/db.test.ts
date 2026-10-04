@@ -41,7 +41,7 @@ describe("packages/db", () => {
 
   test("indexer and keeper tables exist; every table is owner-prefixed (ev_, keeper_, treasury_)", async () => {
     const tables = (await t.sql`select table_name from information_schema.tables where table_schema = 'public' order by 1`).map((r) => r.table_name);
-    expect(tables).toEqual(expect.arrayContaining(["ev_cursors", "ev_logs", "keeper_jobs", "keeper_roundups"]));
+    expect(tables).toEqual(expect.arrayContaining(["eligibility_decisions", "ev_cursors", "ev_logs", "keeper_jobs", "keeper_roundups"]));
     for (const name of tables) expect(name).toMatch(/^(ev|keeper|treasury)_/);
   });
 

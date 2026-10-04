@@ -172,7 +172,9 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     /// Anyone may call for any user: it only moves that user's own pending USDG into that user's own orders.
     /// Split by mix weight (floor); the last mix entry takes the remainder so the whole sweep is placed.
     /// Deliberately not nonReentrant: a join that lands while a book is executing goes to the new book (R8).
+    /// Buying: the user must pass the vault's eligibility gate (exits below never check it).
     function join(address user) external {
+        if (!vault.canBuy(user)) revert SavingsVault.NotEligible(user);
         (SavingsVault.MixEntry[] memory mix, uint256 amount) = vault.sweep(user);
         if (amount == 0) revert NothingPending();
         uint256 n = mix.length;

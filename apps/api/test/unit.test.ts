@@ -158,3 +158,25 @@ describe("HTTP layer", () => {
     expect(txt).not.toContain("stack");
   });
 });
+
+describe("eligibility routes (todo 22) mounted in the API", () => {
+  test("served at /eligibility/check and /v1/eligibility/check behind the CORS allow-list; absent when not configured", async () => {
+    const { Hono } = await import("hono");
+    const { EligibilityService, MemoryDecisionStore, eligibilityRoutes } = await import("@plynth/eligibility");
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const attester = privateKeyToAccount("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"); // test-key
+    const vendor = { name: "stub", run: async () => ({ ok: true as const, flag: 1 }) };
+    const svc = new EligibilityService({ chainId: 31337, registry: A(0xe1), attester, screens: [vendor], store: new MemoryDecisionStore() });
+    const routes: InstanceType<typeof Hono> = eligibilityRoutes(svc, { clientIp: () => "203.0.113.1" });
+    const app = createApp(deps, { eligibility: routes });
+    const body = JSON.stringify({ address: A(0x77), attestationSig: "0x00", expiry: "1" });
+    for (const path of ["/eligibility/check", "/v1/eligibility/check"]) {
+      const r = await app.request(path, { method: "POST", body, headers: { origin: "http://localhost:5173", "content-type": "application/json" } });
+      expect(r.status).toBe(200);
+      expect(r.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+      expect(((await r.json()) as any).attestation.registry).toBe(A(0xe1));
+    }
+    expect((await app.request("/v1/eligibility/check", { method: "POST", body, headers: { origin: "https://evil.example" } })).status).toBe(403);
+    expect((await createApp(deps).request("/v1/eligibility/check", { method: "POST", body })).status).toBe(404);
+  });
+});

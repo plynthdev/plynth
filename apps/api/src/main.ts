@@ -2,12 +2,14 @@
 //
 // Env: API_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // API_DEPLOYMENTS_DIR (default ./deployments), CORS_ORIGINS (comma-separated; default the Lovable app +
-// http://localhost:5173). Read-only: no keys, no writes to keeper or indexer tables.
+// http://localhost:5173). Read-only: no keys, no writes to keeper or indexer tables, except the optional
+// eligibility routes (ELIGIBILITY_*), which hold the attester key and write eligibility_decisions.
 import { robinhood, robinhoodTestnet } from "@plynth/chain";
 import { connect, databaseUrl } from "@plynth/db";
 import { readDeployment } from "@plynth/indexer";
 import { join } from "node:path";
 import { createPublicClient, http, type PublicClient } from "viem";
+import { eligibilityFromEnv } from "@plynth/eligibility";
 import { corsOrigins, createApp } from "./app";
 import { BlockTimes } from "./block-times";
 import { apiDeployment } from "./deployment";
@@ -29,6 +31,9 @@ const pub = createPublicClient({
 const chainId = await pub.getChainId();
 const dep = apiDeployment(readDeployment(process.env.API_DEPLOYMENTS_DIR || join(import.meta.dir, "..", "..", "..", "deployments"), chainId), chainId);
 const { db } = connect(databaseUrl());
-const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub) }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS) });
+// Eligibility screening (POST /v1/eligibility/check) is enabled when ELIGIBILITY_REGISTRY is set; it then
+// needs the attester key (see apps/eligibility/src/config.ts). The rest of the API stays keyless.
+const elig = eligibilityFromEnv(process.env, { chainId, pub, db });
+const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub) }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS), eligibility: elig?.routes });
 const server = Bun.serve({ port: Number(process.env.API_PORT ?? 8789), fetch: app.fetch });
 console.log(`[api ${chainId}] listening on :${server.port}`);

@@ -29,6 +29,13 @@
       "when": 1791109859439,
       "tag": "0003_keeper",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791112946049,
+      "tag": "0004_eligibility",
+      "breakpoints": true
     }
   ]
 }

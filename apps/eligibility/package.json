@@ -1,0 +1,18 @@
+{
+  "name": "@plynth/eligibility",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "download-ip-db": "bun scripts/download-dbip.ts"
+  },
+  "dependencies": {
+    "@plynth/db": "workspace:*",
+    "@plynth/keeper": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.13",
+    "mmdb-lib": "^3.0.3",
+    "viem": "^2.57.2"
+  }
+}
