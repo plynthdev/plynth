@@ -2,8 +2,8 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {StockTokenRegistry} from "../src/StockTokenRegistry.sol";
-import {Valuer} from "../src/Valuer.sol";
+import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
+import {Valuer} from "../src/core/Valuer.sol";
 import {MockFeed, MockStockToken} from "./mocks/Mocks.sol";
 
 contract ValuerTest is Test {

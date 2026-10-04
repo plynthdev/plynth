@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
-import {IStockToken} from "./interfaces/IStockToken.sol";
+import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
+import {IStockToken} from "../interfaces/IStockToken.sol";
 import {StockTokenRegistry} from "./StockTokenRegistry.sol";
 
 /// Values canonical Stock Tokens in USD (1e18) from Chainlink x ERC-8056 multiplier.

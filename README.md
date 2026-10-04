@@ -2,6 +2,15 @@
 
 Backend for plynth on Robinhood Chain.
 
+## Products
+
+Two products share one core (`contracts/src/core/`, `packages/chain/`).
+
+- **plynth (consumer).** Spare change and top-ups in USDG, pooled into Stock Token buys and delivered to
+  the saver. Contracts in `contracts/src/consumer/`.
+- **Plinth (treasury).** A board sets an on-chain policy; desk bots may only trade inside it, and each
+  period closes with an on-chain NAV statement. Contracts in `contracts/src/treasury/`.
+
 | Network | Chain ID | Public RPC | Explorer |
 |---|---|---|---|
 | Mainnet | 4663 | https://rpc.mainnet.chain.robinhood.com | https://robinhoodchain.blockscout.com |
@@ -32,9 +41,21 @@ bun run verify:chain                                     # re-check every addres
 
 ## Layout
 
-- `contracts/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
+- `contracts/src/core/` Foundry. `StockTokenRegistry` (board-curated canonical list, fail-closed) and `Valuer`
   (Chainlink price x ERC-8056 `uiMultiplier()`, applied exactly once; stale feed -> `hold`, not revert).
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
+
+- `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
+  `bun install` sets `core.hooksPath` to `.githooks`). Run it by hand with `bun run guard`.
+
+## Trust assumptions
+
+What you have to trust, per component. Later components add their own entries here.
+
+- **StockTokenRegistry.** The registry owner (the board) decides which Stock Tokens and feeds are canonical.
+  Unlisted tokens are refused (fail-closed).
+- **Valuer.** Chainlink price feeds on Robinhood Chain, and each Stock Token's own `uiMultiplier()`. A stale
+  or missing feed returns `hold` instead of a price.
 
 ## Still to verify
 

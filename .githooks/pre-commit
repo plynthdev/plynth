@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Block commits that would publish private material. See scripts/public-guard.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/public-guard.sh"

@@ -102,16 +102,16 @@ export type PoolKey = { currency0: Address; currency1: Address; fee: number; tic
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 const U = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" as const;
 export const v4Pools = {
-  TSLA: { id: "0x8517f8071ae5b831b738052f12125e8e3d6c158b78728aa44ce3b25e5104d32e", key: { currency0: stockTokens.TSLA, currency1: U, fee: 3000, tickSpacing: 60, hooks: ZERO } },
-  AAPL: { id: "0xc748f4671a867db48b552f6b7650bf3255e05f80f00e3f7aad1b17ccb7898fdb", key: { currency0: U, currency1: stockTokens.AAPL, fee: 3000, tickSpacing: 60, hooks: ZERO } },
-  NVDA: { id: "0x6444a8e0b267406a15db74ca00c4a24bdfa81ed3180f5b6d0851f8ed6f4f29c5", key: { currency0: U, currency1: stockTokens.NVDA, fee: 100, tickSpacing: 1, hooks: ZERO } },
-  AMZN: { id: "0x751e89b1e830a959e282377cf53bacc046ff7d6b67c6209504c3db692992c3cd", key: { currency0: stockTokens.AMZN, currency1: U, fee: 2500, tickSpacing: 25, hooks: ZERO } },
-  MSFT: { id: "0x9194a557b6a6bb2236b49ea7e2bbccec5d3eeb705aef00903be4b3de1d949579", key: { currency0: U, currency1: stockTokens.MSFT, fee: 3000, tickSpacing: 60, hooks: ZERO } },
-  GOOGL: { id: "0x43fe16b75cabbf38f5b185d16142b02d1d9200d8f1ba17cb6cf899f562c6197f", key: { currency0: stockTokens.GOOGL, currency1: U, fee: 300, tickSpacing: 3, hooks: ZERO } },
-  META: { id: "0xc58bb68060bcb7b3ea0f6d4a4afef1e57f628722e808db12afb6d1733552872f", key: { currency0: U, currency1: stockTokens.META, fee: 310, tickSpacing: 3, hooks: ZERO } },
-  MSTR: { id: "0xc105b8300ff65d750a0e4e63c7a879e20504069b770713464a5315e797735326", key: { currency0: U, currency1: stockTokens.MSTR, fee: 2400, tickSpacing: 24, hooks: ZERO } },
-  SPY: { id: "0xe5923c8a8be481ec89a2ca784a2bbfa4235de6d88f92260fd66b660c4babf907", key: { currency0: stockTokens.SPY, currency1: U, fee: 500, tickSpacing: 5, hooks: ZERO } },
-  QCOM: { id: "0x106af997d180cf37a574c42c04179f267b9245cf221b1c57fb3e491137915de6", key: { currency0: stockTokens.QCOM, currency1: U, fee: 3500, tickSpacing: 71, hooks: ZERO } },
+  TSLA: { id: "0x8517f8071ae5b831b738052f12125e8e3d6c158b78728aa44ce3b25e5104d32e", key: { currency0: stockTokens.TSLA, currency1: U, fee: 3000, tickSpacing: 60, hooks: ZERO } }, // not-a-key
+  AAPL: { id: "0xc748f4671a867db48b552f6b7650bf3255e05f80f00e3f7aad1b17ccb7898fdb", key: { currency0: U, currency1: stockTokens.AAPL, fee: 3000, tickSpacing: 60, hooks: ZERO } }, // not-a-key
+  NVDA: { id: "0x6444a8e0b267406a15db74ca00c4a24bdfa81ed3180f5b6d0851f8ed6f4f29c5", key: { currency0: U, currency1: stockTokens.NVDA, fee: 100, tickSpacing: 1, hooks: ZERO } }, // not-a-key
+  AMZN: { id: "0x751e89b1e830a959e282377cf53bacc046ff7d6b67c6209504c3db692992c3cd", key: { currency0: stockTokens.AMZN, currency1: U, fee: 2500, tickSpacing: 25, hooks: ZERO } }, // not-a-key
+  MSFT: { id: "0x9194a557b6a6bb2236b49ea7e2bbccec5d3eeb705aef00903be4b3de1d949579", key: { currency0: U, currency1: stockTokens.MSFT, fee: 3000, tickSpacing: 60, hooks: ZERO } }, // not-a-key
+  GOOGL: { id: "0x43fe16b75cabbf38f5b185d16142b02d1d9200d8f1ba17cb6cf899f562c6197f", key: { currency0: stockTokens.GOOGL, currency1: U, fee: 300, tickSpacing: 3, hooks: ZERO } }, // not-a-key
+  META: { id: "0xc58bb68060bcb7b3ea0f6d4a4afef1e57f628722e808db12afb6d1733552872f", key: { currency0: U, currency1: stockTokens.META, fee: 310, tickSpacing: 3, hooks: ZERO } }, // not-a-key
+  MSTR: { id: "0xc105b8300ff65d750a0e4e63c7a879e20504069b770713464a5315e797735326", key: { currency0: U, currency1: stockTokens.MSTR, fee: 2400, tickSpacing: 24, hooks: ZERO } }, // not-a-key
+  SPY: { id: "0xe5923c8a8be481ec89a2ca784a2bbfa4235de6d88f92260fd66b660c4babf907", key: { currency0: stockTokens.SPY, currency1: U, fee: 500, tickSpacing: 5, hooks: ZERO } }, // not-a-key
+  QCOM: { id: "0x106af997d180cf37a574c42c04179f267b9245cf221b1c57fb3e491137915de6", key: { currency0: stockTokens.QCOM, currency1: U, fee: 3500, tickSpacing: 71, hooks: ZERO } }, // not-a-key
 } as const satisfies Record<StockSymbol, { id: `0x${string}`; key: PoolKey }>;
 
 /** v4 pool id = keccak256(abi.encode(PoolKey)). */

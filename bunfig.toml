@@ -1,0 +1,2 @@
+[test]
+pathIgnorePatterns = ["contracts/lib/**", "node_modules/**"]

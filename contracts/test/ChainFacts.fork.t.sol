@@ -4,8 +4,8 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {IStockToken} from "../src/interfaces/IStockToken.sol";
 import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
-import {StockTokenRegistry} from "../src/StockTokenRegistry.sol";
-import {Valuer} from "../src/Valuer.sol";
+import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
+import {Valuer} from "../src/core/Valuer.sol";
 
 interface IERC20Min {
     function transfer(address to, uint256 amount) external returns (bool);

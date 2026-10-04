@@ -3,8 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {IStockToken} from "../src/interfaces/IStockToken.sol";
-import {StockTokenRegistry} from "../src/StockTokenRegistry.sol";
-import {Valuer} from "../src/Valuer.sol";
+import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
+import {Valuer} from "../src/core/Valuer.sol";
 import {MockFeed} from "./mocks/Mocks.sol";
 
 /// Runs against a fork of Robinhood Chain mainnet (4663). Skipped when RHC_MAINNET_RPC_URL is unset.
