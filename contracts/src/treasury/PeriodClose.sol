@@ -12,6 +12,7 @@ import {TreasuryAccount} from "./TreasuryAccount.sol";
 import {AssetValuation} from "./AssetValuation.sol";
 import {ISleeve, IPeriodStartNav} from "./interfaces/ISleeve.sol";
 import {ITierSource, Tier} from "../token/ITierSource.sol";
+import {IPrivateSleeve} from "./PrivateSleeve.sol";
 
 /// Optional hook on the fee recipient (FeeRouter, todo 30).
 interface ICloseFeeHook {
@@ -42,6 +43,15 @@ interface ICloseFeeHook {
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
+///
+/// Private sleeve (`commitWithPrivateSleeve`): when the account has a PrivateSleeve, NAV = the public part
+/// (recomputed on-chain exactly as above) + a private lower bound proven by a circuits/treasury_close proof over
+/// the sleeve's unspent notes at prices pinned from the Valuer in the same call; the proof also shows the band
+/// weights (with the exact private value) are inside the policy bands of the version in force. `cashBps` /
+/// `equityBps` count the proven private part in the sleeve's band; `positionsHash` covers public positions only;
+/// the bundle notes the private part (root, proven NAV, prices commitment, nullifiers: `PrivateSleeveProven`).
+/// The plain `commit` is refused while the sleeve's book is not empty, so a shielded book cannot drop out of a
+/// statement (an empty sleeve proves 0 with an all-padding proof).
 ///
 /// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once; the
 /// EIP-712 domain uses the clone's own address). All-zero constructor arguments deploy a locked implementation.
@@ -103,6 +113,12 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     error BadSignature();
     error TierTooLow(address board);
     error AlreadyInitialized();
+    error NoPrivateSleeve();
+    error PrivateBookOpen(uint256 bookUsd);
+
+    event PrivateSleeveProven(
+        uint256 indexed index, bytes32 root, uint256 privateNavUsd, bytes32 pricesCommitment, bytes32[8] nullifiers
+    );
 
     constructor(TreasuryAccount account_, IERC20Metadata cash_, address feeRecipient_, ITierSource tiers_)
         EIP712("Plynth PeriodClose", "1")
@@ -146,20 +162,79 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint64 prevEnd = _checkTiming(c.periodEnd);
         address controller = _checkPolicy(c);
         _checkTier(prevEnd, c.periodEnd);
+        address ps = account.privateSleeve();
+        if (ps != address(0)) {
+            uint256 book = IPrivateSleeve(ps).bookUsd();
+            if (book != 0) revert PrivateBookOpen(book);
+        }
 
         (bytes32 posHash,) = _positions(true);
         (uint256 nav,) = account.navUsd();
         if (c.navUsd != nav) revert NavMismatch(nav, c.navUsd);
-        (uint16 cashBps, uint16 equityBps) = _weights(nav);
+        (uint16 cashBps, uint16 equityBps) = _weightsOf(_bandUsd(), nav);
         if (c.cashBps != cashBps || c.equityBps != equityBps) revert WeightsMismatch(cashBps, equityBps);
         if (c.positionsHash != posHash) revert PositionsMismatch(posHash);
 
         if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
 
-        _closes.push(c);
-        (uint256 feeRaw, uint256 paid, uint256 owed) = _fee(nav, c.periodEnd - prevEnd);
+        _record(c, prevEnd);
         (periodStartNav,) = account.navUsd();
-        emit PeriodClosed(_closes.length - 1, c.periodEnd, c, feeRaw, paid, owed);
+    }
+
+    /// `commit` for an account with a private sleeve: `c.navUsd` = public NAV + `p.navUsd` (proven lower bound).
+    function commitWithPrivateSleeve(
+        Close calldata c,
+        bytes calldata controllerSig,
+        IPrivateSleeve.PrivateClose calldata p
+    ) external {
+        uint64 prevEnd = _checkTiming(c.periodEnd);
+        address controller = _checkPolicy(c);
+        _checkTier(prevEnd, c.periodEnd);
+        IPrivateSleeve ps = IPrivateSleeve(account.privateSleeve());
+        if (address(ps) == address(0)) revert NoPrivateSleeve();
+
+        (bytes32 posHash,) = _positions(true);
+        if (c.positionsHash != posHash) revert PositionsMismatch(posHash);
+        bytes32 pc = _checkPrivate(c, p, ps);
+        if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
+
+        uint256 index = _record(c, prevEnd);
+        ps.onClose(p.navUsd);
+        (uint256 pubAfter,) = account.navUsd();
+        periodStartNav = pubAfter + p.navUsd;
+        emit PrivateSleeveProven(index, p.root, p.navUsd, pc, p.nullifiers);
+    }
+
+    /// Stores the close and pays the fee on its NAV.
+    function _record(Close calldata c, uint64 prevEnd) private returns (uint256 index) {
+        _closes.push(c);
+        index = _closes.length - 1;
+        (uint256 feeRaw, uint256 paid, uint256 owed) = _fee(c.navUsd, c.periodEnd - prevEnd);
+        emit PeriodClosed(index, c.periodEnd, c, feeRaw, paid, owed);
+    }
+
+    /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the
+    /// bands of the policy version the close names (already checked to be the one in force).
+    function _checkPrivate(Close calldata c, IPrivateSleeve.PrivateClose calldata p, IPrivateSleeve ps)
+        private
+        view
+        returns (bytes32)
+    {
+        IPrivateSleeve.BookContext memory ctx;
+        (ctx.pubNav,) = account.navUsd();
+        uint256 nav = ctx.pubNav + p.navUsd;
+        if (c.navUsd != nav) revert NavMismatch(nav, c.navUsd);
+        ctx.pubBandUsd = _bandUsd();
+        uint256[3] memory withPrivate = _bandUsd(); // a fresh copy: memory arrays alias on assignment
+        withPrivate[ps.band()] += p.navUsd;
+        (uint16 cashBps, uint16 equityBps) = _weightsOf(withPrivate, nav);
+        if (c.cashBps != cashBps || c.equityBps != equityBps) revert WeightsMismatch(cashBps, equityBps);
+
+        (TreasuryPolicy.Policy memory pol,,) = policy.policyAt(c.policyVersion);
+        ctx.policyHash = c.policyHash;
+        ctx.bandMin = [pol.cash.minBps, pol.equity.minBps, pol.basis.minBps];
+        ctx.bandMax = [pol.cash.maxBps, pol.equity.maxBps, pol.basis.maxBps];
+        return ps.checkClose(p, ctx);
     }
 
     // ---------------------------------------------------------------- views
@@ -220,7 +295,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     {
         (positionsHash, positions, holdToken) = _positionsView();
         (navUsd,) = account.navUsd();
-        (cashBps, equityBps) = _weights(navUsd);
+        (cashBps, equityBps) = _weightsOf(_bandUsd(), navUsd);
     }
 
     /// Fee in cash raw units for `navUsd` (1e18) over `elapsed` seconds.
@@ -261,19 +336,21 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         if (!tiers.tierOf(board).weeklyClose) revert TierTooLow(board);
     }
 
-    function _weights(uint256 nav) private view returns (uint16 cashBps, uint16 equityBps) {
-        if (nav == 0) return (0, 0);
+    /// Public cash / equity / basis USD from the sleeves' own `valueOf` (a private sleeve's is 0).
+    function _bandUsd() private view returns (uint256[3] memory usd) {
         address[] memory sl = account.sleeves();
-        uint256 cashUsd;
-        uint256 equityUsd;
         for (uint256 i; i < sl.length; ++i) {
             (uint256 v,) = ISleeve(sl[i]).valueOf(address(account));
             uint8 band = ISleeve(sl[i]).band();
-            if (band == 0) cashUsd += v;
-            else if (band == 1) equityUsd += v; // a basis sleeve (2) is in NAV but in neither weight
+            usd[band > 2 ? 2 : band] += v;
         }
-        cashBps = uint16(cashUsd * BPS / nav);
-        equityBps = uint16(equityUsd * BPS / nav);
+    }
+
+    /// A basis sleeve (2) is in NAV but in neither weight.
+    function _weightsOf(uint256[3] memory usd, uint256 nav) private pure returns (uint16 cashBps, uint16 equityBps) {
+        if (nav == 0) return (0, 0);
+        cashBps = uint16(usd[0] * BPS / nav);
+        equityBps = uint16(usd[1] * BPS / nav);
     }
 
     function _positions(bool revertOnHold) private view returns (bytes32 h, address holdToken) {

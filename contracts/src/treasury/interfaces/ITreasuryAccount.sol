@@ -9,6 +9,8 @@ interface ITreasuryAccount {
     function policy() external view returns (TreasuryPolicy);
     function approvals() external view returns (address);
     function periodClose() external view returns (address);
+    /// The private sleeve (PrivateSleeve), zero if none.
+    function privateSleeve() external view returns (address);
     function isDeskKey(address key) external view returns (bool);
     /// Every asset of every sleeve the account has ever registered, with its kind and band.
     /// Registered sleeves whose value sits at perp venues (IPositionSleeve).

@@ -91,7 +91,7 @@ export const tPolicyAbi = parseAbi([
 
 export const tGuardAbi = parseAbi([
   "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; }",
-  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; }",
+  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; uint256 privateUsd; }",
   "function snapshot(address account) view returns (Snapshot)",
 ]);
 

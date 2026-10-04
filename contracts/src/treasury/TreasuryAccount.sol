@@ -9,6 +9,12 @@ import {PolicyGuard} from "./PolicyGuard.sol";
 import {IAdapter, ISleeve} from "./interfaces/ISleeve.sol";
 import {IPositionSleeve} from "./interfaces/IPerpVenue.sol";
 
+/// The parts of a PrivateSleeve the account reads.
+interface IPrivateSleeveAccount {
+    function account() external view returns (address);
+    function bookUsd() external view returns (uint256);
+}
+
 /// The treasury's wallet. Desks are plain keys that call `execute`: the account checks the desk's scope,
 /// snapshots its state, runs the adapter with `call` (exact approvals, reset afterwards), then asks the
 /// PolicyGuard to check the resulting state against the board's policy and reverts everything on a breach.
@@ -54,6 +60,9 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     mapping(address sleeve => bool) public isSleeve;
     address[] private _positionSleeves; // sleeves whose value sits at perp venues (IPositionSleeve)
     mapping(address asset => bool) private _assetTaken;
+    /// Private sleeve (PrivateSleeve) and the only desk that may run it. Zero = none.
+    address public privateSleeve;
+    bytes32 public privateDeskId;
 
     event DeskRegistered(bytes32 indexed deskId, address indexed key, address[] adapters);
     event DeskRevoked(bytes32 indexed deskId);
@@ -63,6 +72,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     event Executed(bytes32 indexed opHash, bytes32 indexed deskId, address indexed adapter);
     event WithdrawnToBoard(address indexed token, uint256 amount);
     event CloseFeePaid(address indexed token, address indexed to, uint256 amount);
+    event PrivateSleeveSet(address indexed sleeve, bytes32 indexed deskId);
 
     error NotBoard();
     error ZeroAddress();
@@ -76,6 +86,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error GuardRejected(uint8 code);
     error NotPeriodClose();
     error AlreadyInitialized();
+    error PrivateBookOpen();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -152,6 +163,19 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         emit PeriodCloseSet(periodClose_);
     }
 
+    /// Designates the private sleeve and the desk allowed to move holdings into it (`deskId`; the desk must list
+    /// the sleeve among its adapters to reach it). The sleeve must be built for this account. Replacing a sleeve
+    /// whose book is not empty is refused, so a shielded book cannot drop out of the proven close. The tier gate
+    /// lives in the sleeve (shielding needs it, unshielding never does).
+    function setPrivateSleeve(address sleeve, bytes32 deskId) external onlyBoard {
+        if (sleeve != address(0) && IPrivateSleeveAccount(sleeve).account() != address(this)) revert BadSleeve(sleeve);
+        address old = privateSleeve;
+        if (old != address(0) && old != sleeve && IPrivateSleeveAccount(old).bookUsd() != 0) revert PrivateBookOpen();
+        privateSleeve = sleeve;
+        privateDeskId = deskId;
+        emit PrivateSleeveSet(sleeve, deskId);
+    }
+
     /// Sends `amount` of `token` (address(0) = ETH) to the board. Never gated by policy, guard or desks.
     function withdrawToBoard(address token, uint256 amount) external onlyBoard {
         if (token == address(0)) {
@@ -186,6 +210,8 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         bytes32 approvalTicket
     ) external nonReentrant returns (bytes memory result) {
         if (!_inScope(deskId, adapter)) revert GuardRejected(1); // rule 1: desk scope
+        // Rule 10: moves into the private sleeve only by the board-designated private desk.
+        if (adapter == privateSleeve && deskId != privateDeskId) revert GuardRejected(17);
 
         bytes32 opHash = opHashOf(deskId, adapter, data);
         PolicyGuard.Snapshot memory before = guard.snapshot(address(this));

@@ -11,7 +11,7 @@ import { buildTree, commitment, commitmentV2, hex, initNote, nullifier, ownerPk,
 const here = import.meta.dir;
 export const PROOF_DIR = join(here, "../../contracts/test/consumer/verifiers/fixtures");
 
-export type Circuit = "transfer" | "withdraw" | "swap" | "settle";
+export type Circuit = "transfer" | "withdraw" | "swap" | "settle" | "treasury_close";
 export const CIRCUITS: Circuit[] = ["transfer", "withdraw", "swap", "settle"];
 export type ProofResult = { proof: string; publicInputs: string[]; witnessMs: number; proveMs: number };
 

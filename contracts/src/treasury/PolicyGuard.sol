@@ -11,6 +11,7 @@ import {BoardApprovals} from "./BoardApprovals.sol";
 import {ITreasuryAccount} from "./interfaces/ITreasuryAccount.sol";
 import {IPeriodStartNav, ISleeve} from "./interfaces/ISleeve.sol";
 import {IPerpVenue, IPositionSleeve} from "./interfaces/IPerpVenue.sol";
+import {IPrivateSleeve} from "./PrivateSleeve.sol";
 
 /// "Agent proposes, code disposes." The TreasuryAccount takes a `snapshot` before a desk operation, runs it,
 /// then asks `check` to compare the resulting state with the policy. Any broken rule returns a non-zero
@@ -25,6 +26,10 @@ import {IPerpVenue, IPositionSleeve} from "./interfaces/IPerpVenue.sol";
 /// venue equity) to maxLeverageX10. Rule 6 allows new risk (more notional or more margin) only at a venue in
 /// venueAllowRoot whose numbers are fresh, and keeps each venue's equity within perVenueCapBps of NAV.
 /// Reducing a venue (closing, withdrawing) needs no proof and works while its mirror is stale.
+///
+/// Private sleeve: its book counts at PrivateSleeve.bookUsd (in its band, as Stock Token delta), so shielding
+/// moves value between the tracked set and the book without changing NAV. Private trades inside the pool are not
+/// seen until the next proven close (the last proven value is used until then).
 contract PolicyGuard {
     // Reason codes (rule numbers follow the policy spec).
     uint8 public constant OK = 0;
@@ -44,6 +49,7 @@ contract PolicyGuard {
     uint8 public constant R6_VENUE_NOT_ALLOWED = 14;
     uint8 public constant R6_VENUE_CAP = 15;
     uint8 public constant R6_STALE_VENUE = 16; // new risk at a venue whose mirror is stale (or unpriceable)
+    uint8 public constant R10_PRIVATE_DESK = 17; // returned by the account: private sleeve run by another desk
 
     uint8 public constant BAND_CASH = 0;
     uint8 public constant BAND_EQUITY = 1;
@@ -76,6 +82,7 @@ contract PolicyGuard {
         uint256 stockUsd; // spot Stock Tokens in any band (delta 1)
         int256 perpDeltaUsd; // signed perp notional over every venue (+ long, - short)
         Venue[] venues;
+        uint256 privateUsd; // the private sleeve's book (last proven value +/- flows since), in its band
     }
 
     struct Bucket {
@@ -124,6 +131,24 @@ contract PolicyGuard {
         }
         s.eth = account.balance;
         _snapshotVenues(s, account);
+        _snapshotPrivate(s, account);
+    }
+
+    /// The private sleeve is not readable on-chain: it counts at its `bookUsd` (last proven close value plus
+    /// shields minus unshields since), in its band and as Stock Token delta, until the next close.
+    function _snapshotPrivate(Snapshot memory s, address account) private view {
+        address ps;
+        try ITreasuryAccount(account).privateSleeve() returns (address a) {
+            ps = a;
+        } catch {
+            return;
+        }
+        if (ps == address(0)) return;
+        uint256 usd = IPrivateSleeve(ps).bookUsd();
+        s.privateUsd = usd;
+        s.nav += usd;
+        s.stockUsd += usd;
+        _addToBand(s, IPrivateSleeve(ps).band(), usd);
     }
 
     function _addToBand(Snapshot memory s, uint8 band, uint256 usd) private pure {
@@ -252,6 +277,7 @@ contract PolicyGuard {
     }
 
     function _assetRules(Ctx memory c, Snapshot calldata b, bytes32[] calldata proofs) private view returns (uint8) {
+        c.moved += _absDiff(c.a.privateUsd, b.privateUsd);
         for (uint256 i; i < c.a.assets.length; ++i) {
             c.moved += _absDiff(c.a.usd[i], b.usd[i]);
             if (c.a.raw[i] <= b.raw[i]) continue;

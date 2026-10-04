@@ -82,7 +82,7 @@ describe.skipIf(!toolchain)("generated artifacts are fresh", () => {
     const out = mkdtempSync(join(tmpdir(), "plynth-verifiers-"));
     const r = spawnSync("bash", [join(circuits, "scripts/build.sh")], { env: { ...process.env, PATH, OUT_DIR: out }, encoding: "utf8" });
     expect(r.status).toBe(0);
-    for (const name of ["TransferVerifier.sol", "WithdrawVerifier.sol", "ThresholdHoldingsVerifier.sol", "ThresholdSavingsVerifier.sol", "SwapVerifier.sol", "SettleVerifier.sol"]) {
+    for (const name of ["TransferVerifier.sol", "WithdrawVerifier.sol", "ThresholdHoldingsVerifier.sol", "ThresholdSavingsVerifier.sol", "SwapVerifier.sol", "SettleVerifier.sol", "TreasuryCloseVerifier.sol"]) {
       const committed = readFileSync(join(circuits, "../contracts/src/consumer/verifiers", name), "utf8");
       expect(readFileSync(join(out, name), "utf8")).toBe(committed);
     }
