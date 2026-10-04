@@ -3,11 +3,13 @@ import { runBeacon } from "./jobs/beacon";
 import { runExecute } from "./jobs/execute";
 import { runDeliverQuiet } from "./jobs/quiet";
 import { runRoundups } from "./jobs/roundups";
+import { runSpends } from "./jobs/spends";
 import { runSweep } from "./jobs/sweep";
 import { runTopups } from "./jobs/topups";
 
 /**
- * Pass order matters within one pass: top-ups fund `available`, round-ups move it to `pending`, sweep
+ * Pass order matters within one pass: top-ups fund `available`, round-ups (on-chain, then statement/Plaid
+ * spends) move it to `pending`, sweep
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
  * deliver-open needs nothing from the keeper: users claim (claimOpen). deliver-quiet runs last: it delivers
  * books executed in earlier passes (it reads executions from the indexer). Hidden delivery: todo 16.
@@ -15,6 +17,7 @@ import { runTopups } from "./jobs/topups";
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["topups", runTopups],
   ["roundups", runRoundups],
+  ["spends", runSpends],
   ["sweep", runSweep],
   ["beacon", runBeacon],
   ["execute", runExecute],

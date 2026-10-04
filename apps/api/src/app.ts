@@ -48,8 +48,9 @@ export const REST: Proc[] = [
 /**
  * opts.eligibility: the screening routes from @plynth/eligibility (eligibilityFromEnv(...).routes). When given,
  * they are served at /eligibility/check and /v1/eligibility/check behind the same CORS allow-list.
+ * opts.roundups: the round-up source routes (roundupsFromEnv), served at /roundups/* and /v1/roundups/*.
  */
-export function createApp(deps: Deps, opts: { corsOrigins?: string[]; eligibility?: Hono } = {}): Hono {
+export function createApp(deps: Deps, opts: { corsOrigins?: string[]; eligibility?: Hono; roundups?: Hono } = {}): Hono {
   const allowed = new Set(opts.corsOrigins ?? DEFAULT_CORS_ORIGINS);
   const app = new Hono();
 
@@ -85,6 +86,10 @@ export function createApp(deps: Deps, opts: { corsOrigins?: string[]; eligibilit
   if (opts.eligibility) {
     app.route("/eligibility", opts.eligibility);
     app.route("/v1/eligibility", opts.eligibility);
+  }
+  if (opts.roundups) {
+    app.route("/roundups", opts.roundups);
+    app.route("/v1/roundups", opts.roundups);
   }
   app.notFound((c) => c.json({ error: { code: "NOT_FOUND", message: "no such route" } }, 404));
   return app;

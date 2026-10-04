@@ -39,10 +39,10 @@ describe("packages/db", () => {
     expect(await pk("ev_cursors")).toEqual(["stream"]);
   });
 
-  test("indexer and keeper tables exist; every table is owner-prefixed (ev_, keeper_, treasury_, eligibility_)", async () => {
+  test("indexer and keeper tables exist; every table is owner-prefixed (ev_, keeper_, treasury_, eligibility_, roundup_)", async () => {
     const tables = (await t.sql`select table_name from information_schema.tables where table_schema = 'public' order by 1`).map((r) => r.table_name);
-    expect(tables).toEqual(expect.arrayContaining(["eligibility_decisions", "ev_cursors", "ev_logs", "keeper_jobs", "keeper_roundups"]));
-    for (const name of tables) expect(name).toMatch(/^(ev|keeper|treasury|eligibility)_/);
+    expect(tables).toEqual(expect.arrayContaining(["eligibility_decisions", "ev_cursors", "ev_logs", "keeper_jobs", "keeper_roundups", "roundup_events", "roundup_sources"]));
+    for (const name of tables) expect(name).toMatch(/^(ev|keeper|treasury|eligibility|roundup)_/);
   });
 
   test("migrate is idempotent", async () => {

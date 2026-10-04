@@ -1,0 +1,11 @@
+Description,,Summary Amt.
+Beginning balance as of 09/01/2026,,"1,000.00"
+Total credits,,"2,500.00"
+Total debits,,"-1,234.56"
+Ending balance as of 09/30/2026,,"2,265.44"
+
+Date,Description,Amount,Running Bal.
+09/01/2026,Beginning balance as of 09/01/2026,,"1,000.00"
+09/02/2026,"CORNER DELI 09/02 PURCHASE","-8.40","991.60"
+09/03/2026,"PAYROLL DEPOSIT","2,500.00","3,491.60"
+09/05/2026,"UTILITY CO BILL PAYMENT","-1,226.16","2,265.44"

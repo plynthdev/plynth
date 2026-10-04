@@ -3,7 +3,8 @@
 // Env: API_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // API_DEPLOYMENTS_DIR (default ./deployments), CORS_ORIGINS (comma-separated; default the Lovable app +
 // http://localhost:5173). Read-only: no keys, no writes to keeper or indexer tables, except the optional
-// eligibility routes (ELIGIBILITY_*), which hold the attester key and write eligibility_decisions.
+// eligibility routes (ELIGIBILITY_*), which hold the attester key and write eligibility_decisions, and the
+// round-up source routes (ROUNDUPS_ENABLED=1, PLAID_*, KEEPER_SECRET_KEY), which write roundup_*.
 import { robinhood, robinhoodTestnet } from "@plynth/chain";
 import { connect, databaseUrl } from "@plynth/db";
 import { readDeployment } from "@plynth/indexer";
@@ -13,6 +14,7 @@ import { eligibilityFromEnv } from "@plynth/eligibility";
 import { corsOrigins, createApp } from "./app";
 import { BlockTimes } from "./block-times";
 import { apiDeployment } from "./deployment";
+import { roundupsFromEnv } from "./roundups";
 
 const chainName = process.env.API_CHAIN || "local";
 if (!["local", "testnet", "mainnet"].includes(chainName)) throw new Error(`bad API_CHAIN ${chainName}`);
@@ -34,6 +36,8 @@ const { db } = connect(databaseUrl());
 // Eligibility screening (POST /v1/eligibility/check) is enabled when ELIGIBILITY_REGISTRY is set; it then
 // needs the attester key (see apps/eligibility/src/config.ts). The rest of the API stays keyless.
 const elig = eligibilityFromEnv(process.env, { chainId, pub, db });
-const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub) }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS), eligibility: elig?.routes });
+// Round-up sources (statement import, Plaid link) when ROUNDUPS_ENABLED=1; see src/roundups.ts.
+const roundups = await roundupsFromEnv(process.env, { chainId, db, pub });
+const app = createApp({ chainId, pub, db, dep, blockTimes: new BlockTimes(pub) }, { corsOrigins: corsOrigins(process.env.CORS_ORIGINS), eligibility: elig?.routes, roundups });
 const server = Bun.serve({ port: Number(process.env.API_PORT ?? 8789), fetch: app.fetch });
 console.log(`[api ${chainId}] listening on :${server.port}`);

@@ -3,6 +3,7 @@ import type { Db } from "@plynth/db";
 import type { Deployment } from "@plynth/indexer";
 import { getAddress, type Abi, type Address, type PublicClient } from "viem";
 import type { Sealer } from "./seal";
+import type { PlaidLike } from "./sources/plaid";
 import { revertOf, type Sender, type SimResult } from "./sender";
 
 export type KeeperDeployment = {
@@ -66,6 +67,8 @@ export type Ctx = {
   lookahead: number;
   /** Quiet delivery: parts per allocation, 1-3 (default 2), released across consecutive executions. */
   splitParts?: number;
+  /** Plaid client (PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV); absent = Plaid sources are not synced. */
+  plaid?: PlaidLike;
   log: (m: string) => void;
 };
 
