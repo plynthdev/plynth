@@ -20,6 +20,8 @@ export type KeeperDeployment = {
   /** Quiet delivery; absent until StealthClaims is deployed and wired. */
   stealthClaims?: Address;
   erc6538Registry: Address;
+  /** Hidden delivery; absent until ShieldedPool is deployed and wired. */
+  shieldedPool?: Address;
 };
 
 const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
@@ -52,6 +54,7 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     plynth,
     stealthClaims: typeof dep.stealthClaims === "string" ? getAddress(dep.stealthClaims) : undefined,
     erc6538Registry: opt("erc6538Registry", CANONICAL_ERC6538),
+    shieldedPool: typeof dep.shieldedPool === "string" ? getAddress(dep.shieldedPool) : undefined,
   };
 }
 

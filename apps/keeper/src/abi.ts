@@ -8,6 +8,8 @@ export const vaultAbi = parseAbi([
   "function accrue(address user, bytes32 sourceTx, uint32 logIndex, uint256 spendAmount) returns (uint256 added)",
   "function pullFixedTopUp(address user)",
   "function settingsOf(address user) view returns (Settings)",
+  "struct HiddenKeys { bytes32 ownerPk; bytes32 viewingPub; }",
+  "function hiddenKeysOf(address user) view returns (HiddenKeys)",
   "function accountOf(address user) view returns (Account)",
   "function balancesOf(address user) view returns (uint256 available, uint256 pending)",
   "function mixOf(address user) view returns (MixEntry[])",
@@ -42,6 +44,7 @@ export const crowdAbi = parseAbi([
   "function settled(address asset, uint256 bookId, address user) view returns (bool)",
   "function orderOf(address asset, uint256 bookId, address user) view returns (uint256)",
   "function stealthClaims() view returns (address)",
+  "function shieldedPool() view returns (address)",
   "function MIN_CROWD() view returns (uint32)",
   "function GENESIS() view returns (uint64)",
   "function WINDOW() view returns (uint64)",
@@ -64,6 +67,9 @@ export const crowdAbi = parseAbi([
   "error NotQuiet(address user)",
   "error NoMetaAddress(address user)",
   "error BadEphemeralKey()",
+  "error HiddenNotConfigured()",
+  "error NotHidden(address user)",
+  "error NoHiddenKeys(address user)",
   "error NoMix()",
 ]);
 

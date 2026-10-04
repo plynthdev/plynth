@@ -308,8 +308,10 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.startPrank(keeper);
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.UnknownRoute.selector, bytes("")));
         crowd.deliver(address(tokA), 0, users[0], "");
-        // Hidden (2) is todo 16
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.UnknownRoute.selector, abi.encode(uint8(2))));
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.UnknownRoute.selector, abi.encode(uint8(3))));
+        crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(3)));
+        // Hidden before ShieldedPool is configured (todo 16; full rules in CrowdBuyHidden.t.sol)
+        vm.expectRevert(CrowdBuy.HiddenNotConfigured.selector);
         crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(2)));
         // Quiet before StealthClaims is configured
         vm.expectRevert(CrowdBuy.QuietNotConfigured.selector);

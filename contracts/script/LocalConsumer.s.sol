@@ -8,6 +8,10 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SavingsVault, ICanonicalRegistry} from "../src/consumer/SavingsVault.sol";
 import {CrowdBuy, IExecuteBeacon} from "../src/consumer/CrowdBuy.sol";
 import {StealthClaims} from "../src/consumer/StealthClaims.sol";
+import {ShieldedPool, IHonkVerifier} from "../src/consumer/ShieldedPool.sol";
+import {IShieldedDeposit} from "../src/consumer/CrowdBuy.sol";
+import {TransferVerifier} from "../src/consumer/verifiers/TransferVerifier.sol";
+import {WithdrawVerifier} from "../src/consumer/verifiers/WithdrawVerifier.sol";
 import {IERC5564Announcer} from "../src/interfaces/IERC5564Announcer.sol";
 import {IERC6538Registry} from "../src/interfaces/IERC6538Registry.sol";
 import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
@@ -25,6 +29,8 @@ import {Multicall3Lite} from "../test/mocks/Multicall3Lite.sol";
 /// contracts, SavingsVault + CrowdBuy, and a Multicall3 stand-in. Permit2 must already be at its canonical
 /// address (the test etches the real runtime with anvil_setCode first). If the ERC-5564 Announcer and ERC-6538
 /// Registry are also etched at their canonical addresses, StealthClaims is deployed and wired for Quiet delivery.
+/// The Hidden Vault (ShieldedPool + real verifiers) is always deployed and wired to CrowdBuy; caps for mUSDG and
+/// both stocks are proposed here and apply 48h later (`applyCap`), exactly as on any other chain.
 ///
 /// Env: KEEPER_ADDRESS (required), MIN_CROWD (default 3), MAX_STALENESS (seconds, default 3650 days: the
 /// tests warp time by weeks and the feeds are not refreshed).
@@ -49,6 +55,7 @@ contract LocalConsumer is Script {
         address vault;
         address crowd;
         address stealthClaims;
+        address shieldedPool;
         address multicall3;
         address tsla;
         address nvda;
@@ -68,6 +75,7 @@ contract LocalConsumer is Script {
         (o.tsla, o.feedTsla) = _stock(o, "mTSLA", 250e18);
         (o.nvda, o.feedNvda) = _stock(o, "mNVDA", 37e18);
         MockUSDG(o.usdg).mint(o.poolManager, 1e15);
+        _hidden(o, deployer);
         o.multicall3 = address(new Multicall3Lite());
         vm.stopBroadcast();
         _print(o, startBlock);
@@ -114,6 +122,31 @@ contract LocalConsumer is Script {
         }
     }
 
+    function _hidden(Out memory o, address deployer) private {
+        // Same steps as HiddenVault.s.sol (local chain only, so the caps are non-zero).
+        address[] memory assets = new address[](3);
+        (assets[0], assets[1], assets[2]) = (o.usdg, o.tsla, o.nvda);
+        uint256[] memory caps = new uint256[](3);
+        (caps[0], caps[1], caps[2]) = (1e12, 1e24, 1e24);
+        ShieldedPool pool = ShieldedPool(_deployHidden(deployer, o.crowd, assets, caps));
+        CrowdBuy(o.crowd).setShieldedPool(IShieldedDeposit(address(pool)));
+        o.shieldedPool = address(pool);
+    }
+
+    function _deployHidden(address owner, address crowd, address[] memory assets, uint256[] memory caps)
+        private
+        returns (address)
+    {
+        ShieldedPool pool = new ShieldedPool(
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+        );
+        pool.setCrowd(crowd);
+        for (uint256 i; i < assets.length; ++i) {
+            pool.proposeCap(assets[i], caps[i]);
+        }
+        return address(pool);
+    }
+
     function _stock(Out memory o, string memory sym, uint256 usdPerToken) private returns (address, address) {
         address usdg = o.usdg;
         StockRouter router = StockRouter(o.router);
@@ -152,6 +185,7 @@ contract LocalConsumer is Script {
         vm.serializeAddress(r, "savingsVault", o.vault);
         vm.serializeAddress(r, "crowdBuy", o.crowd);
         vm.serializeAddress(r, "multicall3", o.multicall3);
+        vm.serializeAddress(r, "shieldedPool", o.shieldedPool);
         if (o.stealthClaims != address(0)) {
             vm.serializeAddress(r, "stealthClaims", o.stealthClaims);
             vm.serializeAddress(r, "erc5564Announcer", ANNOUNCER);

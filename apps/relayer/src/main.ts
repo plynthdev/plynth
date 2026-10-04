@@ -3,14 +3,16 @@
 // RELAYER_DEPLOYMENTS_DIR (default ./deployments), RELAYER_PRIVATE_KEY or RELAYER_KEYSTORE +
 // RELAYER_KEYSTORE_PASSWORD_FILE (a Foundry keystore; the wallet pays gas; the key is never logged),
 // RELAYER_TRUST_PROXY=1 to rate-limit by X-Forwarded-For (only behind your own proxy),
-// RELAYER_IP_LIMIT (per minute, default 20), RELAYER_STEALTH_LIMIT (per minute, default 3).
+// RELAYER_IP_LIMIT (per minute, default 20), RELAYER_STEALTH_LIMIT (per minute, default 3),
+// RELAYER_WITHDRAW_MIN_FEES ("0xasset:raw,..." minimum Hidden Vault withdraw fee per asset; default free).
+// POST /withdraw is enabled when the deployment has a shieldedPool.
 import { readDeployment } from "@plynth/indexer";
 import { getConnInfo } from "hono/bun";
 import { join } from "node:path";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadSigner } from "@plynth/keeper/src/signer";
 import { relayerApp } from "./app";
-import { chainDeps } from "./chain";
+import { chainDeps, parseMinFees, withdrawDeps } from "./chain";
 import { RateLimiter } from "./ratelimit";
 
 const chainName = process.env.RELAYER_CHAIN || "local";
@@ -44,6 +46,10 @@ const app = relayerApp({
   ipOf: (c) => (trustProxy ? (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown") : (getConnInfo(c).remote.address ?? "unknown")),
   ipLimiter: new RateLimiter(Number(process.env.RELAYER_IP_LIMIT || 20), 60_000),
   stealthLimiter: new RateLimiter(Number(process.env.RELAYER_STEALTH_LIMIT || 3), 60_000),
+  withdraw:
+    typeof dep.shieldedPool === "string"
+      ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: parseMinFees(process.env.RELAYER_WITHDRAW_MIN_FEES) })
+      : undefined,
   log: (m) => console.log(`[relayer ${chainId}] ${m}`),
 });
 const server = Bun.serve({ port: Number(process.env.RELAYER_PORT ?? 8789), fetch: app.fetch });

@@ -54,3 +54,28 @@ export const keeperJobs = pgTable(
   },
   (t) => [primaryKey({ columns: [t.chainId, t.kind, t.jobKey] }), index("keeper_jobs_status_idx").on(t.chainId, t.kind, t.status)],
 );
+
+/**
+ * Hidden delivery (todo 16): one row per (asset, bookId, user) the deliver-hidden job looked at.
+ * status: delivered (CrowdBuy.deliver -> ShieldedPool.depositFor sent; commitment is the queued note),
+ * skipped (settled some other way, no order, ...; reason says why).
+ * The note's blinding and the user's keys are never stored: the encrypted note on-chain is the only copy,
+ * and (user, commitment) is already public in the DepositQueued event.
+ */
+export const keeperHiddenDeliveries = pgTable(
+  "keeper_hidden_deliveries",
+  {
+    chainId: integer("chain_id").notNull(),
+    asset: text("asset").notNull(),
+    bookId: numeric("book_id", { precision: 78, scale: 0 }).notNull(),
+    userAddress: text("user_address").notNull(),
+    raw: numeric("raw", { precision: 78, scale: 0 }),
+    commitment: text("commitment"),
+    status: text("status").notNull(),
+    reason: text("reason"),
+    txHash: text("tx_hash"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.chainId, t.asset, t.bookId, t.userAddress] })],
+);

@@ -43,6 +43,14 @@ contract SavingsVault is Ownable2Step, EIP712 {
         uint8 mode; // 0 Open, 1 Quiet, 2 Hidden
     }
 
+    /// Hidden delivery keys (todo 16): the note owner key (Poseidon2 of the spending secret, a bn254 field
+    /// element) and the x25519 viewing public key notes are encrypted to. Kept beside Settings so the
+    /// Settings ABI stays unchanged.
+    struct HiddenKeys {
+        bytes32 ownerPk;
+        bytes32 viewingPub;
+    }
+
     struct MixEntry {
         address stockToken;
         uint16 weightBps;
@@ -57,6 +65,8 @@ contract SavingsVault is Ownable2Step, EIP712 {
     }
 
     uint256 public constant MAX_MIX = 5;
+    uint256 private constant BN254_P =
+        21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint64 public constant TOP_UP_SPACING = 7 days;
     bytes32 public constant LINK_TYPEHASH =
         keccak256("LinkWallet(address user,address wallet,uint256 nonce,uint256 deadline)");
@@ -77,6 +87,7 @@ contract SavingsVault is Ownable2Step, EIP712 {
     mapping(bytes32 sourceKey => bool) public sourceUsed;
     mapping(address wallet => address user) public linkedUser;
     mapping(address wallet => uint256) public linkNonce;
+    mapping(address user => HiddenKeys) private _hiddenKeys;
 
     event KeeperSet(address indexed keeper);
     event CrowdSet(address indexed crowd);
@@ -86,6 +97,7 @@ contract SavingsVault is Ownable2Step, EIP712 {
     event SettingsSet(
         address indexed user, uint8 roundTo, uint8 multiplier, uint64 weeklyCap, uint64 fixedTopUp, uint8 mode
     );
+    event HiddenKeysSet(address indexed user, bytes32 ownerPk, bytes32 viewingPub);
     event MixSet(address indexed user, MixEntry[] mix);
     event WalletLinked(address indexed user, address indexed wallet, uint256 nonce);
     event WalletUnlinked(address indexed user, address indexed wallet);
@@ -217,6 +229,15 @@ contract SavingsVault is Ownable2Step, EIP712 {
         if (s.mode > 2) revert InvalidSettings();
         _settings[msg.sender] = s;
         emit SettingsSet(msg.sender, s.roundTo, s.multiplier, s.weeklyCap, s.fixedTopUp, s.mode);
+    }
+
+    /// Registers (or clears, with both zero) the keys Hidden delivery uses. ownerPk must be a bn254 field
+    /// element; zero ownerPk with a non-zero viewing key is rejected. Only the user can set their own keys.
+    function setHiddenKeys(bytes32 ownerPk, bytes32 viewingPub) external {
+        if (uint256(ownerPk) >= BN254_P) revert InvalidSettings();
+        if ((ownerPk == 0) != (viewingPub == 0)) revert InvalidSettings();
+        _hiddenKeys[msg.sender] = HiddenKeys(ownerPk, viewingPub);
+        emit HiddenKeysSet(msg.sender, ownerPk, viewingPub);
     }
 
     function setMix(MixEntry[] calldata mix) external {
@@ -352,6 +373,10 @@ contract SavingsVault is Ownable2Step, EIP712 {
 
     function settingsOf(address user) external view returns (Settings memory) {
         return _settings[user];
+    }
+
+    function hiddenKeysOf(address user) external view returns (HiddenKeys memory) {
+        return _hiddenKeys[user];
     }
 
     function mixOf(address user) external view returns (MixEntry[] memory) {

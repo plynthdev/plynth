@@ -112,7 +112,11 @@
       "name": "@plynth/sdk",
       "version": "0.0.0",
       "dependencies": {
+        "@aztec/bb.js": "5.2.0",
+        "@noble/ciphers": "1.3.0",
         "@noble/curves": "1.9.1",
+        "@noble/hashes": "1.8.0",
+        "@noir-lang/noir_js": "1.0.0-beta.25",
         "viem": "^2.57.2",
       },
     },

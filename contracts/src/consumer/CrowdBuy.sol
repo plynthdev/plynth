@@ -12,6 +12,19 @@ import {StockRouter} from "../core/StockRouter.sol";
 import {Valuer} from "../core/Valuer.sol";
 import {StealthClaims} from "./StealthClaims.sol";
 
+/// The part of ShieldedPool (todo 16) Hidden delivery uses.
+interface IShieldedDeposit {
+    function crowd() external view returns (address);
+    function depositFor(
+        address asset,
+        uint256 raw,
+        bytes32 ownerPk,
+        bytes32 blinding,
+        bytes calldata encryptedNote,
+        address origin
+    ) external returns (uint256 pendingId);
+}
+
 interface IExecuteBeacon {
     function executeAfter(bytes32 key) external view returns (uint64);
 }
@@ -45,6 +58,11 @@ interface IExecuteBeacon {
 /// who chose Quiet (vault mode 1) AND registered an ERC-6538 meta-address, and can only assign pooled tokens
 /// to stealth addresses. Stealth addresses cannot be checked on-chain, so Quiet users trust the keeper to
 /// derive them from their meta-address (a wrong one is visible to the user's scan as a missing balance).
+/// Hidden delivery (todo 16): `deliver` with route abi.encode(uint8 2, bytes32 blinding, bytes encryptedNote)
+/// settles a Hidden user's allocation straight into ShieldedPool.depositFor as one pending note owned by the
+/// ownerPk the USER registered in the vault (the keeper picks only the blinding and the encrypted copy). The
+/// user is the deposit's origin, so a note the user cannot open (bad encryption) can be refunded to them
+/// while it is pending.
 /// Nobody can move pooled USDG anywhere except into the router for that book or back to the vault on cancel.
 contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -64,6 +82,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     uint16 public constant MAX_SLIPPAGE_BPS = 300;
     uint8 public constant MODE_QUIET = 1;
+    uint8 public constant MODE_HIDDEN = 2;
     uint256 public constant STEALTH_SCHEME = 1;
     uint64 public constant WINDOW = 1 days;
     uint256 private constant BPS = 10_000;
@@ -79,6 +98,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     address public keeper;
     StealthClaims public stealthClaims;
+    IShieldedDeposit public shieldedPool;
 
     mapping(address asset => uint256) public currentBookId;
     mapping(address asset => mapping(uint256 bookId => Book)) private _books;
@@ -99,6 +119,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw);
     event DustSettled(address indexed asset, uint256 indexed bookId, uint256 raw);
     event StealthClaimsSet(address indexed stealthClaims);
+    event ShieldedPoolSet(address indexed shieldedPool);
 
     error ZeroAddress();
     error BadParam();
@@ -120,6 +141,9 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     error NotQuiet(address user);
     error NoMetaAddress(address user);
     error BadEphemeralKey();
+    error HiddenNotConfigured();
+    error NotHidden(address user);
+    error NoHiddenKeys(address user);
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -165,6 +189,15 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         if (sc.crowd() != address(this)) revert BadParam();
         stealthClaims = sc;
         emit StealthClaimsSet(address(sc));
+    }
+
+    /// Set once: ShieldedPool is deployed, its setCrowd(this) called, then this.
+    function setShieldedPool(IShieldedDeposit pool) external onlyOwner {
+        if (address(shieldedPool) != address(0)) revert AlreadySet();
+        if (address(pool) == address(0)) revert ZeroAddress();
+        if (pool.crowd() != address(this)) revert BadParam();
+        shieldedPool = pool;
+        emit ShieldedPoolSet(address(pool));
     }
 
     // ---------------------------------------------------------------- orders
@@ -260,18 +293,21 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         emit Claimed(asset, bookId, msg.sender, raw);
     }
 
-    /// Keeper delivery for a non-Open user. `route` = abi.encode(uint8 mode). Quiet (1): settles the user's
-    /// whole allocation and moves it into StealthClaims' unassigned pool; `deliverStealth` assigns it later.
-    /// Requires the user's vault mode to be Quiet and an ERC-6538 scheme-1 meta-address on record, so the
-    /// keeper cannot redirect Open users' tokens. Hidden (2, todo 16) is not built yet.
+    /// Keeper delivery for a non-Open user.
+    /// Quiet: `route` = abi.encode(uint8 1). Settles the user's whole allocation and moves it into
+    /// StealthClaims' unassigned pool; `deliverStealth` assigns it later. Requires vault mode Quiet and an
+    /// ERC-6538 scheme-1 meta-address on record, so the keeper cannot redirect Open users' tokens.
+    /// Hidden: `route` = abi.encode(uint8 2, bytes32 blinding, bytes encryptedNote). Requires vault mode
+    /// Hidden and registered hidden keys; the note's owner key comes from the vault, never from the keeper.
     function deliver(address asset, uint256 bookId, address user, bytes calldata route)
         external
         onlyKeeper
         nonReentrant
     {
-        if (route.length != 32) revert UnknownRoute(route);
-        uint8 mode = abi.decode(route, (uint8));
-        if (mode != MODE_QUIET) revert UnknownRoute(route);
+        if (route.length < 32) revert UnknownRoute(route);
+        uint256 word = uint256(bytes32(route[:32]));
+        if (word == MODE_HIDDEN) return _deliverHidden(asset, bookId, user, route);
+        if (route.length != 32 || word != MODE_QUIET) revert UnknownRoute(route);
         StealthClaims sc = stealthClaims;
         if (address(sc) == address(0)) revert QuietNotConfigured();
         if (vault.settingsOf(user).mode != MODE_QUIET) revert NotQuiet(user);
@@ -280,6 +316,21 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         if (raw != 0) {
             IERC20(asset).safeTransfer(address(sc), raw);
             sc.pool(asset, raw);
+        }
+        emit Delivered(asset, bookId, user, raw);
+    }
+
+    function _deliverHidden(address asset, uint256 bookId, address user, bytes calldata route) private {
+        IShieldedDeposit pool = shieldedPool;
+        if (address(pool) == address(0)) revert HiddenNotConfigured();
+        (, bytes32 blinding, bytes memory encryptedNote) = abi.decode(route, (uint8, bytes32, bytes));
+        if (vault.settingsOf(user).mode != MODE_HIDDEN) revert NotHidden(user);
+        bytes32 ownerPk = vault.hiddenKeysOf(user).ownerPk;
+        if (ownerPk == 0) revert NoHiddenKeys(user);
+        uint256 raw = _settle(asset, bookId, user);
+        if (raw != 0) {
+            IERC20(asset).forceApprove(address(pool), raw);
+            pool.depositFor(asset, raw, ownerPk, blinding, encryptedNote, user);
         }
         emit Delivered(asset, bookId, user, raw);
     }

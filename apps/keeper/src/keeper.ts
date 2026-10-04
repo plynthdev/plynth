@@ -1,6 +1,7 @@
 import type { Ctx, JobResult } from "./context";
 import { runBeacon } from "./jobs/beacon";
 import { runExecute } from "./jobs/execute";
+import { runDeliverHidden } from "./jobs/hidden";
 import { runDeliverQuiet } from "./jobs/quiet";
 import { runRoundups } from "./jobs/roundups";
 import { runSpends } from "./jobs/spends";
@@ -12,7 +13,8 @@ import { runTopups } from "./jobs/topups";
  * spends) move it to `pending`, sweep
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
  * deliver-open needs nothing from the keeper: users claim (claimOpen). deliver-quiet runs last: it delivers
- * books executed in earlier passes (it reads executions from the indexer). Hidden delivery: todo 16.
+ * books executed in earlier passes (it reads executions from the indexer). deliver-hidden (after it) settles Hidden users
+ * into ShieldedPool notes and batches ready pending deposits into the tree.
  */
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["topups", runTopups],
@@ -22,6 +24,7 @@ export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["beacon", runBeacon],
   ["execute", runExecute],
   ["deliver-quiet", runDeliverQuiet],
+  ["deliver-hidden", runDeliverHidden],
 ];
 
 export type PassReport = { at: string; ok: boolean; jobs: JobResult[] };
