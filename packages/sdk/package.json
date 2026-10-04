@@ -1,13 +1,30 @@
 {
   "name": "@plynth/sdk",
   "version": "0.0.0",
+  "description": "Privacy kit for Robinhood Chain: stealth delivery, crowd-buy engine, shielded vault, viewing-key statements and relayer client.",
+  "license": "MIT",
+  "private": true,
   "type": "module",
-  "main": "src/index.ts",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./stealth": "./src/stealth/index.ts",
-    "./vault": "./src/vault/index.ts",
-    "./statements": "./src/statements/index.ts"
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./stealth": { "types": "./dist/stealth/index.d.ts", "import": "./dist/stealth/index.js", "default": "./dist/stealth/index.js" },
+    "./crowd": { "types": "./dist/crowd/index.d.ts", "import": "./dist/crowd/index.js", "default": "./dist/crowd/index.js" },
+    "./vault": { "types": "./dist/vault/index.d.ts", "import": "./dist/vault/index.js", "default": "./dist/vault/index.js" },
+    "./statements": { "types": "./dist/statements/index.d.ts", "import": "./dist/statements/index.js", "default": "./dist/statements/index.js" },
+    "./relayer": { "types": "./dist/relayer/index.d.ts", "import": "./dist/relayer/index.js", "default": "./dist/relayer/index.js" },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@aztec/bb.js": "5.2.0",
@@ -16,5 +33,8 @@
     "@noble/hashes": "1.8.0",
     "@noir-lang/noir_js": "1.0.0-beta.25",
     "viem": "^2.57.2"
+  },
+  "devDependencies": {
+    "@plynth/chain": "workspace:*"
   }
 }

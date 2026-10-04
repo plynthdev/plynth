@@ -9,3 +9,4 @@ export * from "./sync";
 export * from "./trade";
 export * from "./tree";
 export * from "./tx";
+export { CHAIN_IDS, parseDeployment, publicInfra, type Network, type PlynthDeployment, type PublicInfra } from "../defaults";

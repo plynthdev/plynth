@@ -8,3 +8,5 @@ contracts/broadcast/*/31337/
 .DS_Store
 cache/
 data/
+packages/sdk/dist/
+packages/sdk/.test-dist-*/

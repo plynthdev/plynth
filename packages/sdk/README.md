@@ -1,13 +1,94 @@
 # @plynth/sdk
 
-Client-side privacy tools for Plynth on Robinhood Chain. Everything here runs on the user's device; keys never
-leave it.
+Privacy kit for Robinhood Chain: stealth delivery, a crowd-buy engine, shielded deposits (the Hidden Vault),
+disclosure tools and a relayer client. Apps use the modules that fit their own flow. Everything runs on the
+user's device; keys never leave it.
 
 | Import | What it does |
 | --- | --- |
-| `@plynth/sdk/stealth` | ERC-5564 / ERC-6538 stealth addresses: meta-addresses, scanning announcements, relayed claims. |
-| `@plynth/sdk/vault` | Hidden Vault: keys from one wallet signature, encrypted notes, local tree sync, Noir proofs, ShieldedPool transactions, private sell/buy/park (ShieldedTrade). |
+| `@plynth/sdk/stealth` | ERC-5564 / ERC-6538 stealth addresses: meta-addresses, registration, announcement metadata, scanning, relayed StealthClaims claims. |
+| `@plynth/sdk/crowd` | Crowd-buy engine (CrowdBuy + SavingsVault): deposit, settings, mix, join, cancel, execute, open claim; the contract's split/allocation/window arithmetic; recompute a book's allocations from logs alone. |
+| `@plynth/sdk/vault` | Hidden Vault: keys from one wallet signature, encrypted notes, local tree sync, Noir proofs, ShieldedPool deposits/transfers/withdraws, private sell/buy/park (ShieldedTrade). |
 | `@plynth/sdk/statements` | Viewing-key statements, scoped disclosure and threshold proofs for Hidden Vault notes. |
+| `@plynth/sdk/relayer` | Client for a Plynth relayer: gasless stealth claims (`/claim`) and vault withdraws (`/withdraw`). |
+| `@plynth/sdk` | All of the above as namespaces (`stealth`, `crowd`, ...) plus the network defaults. |
+
+## Using it
+
+- **Tree-shakeable entry points.** Each module is its own ESM entry with types; `sideEffects: false`. Only
+  `/vault` and `/statements` load the proving stack (`@aztec/bb.js`, `@noir-lang/noir_js`); `/stealth`,
+  `/crowd` and `/relayer` never import it.
+- **No network side effects.** Importing any entry makes no request and starts nothing. Reads take a viem
+  `PublicClient` you create; writes are returned as unsigned `{ to, data }` for your wallet to send; relayer
+  calls take an optional `fetch` so you control the transport.
+- **Chain and addresses are arguments.** Every function takes the contract addresses it touches.
+  `publicInfra("mainnet" | "testnet")` gives the verified defaults for third-party contracts (USDG, the
+  ERC-5564 Announcer, the ERC-6538 Registry, Multicall3, Permit2; chain ids 4663 / 46630).
+  Plynth's own contracts have no canonical addresses yet: `parseDeployment(json)` reads a deployment file
+  written by the deploy scripts.
+- **Runtime.** ESM only. Needs `BigInt`, WebCrypto and a global `Buffer` (Bun and Node have them; add a
+  `buffer` polyfill in browsers). Proving needs WebAssembly and about 1 s per proof on a laptop.
+
+```ts
+import { computeStealthAddress, encodeMetadata, registerTx } from "@plynth/sdk/stealth";
+import { joinTx, recomputeBook } from "@plynth/sdk/crowd";
+import { submitClaim } from "@plynth/sdk/relayer";
+import { publicInfra } from "@plynth/sdk";
+const { erc5564Announcer, erc6538Registry } = publicInfra("mainnet");
+```
+
+## Examples
+
+`examples/` has three runnable Bun scripts. With no environment they start their own anvil on a free port in
+8550-8599, deploy the local kit (`contracts/script/LocalConsumer.s.sol`: mock USDG, mock Stock Tokens with
+price feeds, the core contracts, SavingsVault, CrowdBuy, StealthClaims, ShieldedPool with the real verifiers;
+the canonical Permit2, ERC-5564 Announcer and ERC-6538 Registry bytecode is etched at their real addresses),
+run, and stop anvil. They need `anvil` and `forge` on PATH and the repo checked out (they run from it).
+
+| Script | Flow |
+| --- | --- |
+| `bun examples/send-to-stealth.ts` | Recipient registers an ERC-6538 meta-address; a sender derives a one-time stealth address from it, pays mUSDG there and announces it; the recipient scans with the viewing key, derives the stealth key and moves the funds. |
+| `bun examples/crowd-join.ts` | Three savers deposit, pick a mix, get round-ups accrued; anyone joins them to the open book; the window's jittered time is revealed; anyone executes; allocations recomputed from logs match `allocationOf`; each saver claims. |
+| `bun examples/shield-and-withdraw.ts` | Keys from one signature; deposit mUSDG into ShieldedPool; the 1 h pending queue is inserted; the note is found by scanning; a withdraw proof is made locally and a different account (a relayer) submits it to a fresh address. |
+
+To run against an anvil you already deployed the kit on, set `RPC_URL` and `PLYNTH_DEPLOYMENT` (path to the
+JSON the deploy script printed after `PLYNTH_DEPLOYMENT `). The examples use anvil's unlocked dev accounts and
+time travel (`evm_setNextBlockTimestamp`); they never sign with a real key.
+
+## Trust assumptions and limits
+
+Read these before shipping any of it.
+
+- **Unaudited.** None of the contracts or circuits have been audited. The Hidden Vault's per-asset deposit
+  caps start at 0 and only rise through a 48 h timelock; the mainnet deploy script refuses a non-zero cap.
+  **Mainnet cap is 0** until an audit: on 4663 the vault accepts nothing.
+- **Stealth (Quiet) delivery hides the recipient, not the funding.** Deposits into SavingsVault, round-ups and
+  CrowdBuy joins are public and name the saver, and `deliver` names the user when their allocation moves into
+  StealthClaims. Only the later stealth payouts are unlinkable, and only as far as amounts and timing allow (the
+  keeper splits each allocation into random parts across later executions). A user who claims a stealth
+  balance straight to their main address, or funds the stealth address's gas from it, links them; use the
+  relayer. Stealth addresses cannot be checked on-chain: Quiet users trust the keeper to derive them from their
+  meta-address (a wrong one shows up in their own scan as a missing balance).
+- **Crowd privacy depends on crowd size.** A book executes only with at least `MIN_CROWD` distinct accounts and
+  at a jittered time inside the window, but every join is public. With a small crowd, amounts and allocations
+  are easy to attribute; the per-user order and allocation are recomputable by anyone from logs (that is the
+  allocation proof). `claimOpen` is always available and always public.
+- **Hidden Vault.** Deposits are public (`DepositQueued` shows the funding address and amount); what is hidden
+  is which later note, transfer or withdraw belongs to it. The anonymity set is the pool's notes of that asset,
+  which is small early on. Withdraw amount, recipient and relayer fee are public. A viewing key reveals every
+  past and future incoming note (but not spends). See the sections below for statement, disclosure and
+  threshold-proof limits.
+- **Relayers.** A relayer sees the request's IP and contents and can refuse or delay it; it cannot change it
+  (the claim is signed and the withdraw is proven to a fixed recipient and fee). It does rate limit.
+- **Keeper and owner powers** are listed in each contract's NatSpec: the keeper can only settle users who chose
+  that delivery mode and cannot redirect Open users; exits (`withdraw`, `claimOpen`, pool withdraws) are never
+  gated by eligibility, pause, keeper or owner.
+
+## Building
+
+`bun run build` writes `dist/` (ESM per entry point, shared chunks, `.d.ts`); `npm pack --dry-run` shows the
+package holds only `dist/` and this README. Inside the Plynth workspace `@plynth/sdk` resolves to `src/`
+(root `tsconfig.json` paths), so nothing needs building to run the apps or tests. Not published.
 
 ## Private sell, buy and park
 

@@ -37,7 +37,7 @@ export async function logsChunked(
     const b = a + chunk - 1n < to ? a + chunk - 1n : to;
     for (let attempt = 0; ; attempt++) {
       try {
-        out.push(...((await pub.getLogs({ ...params, fromBlock: a, toBlock: b } as any)) as Log[]));
+        out.push(...((await pub.getLogs({ ...params, fromBlock: a, toBlock: b } as any)) as unknown as Log[]));
         break;
       } catch (err) {
         if (attempt >= 4) throw err;

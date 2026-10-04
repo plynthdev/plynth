@@ -41,19 +41,5 @@ export function withdrawTx(pool: Address, w: { proof: Hex; pub: PublicWithdraw }
   return { to: getAddress(pool), data: encodeFunctionData({ abi: shieldedPoolAbi, functionName: "withdraw", args: [w.proof, w.pub] }) };
 }
 
-/** JSON body for the relayer's POST /withdraw (bigints as decimal strings). */
-export function withdrawRequest(w: { proof: Hex; pub: PublicWithdraw }) {
-  return { proof: w.proof, pub: { ...w.pub, amount: w.pub.amount.toString(), relayerFee: w.pub.relayerFee.toString() } };
-}
-
-/** Sends a withdraw through a relayer (it pays gas and keeps pub.relayerFee). Returns the tx hash. */
-export async function submitWithdraw(relayerUrl: string, w: { proof: Hex; pub: PublicWithdraw }, fetchImpl: typeof fetch = fetch): Promise<Hex> {
-  const res = await fetchImpl(`${relayerUrl.replace(/\/$/, "")}/withdraw`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(withdrawRequest(w)),
-  });
-  const body = (await res.json()) as { txHash?: Hex; error?: string };
-  if (!res.ok || !body.txHash) throw new Error(`relayer: ${body.error ?? res.status}`);
-  return body.txHash;
-}
+// The relayer client lives in @plynth/sdk/relayer; re-exported here so existing vault imports keep working.
+export { submitWithdraw, withdrawRequest } from "../relayer";

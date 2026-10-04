@@ -1,9 +1,11 @@
 // ERC-5564 announcements and the ERC-6538 registry: calldata builders, metadata layout, and the scanner.
 import { concat, decodeAbiParameters, encodeFunctionData, getAddress, parseAbi, parseAbiItem, size, slice, toHex, type Address, type Hex } from "viem";
+import { contracts } from "@plynth/chain";
 import { checkStealthAddress, parseMetaAddress, SCHEME_ID, stealthPrivateKey } from "./crypto";
 
-export const ERC5564_ANNOUNCER: Address = "0x55649E01B5Df198D18D95b5cc5051630cfD45564";
-export const ERC6538_REGISTRY: Address = "0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538";
+/** Canonical singletons (same address on every chain; defaults from @plynth/chain). Pass your own to override. */
+export const ERC5564_ANNOUNCER: Address = contracts.mainnet.erc5564Announcer;
+export const ERC6538_REGISTRY: Address = contracts.mainnet.erc6538Registry;
 
 export const registryAbi = parseAbi([
   "function registerKeys(uint256 schemeId, bytes stealthMetaAddress)",

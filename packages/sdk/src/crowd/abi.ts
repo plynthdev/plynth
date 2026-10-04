@@ -1,0 +1,67 @@
+// The user-facing slice of SavingsVault, CrowdBuy and JitterBeacon (signatures mirror contracts/src/consumer and
+// contracts/src/core; crowd.test.ts checks them against the forge build).
+import { parseAbi } from "viem";
+
+export const savingsVaultAbi = parseAbi([
+  "struct Settings { uint8 roundTo; uint8 multiplier; uint64 weeklyCap; uint64 fixedTopUp; uint8 mode; }",
+  "struct Account { uint256 available; uint256 pending; uint64 week; uint64 accruedThisWeek; uint64 lastTopUpAt; }",
+  "struct MixEntry { address stockToken; uint16 weightBps; }",
+  "function deposit(uint256 amount)",
+  "function withdraw(uint256 amount, address to)",
+  "function setSettings(Settings s)",
+  "function setMix(MixEntry[] mix)",
+  "function canBuy(address user) view returns (bool)",
+  "function accountOf(address user) view returns (Account)",
+  "function balancesOf(address user) view returns (uint256 available, uint256 pending)",
+  "function settingsOf(address user) view returns (Settings)",
+  "function mixOf(address user) view returns (MixEntry[])",
+  "error NotEligible(address user)",
+  "error InvalidMix()",
+  "error InvalidSettings()",
+  "error InsufficientBalance(uint256 requested, uint256 balance)",
+  "error ZeroAmount()",
+  "error NoMix()",
+]);
+
+export const crowdBuyAbi = parseAbi([
+  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; }",
+  "function join(address user)",
+  "function cancel(address asset, uint256 bookId)",
+  "function execute(address asset)",
+  "function claimOpen(address asset, uint256 bookId)",
+  "function openBook(address asset) view returns (uint256 bookId, Book b)",
+  "function book(address asset, uint256 bookId) view returns (Book)",
+  "function allocationOf(address asset, uint256 bookId, address user) view returns (uint256)",
+  "function orderOf(address asset, uint256 bookId, address user) view returns (uint256)",
+  "function settled(address asset, uint256 bookId, address user) view returns (bool)",
+  "function windowOf(uint256 t) view returns (uint64 start, uint64 end)",
+  "function beaconKey(address asset, uint64 windowStart) pure returns (bytes32)",
+  "function lastExecutedWindow(address asset) view returns (uint64)",
+  "function MIN_CROWD() view returns (uint32)",
+  "function GENESIS() view returns (uint64)",
+  "function WINDOW() view returns (uint64)",
+  "function beacon() view returns (address)",
+  "event BookOpened(address indexed asset, uint256 indexed bookId, uint64 openedAt)",
+  "event Joined(address indexed asset, uint256 indexed bookId, address indexed user, uint256 usdg)",
+  "event Cancelled(address indexed asset, uint256 indexed bookId, address indexed user, uint256 usdg)",
+  "event Executed(address indexed asset, uint256 indexed bookId, uint256 usdgTotal, uint256 rawOut, uint32 accounts, uint80 roundId)",
+  "event Claimed(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
+  "event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
+  "error NothingPending()",
+  "error CrowdTooSmall(uint32 accounts, uint32 minCrowd)",
+  "error TooEarly(uint64 executeAfter)",
+  "error AlreadyExecutedThisWindow(uint64 windowStart)",
+  "error MarketOnHold(address asset)",
+  "error BeforeGenesis()",
+  "error AlreadyExecuted()",
+  "error NotExecuted()",
+  "error NoOrder()",
+  "error AlreadySettled()",
+]);
+
+export const jitterBeaconAbi = parseAbi([
+  "struct Beacon { uint64 windowStart; uint64 windowEnd; uint64 executeAt; bytes32 commitment; }",
+  "function executeAfter(bytes32 key) view returns (uint64)",
+  "function beacon(bytes32 key) view returns (Beacon)",
+  "function reveal(bytes32 key, bytes32 secret)",
+]);

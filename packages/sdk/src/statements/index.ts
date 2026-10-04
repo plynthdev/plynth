@@ -5,3 +5,4 @@ export * from "./periods";
 export * from "./scan";
 export * from "./statement";
 export * from "./proofs";
+export { CHAIN_IDS, parseDeployment, publicInfra, type Network, type PlynthDeployment, type PublicInfra } from "../defaults";
