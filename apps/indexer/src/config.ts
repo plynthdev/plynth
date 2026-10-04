@@ -65,7 +65,13 @@ export const DEPLOYMENT_EVENTS: Record<string, AbiEvent[]> = {
     "event Claimed(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
     "event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)",
     "event DustSettled(address indexed asset, uint256 indexed bookId, uint256 raw)",
+    "event StealthClaimsSet(address indexed stealthClaims)",
     ...OWNABLE,
+  ]),
+  stealthClaims: ev([
+    "event Pooled(address indexed token, uint256 raw)",
+    "event Credited(address indexed token, address indexed stealth, uint256 raw)",
+    "event Claimed(address indexed token, address indexed stealth, address indexed to, uint256 raw, uint256 nonce)",
   ]),
 };
 

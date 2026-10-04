@@ -4,7 +4,8 @@
 // Env: KEEPER_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // KEEPER_DEPLOYMENTS_DIR (default ./deployments), KEEPER_SECRET_KEY (32 bytes hex/base64, seals beacon secrets),
 // KEEPER_PRIVATE_KEY or KEEPER_KEYSTORE + KEEPER_KEYSTORE_PASSWORD_FILE, KEEPER_LOOKAHEAD (windows, default 2),
-// KEEPER_JOBS (comma-separated subset of topups,roundups,sweep,beacon,execute; default all).
+// KEEPER_JOBS (comma-separated subset of topups,roundups,sweep,beacon,execute,deliver-quiet; default all),
+// SPLIT_PARTS (Quiet delivery parts per allocation, 1-3, default 2).
 // The signing key is never logged.
 import { robinhood, robinhoodTestnet } from "@plynth/chain";
 import { connect, databaseUrl } from "@plynth/db";
@@ -16,6 +17,7 @@ import { healthApp } from "./health";
 import { JOBS, runPass, type PassReport } from "./keeper";
 import { parseSecretKey, Sealer } from "./seal";
 import { Sender } from "./sender";
+import { splitParts } from "./jobs/quiet";
 import { loadSigner } from "./signer";
 
 const once = process.argv.includes("--once");
@@ -50,7 +52,7 @@ const sender = new Sender(
   },
   account.address,
 );
-const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: Number(process.env.KEEPER_LOOKAHEAD || 2), log };
+const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: Number(process.env.KEEPER_LOOKAHEAD || 2), splitParts: splitParts(process.env.SPLIT_PARTS), log };
 
 const only = (process.env.KEEPER_JOBS || "").split(",").map((s) => s.trim()).filter(Boolean);
 for (const j of only) if (!JOBS.some(([n]) => n === j)) throw new Error(`unknown job in KEEPER_JOBS: ${j}`);

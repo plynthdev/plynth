@@ -3,6 +3,7 @@ export * from "./context";
 export * from "./health";
 export * from "./jobs/beacon";
 export * from "./jobs/execute";
+export * from "./jobs/quiet";
 export * from "./jobs/roundups";
 export * from "./jobs/sweep";
 export * from "./jobs/topups";

@@ -4,7 +4,7 @@ import { linkIntervals, linkedUserAt, type LinkEvent } from "@plynth/indexer";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { encodeAbiParameters, keccak256, toEventSelector, toFunctionSelector, type Address, type Hex } from "viem";
-import { beaconAbi, crowdAbi, vaultAbi } from "../src/abi";
+import { beaconAbi, crowdAbi, stealthClaimsAbi, vaultAbi } from "../src/abi";
 import { keeperDeployment } from "../src/context";
 import { beaconKey, commitmentOf, revealOpen, windowAt, windowsToCommit } from "../src/jobs/beacon";
 import { executeBlocker } from "../src/jobs/execute";
@@ -144,5 +144,6 @@ describe("ABI matches the compiled contracts (skips if contracts/out is not buil
     check("SavingsVault", vaultAbi);
     check("CrowdBuy", crowdAbi);
     check("JitterBeacon", beaconAbi);
+    check("StealthClaims", stealthClaimsAbi);
   });
 });

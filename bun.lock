@@ -42,7 +42,19 @@
         "@plynth/chain": "workspace:*",
         "@plynth/db": "workspace:*",
         "@plynth/indexer": "workspace:*",
+        "@plynth/sdk": "workspace:*",
         "drizzle-orm": "^0.45.3",
+        "hono": "^4.13.13",
+        "viem": "^2.57.2",
+      },
+    },
+    "apps/relayer": {
+      "name": "@plynth/relayer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@plynth/indexer": "workspace:*",
+        "@plynth/keeper": "workspace:*",
+        "@plynth/sdk": "workspace:*",
         "hono": "^4.13.13",
         "viem": "^2.57.2",
       },
@@ -63,6 +75,14 @@
       },
       "devDependencies": {
         "drizzle-kit": "^0.31.11",
+      },
+    },
+    "packages/sdk": {
+      "name": "@plynth/sdk",
+      "version": "0.0.0",
+      "dependencies": {
+        "@noble/curves": "1.9.1",
+        "viem": "^2.57.2",
       },
     },
   },
@@ -144,6 +164,10 @@
     "@plynth/indexer": ["@plynth/indexer@workspace:apps/indexer"],
 
     "@plynth/keeper": ["@plynth/keeper@workspace:apps/keeper"],
+
+    "@plynth/relayer": ["@plynth/relayer@workspace:apps/relayer"],
+
+    "@plynth/sdk": ["@plynth/sdk@workspace:packages/sdk"],
 
     "@scure/base": ["@scure/base@1.2.6", "", {}, "sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg=="],
 

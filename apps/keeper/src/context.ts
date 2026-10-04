@@ -16,10 +16,14 @@ export type KeeperDeployment = {
   stocks: Address[];
   /** Every Plynth contract (lowercase): a spend into one of these is not a round-up. */
   plynth: Set<string>;
+  /** Quiet delivery; absent until StealthClaims is deployed and wired. */
+  stealthClaims?: Address;
+  erc6538Registry: Address;
 };
 
 const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 const CANONICAL_MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const CANONICAL_ERC6538 = "0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538";
 
 /** Reads the addresses the keeper needs from deployments/<chainid>.json (written by the deploy scripts). */
 export function keeperDeployment(dep: Deployment | undefined, chainId: number): KeeperDeployment {
@@ -45,6 +49,8 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     multicall3: opt("multicall3", (net as { multicall3?: string } | undefined)?.multicall3 ?? CANONICAL_MULTICALL3),
     stocks,
     plynth,
+    stealthClaims: typeof dep.stealthClaims === "string" ? getAddress(dep.stealthClaims) : undefined,
+    erc6538Registry: opt("erc6538Registry", CANONICAL_ERC6538),
   };
 }
 
@@ -58,6 +64,8 @@ export type Ctx = {
   dep: KeeperDeployment;
   /** Windows ahead to commit beacons for (>= 2 keeps execution alive through one fully missed window). */
   lookahead: number;
+  /** Quiet delivery: parts per allocation, 1-3 (default 2), released across consecutive executions. */
+  splitParts?: number;
   log: (m: string) => void;
 };
 

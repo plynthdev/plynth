@@ -17,7 +17,8 @@
     "db:migrate": "bun packages/db/src/migrate.ts",
     "indexer": "bun apps/indexer/src/main.ts",
     "keeper": "bun apps/keeper/src/main.ts",
-    "api": "bun apps/api/src/main.ts"
+    "api": "bun apps/api/src/main.ts",
+    "relayer": "bun apps/relayer/src/main.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

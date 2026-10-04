@@ -37,6 +37,11 @@ export const crowdAbi = parseAbi([
   "function lastExecutedWindow(address asset) view returns (uint64)",
   "function allocationOf(address asset, uint256 bookId, address user) view returns (uint256)",
   "function claimOpen(address asset, uint256 bookId)",
+  "function deliver(address asset, uint256 bookId, address user, bytes route)",
+  "function deliverStealth(address asset, address stealth, uint256 raw, bytes ephemeralPubKey, bytes1 viewTag)",
+  "function settled(address asset, uint256 bookId, address user) view returns (bool)",
+  "function orderOf(address asset, uint256 bookId, address user) view returns (uint256)",
+  "function stealthClaims() view returns (address)",
   "function MIN_CROWD() view returns (uint32)",
   "function GENESIS() view returns (uint64)",
   "function WINDOW() view returns (uint64)",
@@ -51,7 +56,25 @@ export const crowdAbi = parseAbi([
   "error MarketOnHold(address asset)",
   "error BeforeGenesis()",
   "error AlreadyExecuted()",
+  "error NotExecuted()",
+  "error NoOrder()",
+  "error AlreadySettled()",
+  "error QuietNotConfigured()",
+  "error UnknownRoute(bytes route)",
+  "error NotQuiet(address user)",
+  "error NoMetaAddress(address user)",
+  "error BadEphemeralKey()",
   "error NoMix()",
+]);
+
+export const stealthClaimsAbi = parseAbi([
+  "function pooled(address token) view returns (uint256)",
+  "function balanceOf(address token, address stealth) view returns (uint256)",
+  "function registry() view returns (address)",
+  "function announcer() view returns (address)",
+  "error PoolTooSmall(uint256 pooled, uint256 raw)",
+  "error NotCrowd()",
+  "error ZeroAmount()",
 ]);
 
 export const beaconAbi = parseAbi([
@@ -93,4 +116,4 @@ export const multicall3Abi = parseAbi([
 ]);
 
 /** Every custom error the keeper may see, for decoding reverts from any of its targets. */
-export const errorsAbi = [...vaultAbi, ...crowdAbi, ...beaconAbi].filter((x) => x.type === "error");
+export const errorsAbi = [...vaultAbi, ...crowdAbi, ...beaconAbi, ...stealthClaimsAbi].filter((x) => x.type === "error");

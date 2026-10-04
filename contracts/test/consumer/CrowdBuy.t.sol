@@ -300,15 +300,22 @@ contract CrowdBuyTest is CrowdBuyBase {
         crowd.claimOpen(address(tokA), 0);
     }
 
-    function test_R6_deliverIsKeeperOnlyStub() public {
+    function test_R6_deliverIsKeeperOnlyAndRejectsUnknownRoutes() public {
         (address[] memory users,) = _readyBook();
         crowd.execute(address(tokA));
         vm.expectRevert(CrowdBuy.NotKeeper.selector);
+        crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(1)));
+        vm.startPrank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.UnknownRoute.selector, bytes("")));
         crowd.deliver(address(tokA), 0, users[0], "");
-        vm.prank(keeper);
-        vm.expectRevert(CrowdBuy.NotYet.selector);
-        crowd.deliver(address(tokA), 0, users[0], "");
-        // the stub leaves the allocation claimable
+        // Hidden (2) is todo 16
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.UnknownRoute.selector, abi.encode(uint8(2))));
+        crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(2)));
+        // Quiet before StealthClaims is configured
+        vm.expectRevert(CrowdBuy.QuietNotConfigured.selector);
+        crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(1)));
+        vm.stopPrank();
+        // a failed delivery leaves the allocation claimable
         vm.prank(users[0]);
         crowd.claimOpen(address(tokA), 0);
     }

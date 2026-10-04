@@ -7,6 +7,9 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 
 import {SavingsVault, ICanonicalRegistry} from "../src/consumer/SavingsVault.sol";
 import {CrowdBuy, IExecuteBeacon} from "../src/consumer/CrowdBuy.sol";
+import {StealthClaims} from "../src/consumer/StealthClaims.sol";
+import {IERC5564Announcer} from "../src/interfaces/IERC5564Announcer.sol";
+import {IERC6538Registry} from "../src/interfaces/IERC6538Registry.sol";
 import {StockTokenRegistry} from "../src/core/StockTokenRegistry.sol";
 import {Valuer} from "../src/core/Valuer.sol";
 import {StockRouter} from "../src/core/StockRouter.sol";
@@ -20,13 +23,16 @@ import {Multicall3Lite} from "../test/mocks/Multicall3Lite.sol";
 /// LOCAL ANVIL ONLY (chain 31337). The whole consumer stack on a plain anvil chain for keeper end-to-end
 /// tests: mock USDG, two mock Stock Tokens with feeds, a fixed-rate mock v4 PoolManager, the core
 /// contracts, SavingsVault + CrowdBuy, and a Multicall3 stand-in. Permit2 must already be at its canonical
-/// address (the test etches the real runtime with anvil_setCode first).
+/// address (the test etches the real runtime with anvil_setCode first). If the ERC-5564 Announcer and ERC-6538
+/// Registry are also etched at their canonical addresses, StealthClaims is deployed and wired for Quiet delivery.
 ///
 /// Env: KEEPER_ADDRESS (required), MIN_CROWD (default 3), MAX_STALENESS (seconds, default 3650 days: the
 /// tests warp time by weeks and the feeds are not refreshed).
 /// Prints one line `PLYNTH_DEPLOYMENT <json>` with every address; nothing is written to disk.
 contract LocalConsumer is Script {
     address public constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address public constant ANNOUNCER = 0x55649E01B5Df198D18D95b5cc5051630cfD45564;
+    address public constant REGISTRY_6538 = 0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538;
     uint24 public constant FEE = 500;
     uint16 public constant SLIPPAGE_BPS = 100;
 
@@ -42,6 +48,7 @@ contract LocalConsumer is Script {
         address beacon;
         address vault;
         address crowd;
+        address stealthClaims;
         address multicall3;
         address tsla;
         address nvda;
@@ -99,6 +106,12 @@ contract LocalConsumer is Script {
             )
         );
         vault.setCrowd(o.crowd);
+        if (ANNOUNCER.code.length != 0 && REGISTRY_6538.code.length != 0) {
+            StealthClaims sc =
+                new StealthClaims(o.crowd, IERC5564Announcer(ANNOUNCER), IERC6538Registry(REGISTRY_6538));
+            CrowdBuy(o.crowd).setStealthClaims(sc);
+            o.stealthClaims = address(sc);
+        }
     }
 
     function _stock(Out memory o, string memory sym, uint256 usdPerToken) private returns (address, address) {
@@ -139,6 +152,11 @@ contract LocalConsumer is Script {
         vm.serializeAddress(r, "savingsVault", o.vault);
         vm.serializeAddress(r, "crowdBuy", o.crowd);
         vm.serializeAddress(r, "multicall3", o.multicall3);
+        if (o.stealthClaims != address(0)) {
+            vm.serializeAddress(r, "stealthClaims", o.stealthClaims);
+            vm.serializeAddress(r, "erc5564Announcer", ANNOUNCER);
+            vm.serializeAddress(r, "erc6538Registry", REGISTRY_6538);
+        }
         vm.serializeAddress(r, "permit2", PERMIT2);
         vm.serializeUint(r, "genesis", o.genesis);
         string memory json = vm.serializeString(r, "stocks", stocks);

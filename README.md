@@ -39,6 +39,7 @@ bun test                                                 # TypeScript tests
 bun run verify:chain                                     # re-check every address against the live chain
 bun run indexer --once && bun run keeper --once          # one indexer + keeper pass (see .env.example)
 bun run api                                              # dashboard API: tRPC at /trpc, REST mirror at /v1
+bun run relayer                                          # gasless Quiet claims: POST /claim on :8789
 ```
 
 ## Layout
@@ -50,6 +51,12 @@ bun run api                                              # dashboard API: tRPC a
 - `apps/api/` Read-only dashboard API (Hono + tRPC, REST mirror under `/v1`): account overview, saving habit,
   activity, settings, Crowd Buy books, health. Transactions come back unsigned (`{to, data, value, chainId}`)
   for the user's own wallet; the API holds no keys. `meta.eligibility` is a self-attestation stub, not KYC.
+- `apps/relayer/` Gasless claims for Quiet delivery: verifies the stealth key's EIP-712 signature off-chain,
+  simulates, and sends `StealthClaims.claim` from its own wallet. Rate-limited per IP and per stealth address;
+  refuses claims into Plynth contracts.
+- `packages/sdk/` ERC-5564 scheme 1 stealth addresses (keys from a wallet signature, meta-address, ERC-6538
+  registration calldata, announcement scanning with view tags, stealth keys, claim signing). Matches the ERC's
+  reference vector.
 - `packages/chain/` Shared TypeScript: chain configs, verified addresses, Stock Token ABI, `verify:chain`.
 
 - `scripts/public-guard.sh` Blocks commits that contain keys, env files or private material (pre-commit hook;
@@ -63,6 +70,11 @@ What you have to trust, per component. Later components add their own entries he
   Unlisted tokens are refused (fail-closed).
 - **Valuer.** Chainlink price feeds on Robinhood Chain, and each Stock Token's own `uiMultiplier()`. A stale
   or missing feed returns `hold` instead of a price.
+- **Quiet delivery (StealthClaims).** Only users who chose Quiet and registered an ERC-6538 meta-address can be
+  delivered quietly. The keeper derives their stealth addresses off-chain; a contract cannot check that, so
+  Quiet users trust the keeper to use their meta-address (a wrong one shows up in the user's own scan as a
+  missing balance). Credited balances move only with the stealth key's signature; the relayer cannot redirect
+  them. Funding and book membership stay public; the user and a stealth address never share a transaction.
 
 ## Still to verify
 

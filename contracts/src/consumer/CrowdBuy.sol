@@ -10,6 +10,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SavingsVault} from "./SavingsVault.sol";
 import {StockRouter} from "../core/StockRouter.sol";
 import {Valuer} from "../core/Valuer.sol";
+import {StealthClaims} from "./StealthClaims.sol";
 
 interface IExecuteBeacon {
     function executeAfter(bytes32 key) external view returns (uint64);
@@ -35,7 +36,15 @@ interface IExecuteBeacon {
 ///
 /// Exit: `claimOpen` is never gated by the user's delivery mode, the keeper or the owner. A Quiet/Hidden
 /// user who claims openly receives tokens at their own address (a documented privacy cost).
-/// Trust: the owner can only rotate the keeper; the keeper can only deliver (a stub until todos 09/16).
+/// Quiet delivery (todo 09) is two keeper steps in separate transactions so no single transaction names both
+/// a user and a stealth address: `deliver` settles a Quiet user's allocation into StealthClaims' unassigned
+/// pool (names the user, like the public funding), and `deliverStealth` assigns pool tokens to one fresh
+/// ERC-5564 stealth address and announces it (names only the stealth address). The keeper splits each
+/// allocation into parts across later executions, so amounts and timing do not line up one to one.
+/// Trust: the owner can only rotate the keeper and set StealthClaims once. The keeper can only settle users
+/// who chose Quiet (vault mode 1) AND registered an ERC-6538 meta-address, and can only assign pooled tokens
+/// to stealth addresses. Stealth addresses cannot be checked on-chain, so Quiet users trust the keeper to
+/// derive them from their meta-address (a wrong one is visible to the user's scan as a missing balance).
 /// Nobody can move pooled USDG anywhere except into the router for that book or back to the vault on cancel.
 contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -54,6 +63,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     }
 
     uint16 public constant MAX_SLIPPAGE_BPS = 300;
+    uint8 public constant MODE_QUIET = 1;
+    uint256 public constant STEALTH_SCHEME = 1;
     uint64 public constant WINDOW = 1 days;
     uint256 private constant BPS = 10_000;
 
@@ -67,6 +78,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     uint64 public immutable GENESIS;
 
     address public keeper;
+    StealthClaims public stealthClaims;
 
     mapping(address asset => uint256) public currentBookId;
     mapping(address asset => mapping(uint256 bookId => Book)) private _books;
@@ -86,6 +98,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     event Claimed(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw);
     event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw);
     event DustSettled(address indexed asset, uint256 indexed bookId, uint256 raw);
+    event StealthClaimsSet(address indexed stealthClaims);
 
     error ZeroAddress();
     error BadParam();
@@ -101,6 +114,12 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     error MarketOnHold(address asset);
     error BeforeGenesis();
     error NotYet();
+    error AlreadySet();
+    error QuietNotConfigured();
+    error UnknownRoute(bytes route);
+    error NotQuiet(address user);
+    error NoMetaAddress(address user);
+    error BadEphemeralKey();
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -137,6 +156,15 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     function setKeeper(address keeper_) external onlyOwner {
         keeper = keeper_;
         emit KeeperSet(keeper_);
+    }
+
+    /// Set once: CrowdBuy is deployed first, then StealthClaims(crowd), then this.
+    function setStealthClaims(StealthClaims sc) external onlyOwner {
+        if (address(stealthClaims) != address(0)) revert AlreadySet();
+        if (address(sc) == address(0)) revert ZeroAddress();
+        if (sc.crowd() != address(this)) revert BadParam();
+        stealthClaims = sc;
+        emit StealthClaimsSet(address(sc));
     }
 
     // ---------------------------------------------------------------- orders
@@ -230,9 +258,46 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         emit Claimed(asset, bookId, msg.sender, raw);
     }
 
-    /// Quiet (todo 09) and Hidden (todo 16) delivery routes. Not built yet.
-    function deliver(address, uint256, address, bytes calldata) external view onlyKeeper {
-        revert NotYet();
+    /// Keeper delivery for a non-Open user. `route` = abi.encode(uint8 mode). Quiet (1): settles the user's
+    /// whole allocation and moves it into StealthClaims' unassigned pool; `deliverStealth` assigns it later.
+    /// Requires the user's vault mode to be Quiet and an ERC-6538 scheme-1 meta-address on record, so the
+    /// keeper cannot redirect Open users' tokens. Hidden (2, todo 16) is not built yet.
+    function deliver(address asset, uint256 bookId, address user, bytes calldata route)
+        external
+        onlyKeeper
+        nonReentrant
+    {
+        if (route.length != 32) revert UnknownRoute(route);
+        uint8 mode = abi.decode(route, (uint8));
+        if (mode != MODE_QUIET) revert UnknownRoute(route);
+        StealthClaims sc = stealthClaims;
+        if (address(sc) == address(0)) revert QuietNotConfigured();
+        if (vault.settingsOf(user).mode != MODE_QUIET) revert NotQuiet(user);
+        if (sc.registry().stealthMetaAddressOf(user, STEALTH_SCHEME).length == 0) revert NoMetaAddress(user);
+        uint256 raw = _settle(asset, bookId, user);
+        if (raw != 0) {
+            IERC20(asset).safeTransfer(address(sc), raw);
+            sc.pool(asset, raw);
+        }
+        emit Delivered(asset, bookId, user, raw);
+    }
+
+    /// Assigns `raw` pooled tokens to one stealth address and announces it (ERC-5564 scheme 1).
+    /// Announcement metadata: viewTag (1 byte) | transfer selector (4) | token (20) | raw amount (32).
+    function deliverStealth(address asset, address stealth, uint256 raw, bytes calldata ephemeralPubKey, bytes1 viewTag)
+        external
+        onlyKeeper
+        nonReentrant
+    {
+        StealthClaims sc = stealthClaims;
+        if (address(sc) == address(0)) revert QuietNotConfigured();
+        if (ephemeralPubKey.length != 33 || (ephemeralPubKey[0] != 0x02 && ephemeralPubKey[0] != 0x03)) {
+            revert BadEphemeralKey();
+        }
+        sc.credit(asset, stealth, raw);
+        sc.announcer().announce(
+            STEALTH_SCHEME, stealth, ephemeralPubKey, abi.encodePacked(viewTag, IERC20.transfer.selector, asset, raw)
+        );
     }
 
     // ---------------------------------------------------------------- views

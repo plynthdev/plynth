@@ -58,6 +58,7 @@ describe("config", () => {
       jitterBeacon: "JitterBeacon",
       savingsVault: "SavingsVault",
       crowdBuy: "CrowdBuy",
+      stealthClaims: "StealthClaims",
     };
     const check = (contract: string, events: AbiEvent[]) => {
       const f = join(out, `${contract}.sol`, `${contract}.json`);

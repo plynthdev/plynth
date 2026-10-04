@@ -27,6 +27,8 @@ export const contracts = {
     steakhouseUsdgVault: "0xBeEff033F34C046626B8D0A041844C5d1A5409dd",
     morphoVaultV2Factory: "0x0FBad98595b0186dA120E41f77C102beb49f803c",
     orderlyVault: "0x816f722424B49Cf1275cc86DA9840Fbd5a6167e9",
+    erc5564Announcer: "0x55649E01B5Df198D18D95b5cc5051630cfD45564",
+    erc6538Registry: "0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538",
   },
   testnet: {
     entryPointV07: "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
@@ -46,6 +48,8 @@ export const contracts = {
     steakhouseUsdgVault: null,
     morphoVaultV2Factory: null,
     orderlyVault: "0x2A5b650A894409372DDeE241EDAC92d4152bE24d",
+    erc5564Announcer: "0x55649E01B5Df198D18D95b5cc5051630cfD45564",
+    erc6538Registry: "0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538",
   },
 } as const satisfies Record<Network, Record<string, Address | null>>;
 

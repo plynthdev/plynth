@@ -1,0 +1,14 @@
+{
+  "name": "@plynth/sdk",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./stealth": "./src/stealth/index.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.1",
+    "viem": "^2.57.2"
+  }
+}
