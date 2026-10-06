@@ -85,6 +85,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     error AlreadyDone();
     error InsufficientShares();
     error NotReady(uint64 readyAt);
+    error ClaimsOwed();
 
     constructor(IERC20Metadata usdg_, address committee_) {
         if (address(usdg_) == address(0) || committee_ == address(0)) revert ZeroAddress();
@@ -156,8 +157,12 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         _process();
     }
 
+    /// Refused while any queued claim is unpaid, or while existing shares are worth nothing (a claim took
+    /// the whole pool): in both states the share price is 0 or near it, so a tiny deposit would mint almost
+    /// every share and take the existing LPs' claim on all later fees. Fees reopen deposits.
     function deposit(uint256 assets) external nonReentrant returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
+        if (queuedOwed != 0 || (totalShares != 0 && freeAssets() == 0)) revert ClaimsOwed();
         shares = assets * (totalShares + VIRTUAL_SHARES) / (freeAssets() + 1);
         if (shares == 0) revert ZeroAmount();
         usdg.safeTransferFrom(msg.sender, address(this), assets);

@@ -232,4 +232,43 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         assertGt(victimShares, 0);
         assertApproxEqRel(pool.previewRedeem(victimShares), 10_000e6, 0.001e18);
     }
+
+    // ------------------------------------------------------------ security review 2026-10-06
+
+    /// S2: a queued claim drained the pool (freeAssets 0). A 1 USDG deposit would mint ~all the shares and
+    /// take every later fee; deposits must wait until the claims are paid.
+    function test_S2_depositWhileClaimsDrainThePoolRefused() public {
+        _lp(lp, 1_000e6);
+        uint256 id = _file(3_000e18);
+        _approveBoth(id); // pays 1,000, owes 2,000, balance 0
+        assertEq(pool.freeAssets(), 0);
+
+        address attacker = makeAddr("attacker");
+        usdg.mint(attacker, 1e6);
+        vm.startPrank(attacker);
+        usdg.approve(address(pool), 1e6);
+        vm.expectRevert(ExceptionInsurancePool.ClaimsOwed.selector);
+        pool.deposit(1e6);
+        vm.stopPrank();
+
+        _fund(10_000e6); // 2,000 to the claim, 8,000 free: all of it belongs to the existing LP
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 8_000e6, 10);
+        uint256 s = _lp(lp2, 8_000e6); // once the queue is clear, deposits are fair again
+        assertApproxEqAbs(pool.previewRedeem(s), 8_000e6, 10);
+    }
+
+    /// S2: every share lost its value to a paid claim; a newcomer must not buy all future fees for 1 unit.
+    function test_S2_depositIntoZeroValueSharesRefused() public {
+        _lp(lp, 1_000e6);
+        uint256 id = _file(1_000e18);
+        _approveBoth(id); // pays exactly the balance
+        assertEq(pool.queueLength(), 0);
+        assertEq(pool.freeAssets(), 0);
+        usdg.mint(lp2, 1e6);
+        vm.startPrank(lp2);
+        usdg.approve(address(pool), 1e6);
+        vm.expectRevert(ExceptionInsurancePool.ClaimsOwed.selector);
+        pool.deposit(1e6);
+        vm.stopPrank();
+    }
 }
