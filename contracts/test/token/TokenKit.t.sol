@@ -50,11 +50,15 @@ contract TokenKitTest is Test {
         vm.stopPrank();
         assertTrue(d.staking.tierOf(alice).weeklyClose);
         vm.warp((block.timestamp / 1 hours + 1) * 1 hours);
+        vm.prank(deployer); // the router's keeper until setKeeper
+        d.router.observe();
+        vm.warp(block.timestamp + 10 minutes);
 
         // 3000 mUSDG of fees, no LPs: 1500 to stakers in USDG, 200 (cap) buys PLTH, 1300 carried.
         vm.prank(deployer);
         usdg.mint(address(d.router), 3000e6);
-        d.router.push();
+        vm.prank(deployer);
+        d.router.push(0);
         assertEq(d.router.buyCarry(), 1300e6);
         uint256 bought = d.staking.queued(1);
         // 200 USDG / 0.05 = 4000 PLTH, less 0.3% fee and ~0.4% price impact on ~50k a side
@@ -74,7 +78,8 @@ contract TokenKitTest is Test {
         vm.stopPrank();
         vm.prank(deployer);
         usdg.mint(address(d.router), 1000e6);
-        d.router.push();
+        vm.prank(deployer);
+        d.router.push(0);
         assertEq(usdg.balanceOf(address(d.insurance)), 100e6 + 500e6);
     }
 }

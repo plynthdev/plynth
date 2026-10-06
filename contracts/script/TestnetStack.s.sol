@@ -275,6 +275,7 @@ contract TestnetStack is Script {
             templates
         );
         feeRouter.setTemplateFees(ITemplateFeeSource(address(factory)), 2000);
+        feeRouter.setKeeper(keeper); // push and observe are keeper-only
         IERC4626[] memory vaults = new IERC4626[](1);
         vaults[0] = IERC4626(address(cashVault));
         cashSleeve = new CashSleeve(valuer, IERC20(address(usdg)), vaults);

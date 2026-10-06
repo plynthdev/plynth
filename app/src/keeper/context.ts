@@ -25,6 +25,8 @@ export type KeeperDeployment = {
   shieldedPool?: Address | undefined;
   /** Mock feeds of a testnet kit deployment (job refresh-mock-feeds). */
   mock: MockFeedDeployment;
+  /** FeeRouter (job fee-push); absent when the token stack is not deployed. */
+  feeRouter?: Address | undefined;
 };
 
 /** One mock Stock Token of a testnet kit: its feed and v4 pool (as TestnetKit.s.sol writes them). */
@@ -113,6 +115,7 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     erc6538Registry: opt("erc6538Registry", CANONICAL_ERC6538),
     shieldedPool: typeof dep.shieldedPool === "string" ? getAddress(dep.shieldedPool) : undefined,
     mock: mockFeedDeployment(dep),
+    feeRouter: typeof dep.feeRouter === "string" ? getAddress(dep.feeRouter) : undefined,
   };
 }
 

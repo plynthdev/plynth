@@ -21,7 +21,13 @@ export const feeRouterAbi = parseAbi([
   "function maxSlippageBps() view returns (uint16)",
   "function authorBps() view returns (uint16)",
   "function spotSqrtPriceX96() view returns (uint160)",
-  "function push()",
+  "function push(uint256 keeperMinOut)",
+  "function observe()",
+  "function keeper() view returns (address)",
+  "function obsAt() view returns (uint64)",
+  "function authorReserved() view returns (uint256)",
+  "function quoteMinOut(uint256 usdgIn) view returns (uint256)",
+  "function usdg() view returns (address)",
 ]);
 
 export const insuranceAbi = parseAbi([

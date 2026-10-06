@@ -6,7 +6,7 @@ import { encodeAbiParameters, getAddress, keccak256, stringToHex, toBytes, type 
 import { compileTemplate, policyAbiParam } from "@/treasury/policy-compiler";
 import { TOKEN_BLOCKER, TOKEN_PAUSER } from "../warm";
 import { abiOf, expect, j, revertReason } from "./core";
-import { balanceOf, DAY, E18, erc20Abi, HOUR, U, usdgOf, type Ctx } from "./context";
+import { balanceOf, DAY, E18, erc20Abi, events, HOUR, U, usdgOf, type Ctx } from "./context";
 import { forkTemplate } from "./treasury-setup";
 
 export async function token(x: Ctx) {
@@ -33,13 +33,26 @@ export async function token(x: Ctx) {
   const authorOwed = await r.read<bigint>(fr, FR, "authorOwed", [A.staker.address]);
   const insBefore = await usdgOf(x, ins);
   if (feeBal > authorOwed) {
-    await r.send("anyone pushes the FeeRouter: PLTH buyback on the v4 pool, split to stakers and insurance", A.outsider, { address: fr, abi: FR, functionName: "push" }, async (rc) => {
+    // push and observe are keeper-only: one contract can no longer move the PLTH pool and push in the same tx.
+    await r.reverts("an outsider cannot push the FeeRouter (keeper-only)", A.outsider, { address: fr, abi: FR, functionName: "push", args: [0n] }, "NotKeeper");
+    await r.reverts("an outsider cannot record the buy's reference price", A.outsider, { address: fr, abi: FR, functionName: "observe" }, "NotKeeper");
+    const from = await x.r.pub.getBlockNumber();
+    await r.external("keeper observes the PLTH pool, then pushes the FeeRouter >= 10 min later: buyback checked against that observation, split to stakers and insurance", "keeper", async () => {
+      // The running keeper's fee-push job observes first; chain time only moves when we warp, so warp past the
+      // 10-minute observation age until its push lands.
+      let pushed: Awaited<ReturnType<typeof events>>[number] | undefined;
+      for (let i = 0; i < 4 && !pushed; i++) {
+        await r.until("FeeRouter observation", async () => ((await r.read<bigint>(fr, FR, "obsAt")) !== 0n ? true : undefined), 120_000);
+        await r.warp(11n * 60n);
+        pushed = await r.until("Pushed", async () => (await events(x, fr, "FeeRouter", "Pushed", from))[0], 60_000).catch(() => undefined);
+      }
+      expect(pushed !== undefined, "the keeper never pushed");
       const insGot = (await usdgOf(x, ins)) - insBefore;
-      const logs = rc.logs.filter((l) => getAddress(l.address) === st || getAddress(l.address) === ins || getAddress(l.address) === x.addr("poolManager"));
-      expect(insGot > 0n || logs.length > 0, "nothing reached staking or insurance");
-      return `insurance +${Number(insGot) / 1e6} USDG; ${logs.length} logs on staking/insurance/PoolManager (buyback swap)`;
+      const a = pushed!.args as { usdgSpent: bigint; plthBought: bigint; toInsurance: bigint; usdgToStakers: bigint };
+      expect(insGot > 0n || a.usdgToStakers > 0n || a.plthBought > 0n, "nothing reached staking or insurance");
+      return { tx: pushed!.transactionHash, assertion: `Pushed: insurance +${Number(insGot) / 1e6} USDG, stakers +${Number(a.usdgToStakers) / 1e6} USDG, ${Number(a.usdgSpent) / 1e6} USDG bought ${Number(a.plthBought) / 1e18} PLTH` };
     });
-    await r.reverts("a second push inside the hour reverts", A.outsider, { address: fr, abi: FR, functionName: "push" }, "TooSoon");
+    await r.reverts("a second push inside the hour reverts", A.keeper, { address: fr, abi: FR, functionName: "push", args: [0n] }, "TooSoon");
   } else {
     await r.check("FeeRouter holds close fees to push", () => {
       throw new Error(`FeeRouter USDG ${feeBal} (author set-aside ${authorOwed}): no closes reached it`);

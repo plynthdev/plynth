@@ -33,21 +33,25 @@ interface IInsuranceFees {
 /// 3. the other half goes to the ExceptionInsurancePool, unless the pool has no depositors (no LP shares):
 ///    then it goes to stakers as USDG, so the first LP cannot walk in and take fees nobody was insuring.
 ///
-/// `push()` is open to anyone but runs at most once per hour, so nobody can time a large reward to a moment
-/// that suits them (the staking side also only pays stake that was active for a whole hour).
+/// `push(minOut)` is keeper-only and runs at most once per hour (the staking side also only pays stake that
+/// was active for a whole hour). It used to be open to anyone, which let one contract move the PLTH pool,
+/// push (the buy then read the moved spot as its reference) and move it back, every hour.
 ///
-/// The buy is oracle-free (PLTH has no feed): the minimum output is the pool's own spot price (slot0, read
-/// with `extsload`) less `maxSlippageBps`, and at most `perPushCap` USDG is spent per push. The spot read is
-/// in the same transaction as the swap, so it bounds the trade's own price impact, not a pool someone moved
-/// beforehand; the per-push cap is what bounds the loss to a sandwich, and the hourly rate limit bounds how
-/// often it can be tried. Whatever is not spent (over the cap, or a buy that would breach the slippage
-/// bound, which is skipped instead of reverting the push) is carried in `buyCarry` for the next push and is
-/// never re-split. The router keeps no other balance between pushes (besides the authors' set-aside USDG).
+/// The buy is oracle-free (PLTH has no feed). Its minimum output is the highest of: the keeper's `minOut`,
+/// the pool spot (slot0, read with `extsload`) less `maxSlippageBps`, and the price the keeper recorded with
+/// `observe()` at least OBS_MIN_AGE and at most OBS_MAX_AGE earlier, less `maxSlippageBps`. Moving the pool
+/// in the push block no longer changes the reference; it would have to be held since the observation. With
+/// no usable observation the buy is skipped. At most `perPushCap` USDG is spent per push, a second layer.
+/// Whatever is not spent (over the cap, no observation, or a buy that would breach the bound, which is
+/// skipped instead of reverting the push) is carried in `buyCarry` for the next push and is never re-split.
+/// The router keeps no other balance between pushes (besides the authors' set-aside USDG).
 contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     using SafeERC20 for IERC20;
     using V4Constants for int256;
 
     uint256 public constant PUSH_INTERVAL = 1 hours;
+    uint256 public constant OBS_MIN_AGE = 10 minutes;
+    uint256 public constant OBS_MAX_AGE = 2 hours;
     uint16 public constant MAX_AUTHOR_BPS = 2000;
     uint16 public constant MAX_SLIPPAGE_BPS = 500;
     uint256 private constant BPS = 10_000;
@@ -70,6 +74,9 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     uint256 public perPushCap; // USDG raw units spent on PLTH per push at most
     uint256 public buyCarry; // USDG earmarked for buys, not yet spent
     uint64 public lastPush;
+    address public keeper;
+    uint160 public obsSqrtPriceX96; // pool price recorded by observe()
+    uint64 public obsAt;
 
     event Pushed(
         uint256 fees,
@@ -85,6 +92,8 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     event AuthorAccrued(address indexed account, address indexed author, uint256 amount);
     event AuthorClaimed(address indexed author, uint256 amount);
     event BuyParamsSet(uint16 maxSlippageBps, uint256 perPushCap);
+    event KeeperSet(address keeper);
+    event Observed(uint160 sqrtPriceX96, uint64 at);
 
     error ZeroAddress();
     error BadPoolKey();
@@ -96,6 +105,7 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     error Slippage(uint256 minOut, uint256 got);
     error NotTreasuryClose(address caller);
     error NothingOwed();
+    error NotKeeper();
 
     constructor(
         IERC20 usdg_,
@@ -123,6 +133,13 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         usdgIs0 = key.currency0 == address(usdg_);
         _key = key;
         _setBuyParams(maxSlippageBps_, perPushCap_);
+        keeper = owner_;
+        emit KeeperSet(owner_);
+    }
+
+    modifier onlyKeeper() {
+        if (msg.sender != keeper) revert NotKeeper();
+        _;
     }
 
     // ---------------------------------------------------------------- owner
@@ -134,6 +151,12 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         templateSource = source;
         authorBps = bps;
         emit TemplateFeesSet(address(source), bps);
+    }
+
+    function setKeeper(address keeper_) external onlyOwner {
+        if (keeper_ == address(0)) revert ZeroAddress();
+        keeper = keeper_;
+        emit KeeperSet(keeper_);
     }
 
     function setBuyParams(uint16 maxSlippageBps_, uint256 perPushCap_) external onlyOwner {
@@ -170,7 +193,15 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
 
     // ---------------------------------------------------------------- push
 
-    function push() external nonReentrant {
+    /// Records the pool price a later push is checked against (keeper-only: nobody else can choose it).
+    function observe() external onlyKeeper {
+        uint160 sp = spotSqrtPriceX96();
+        obsSqrtPriceX96 = sp;
+        obsAt = uint64(block.timestamp);
+        emit Observed(sp, uint64(block.timestamp));
+    }
+
+    function push(uint256 keeperMinOut) external onlyKeeper nonReentrant {
         uint64 next = lastPush + uint64(PUSH_INTERVAL);
         if (lastPush != 0 && block.timestamp < next) revert TooSoon(next);
         lastPush = uint64(block.timestamp);
@@ -200,7 +231,7 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         uint256 spend = spendable < perPushCap ? spendable : perPushCap;
         uint256 bought;
         if (spend != 0) {
-            uint256 minOut = quoteMinOut(spend);
+            uint256 minOut = buyMinOut(spend, keeperMinOut);
             try this.buyExternal(spend, minOut) returns (uint256 out) {
                 bought = out;
             } catch {
@@ -266,7 +297,18 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     /// PLTH raw units `usdgIn` buys at spot (before LP fee), less `maxSlippageBps`. The bound must leave room
     /// for the pool fee (e.g. 0.3%) or every buy is skipped.
     function quoteMinOut(uint256 usdgIn) public view returns (uint256) {
-        uint256 sp = spotSqrtPriceX96();
+        return _quoteAt(spotSqrtPriceX96(), usdgIn);
+    }
+
+    /// The minimum a push's buy of `usdgIn` accepts: max(keeper's minOut, spot bound, observation bound);
+    /// type(uint256).max (skip the buy) without an observation between OBS_MIN_AGE and OBS_MAX_AGE old.
+    function buyMinOut(uint256 usdgIn, uint256 keeperMinOut) public view returns (uint256 m) {
+        uint256 age = block.timestamp - obsAt;
+        if (obsAt == 0 || age < OBS_MIN_AGE || age > OBS_MAX_AGE) return type(uint256).max;
+        m = Math.max(keeperMinOut, Math.max(quoteMinOut(usdgIn), _quoteAt(obsSqrtPriceX96, usdgIn)));
+    }
+
+    function _quoteAt(uint256 sp, uint256 usdgIn) private view returns (uint256) {
         if (sp == 0) return type(uint256).max; // uninitialised pool: never buy
         uint256 atSpot = usdgIs0
             ? Math.mulDiv(Math.mulDiv(usdgIn, sp, Q96), sp, Q96) // token1 per token0 = sp^2 / 2^192

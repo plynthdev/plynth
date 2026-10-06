@@ -29,6 +29,14 @@ contract FeeRouterTest is TokenFixture {
         super.setUp();
         _stake(alice, 1000e18);
         _nextHour();
+        vm.prank(owner);
+        router.observe();
+        vm.warp(block.timestamp + 10 minutes);
+    }
+
+    function _push() internal {
+        vm.prank(owner); // the keeper (the owner until setKeeper)
+        router.push(0);
     }
 
     function _fees(uint256 amount) internal {
@@ -48,7 +56,7 @@ contract FeeRouterTest is TokenFixture {
     function test_pushSplitsHalfBuybackHalfInsurance() public {
         _lpDeposit(1000e6);
         _fees(1000e6);
-        router.push();
+        _push();
         assertEq(usdg.balanceOf(address(insurance)), 1000e6 + 500e6);
         assertEq(usdg.balanceOf(address(router)), 0);
         // 500 USDG buys PLTH at 20 PLTH/USDG less the 0.3% pool fee, all queued for stakers
@@ -61,7 +69,7 @@ contract FeeRouterTest is TokenFixture {
 
     function test_noDepositorsSendsInsuranceHalfToStakers() public {
         _fees(1000e6);
-        router.push();
+        _push();
         assertEq(usdg.balanceOf(address(insurance)), 0);
         assertEq(staking.queued(0), 500e6);
         _nextHour();
@@ -94,7 +102,7 @@ contract FeeRouterTest is TokenFixture {
         _lpDeposit(1e6);
         _closeFee(closeT, acctT, 1000e6);
         assertEq(router.authorOwed(sink), 200e6);
-        router.push();
+        _push();
         // 800 left: 400 to insurance, 400 buys PLTH; the author's 200 stays set aside
         assertEq(usdg.balanceOf(address(insurance)), 1e6 + 400e6);
         assertEq(usdg.balanceOf(address(router)), 200e6);
@@ -112,7 +120,7 @@ contract FeeRouterTest is TokenFixture {
         _closeFee(closeP, acctP, 1000e6); // no template: nothing set aside
         _fees(500e6); // plain transfer, no hook: nothing set aside
         assertEq(router.authorReserved(), 0);
-        router.push();
+        _push();
         assertEq(usdg.balanceOf(sink), 0);
     }
 
@@ -160,15 +168,13 @@ contract FeeRouterTest is TokenFixture {
 
     function test_pushAtMostHourly() public {
         _fees(10e6);
-        router.push();
+        _push();
         uint64 next = uint64(block.timestamp + 1 hours);
         vm.warp(block.timestamp + 1 hours - 1);
         vm.expectRevert(abi.encodeWithSelector(FeeRouter.TooSoon.selector, next));
-        vm.prank(bob);
-        router.push();
+        _push();
         vm.warp(next);
-        vm.prank(bob); // anyone
-        router.push();
+        _push();
         assertEq(router.lastPush(), next);
     }
 
@@ -179,13 +185,13 @@ contract FeeRouterTest is TokenFixture {
         router.setBuyParams(100, 100e6);
         _lpDeposit(1e6);
         _fees(1000e6);
-        router.push();
+        _push();
         assertEq(router.buyCarry(), 400e6);
         assertEq(usdg.balanceOf(address(router)), 400e6);
         // Next push: carry is not re-split; no new fees -> spends another 100 from the carry only.
         uint256 insBefore = usdg.balanceOf(address(insurance));
         vm.warp(block.timestamp + 1 hours);
-        router.push();
+        _push();
         assertEq(router.buyCarry(), 300e6);
         assertEq(usdg.balanceOf(address(insurance)), insBefore);
     }
@@ -196,14 +202,14 @@ contract FeeRouterTest is TokenFixture {
         _fees(1000e6);
         vm.expectEmit(false, false, false, false, address(router));
         emit FeeRouter.BuySkipped(0, 0);
-        router.push();
+        _push();
         assertEq(router.buyCarry(), 500e6, "carried");
         assertEq(usdg.balanceOf(address(insurance)), 1e6 + 500e6, "insurance leg still paid");
         assertEq(staking.queued(1), 0);
         // Pool back in line: the carry is spent next hour.
         _setFillRate(PLTH_PER_USDG_RAW * 1e18);
         vm.warp(block.timestamp + 1 hours);
-        router.push();
+        _push();
         assertEq(router.buyCarry(), 0);
         assertGt(staking.queued(1), 0);
     }
@@ -217,7 +223,7 @@ contract FeeRouterTest is TokenFixture {
         pm.setSqrtPrice(key, 0);
         assertEq(router.quoteMinOut(1e6), type(uint256).max);
         _fees(10e6);
-        router.push();
+        _push();
         assertEq(router.buyCarry(), 5e6);
     }
 
@@ -264,7 +270,7 @@ contract FeeRouterTest is TokenFixture {
         if (depositors) _lpDeposit(1e6);
         uint256 insBefore = usdg.balanceOf(address(insurance));
         _closeFee(closeT, acctT, fees);
-        router.push();
+        _push();
         uint256 toIns = usdg.balanceOf(address(insurance)) - insBefore;
         uint256 toStakers = staking.queued(0);
         uint256 spent = usdg.balanceOf(address(pm)) - 1_000_000e6;
@@ -272,5 +278,65 @@ contract FeeRouterTest is TokenFixture {
         assertEq(router.authorOwed(sink) + toIns + toStakers + spent + router.buyCarry(), fees);
         assertEq(usdg.balanceOf(address(router)), router.buyCarry() + router.authorReserved());
         assertTrue(depositors ? toStakers == 0 : toIns == 0);
+    }
+
+    // ------------------------------------------------------------ S3: buyback sandwich
+
+    /// An attacker moves the PLTH pool (PLTH 3x dearer) and pushes in the same transaction: the buy must not
+    /// run at the manipulated price.
+    function test_S3_pushAtAManipulatedPriceDoesNotBuy() public {
+        _lpDeposit(1e6);
+        _fees(1000e6);
+        _setPrice(PLTH_PER_USDG_RAW * 1e18 / 3); // attacker's swap just before
+        vm.prank(bob);
+        try router.push(0) {} catch {}
+        assertEq(staking.queued(1), 0, "no PLTH bought at the manipulated price");
+        // Not even when the keeper's push lands right after the move: the observation 10 min earlier is the
+        // reference, so the buy is skipped and carried.
+        _push();
+        assertEq(staking.queued(1), 0);
+        assertEq(router.buyCarry(), 500e6);
+    }
+
+    function test_S3_onlyTheKeeperPushesAndObserves() public {
+        vm.startPrank(bob);
+        vm.expectRevert(FeeRouter.NotKeeper.selector);
+        router.push(0);
+        vm.expectRevert(FeeRouter.NotKeeper.selector);
+        router.observe();
+        vm.expectRevert();
+        router.setKeeper(bob);
+        vm.stopPrank();
+        vm.prank(owner);
+        router.setKeeper(bob);
+        _fees(10e6);
+        vm.prank(bob);
+        router.push(0);
+    }
+
+    function test_S3_noUsableObservationSkipsTheBuy() public {
+        _lpDeposit(1e6);
+        _fees(1000e6);
+        vm.prank(owner);
+        router.observe(); // too fresh: under OBS_MIN_AGE
+        _push();
+        assertEq(router.buyCarry(), 500e6);
+        vm.warp(block.timestamp + 3 hours); // too old
+        _push();
+        assertEq(router.buyCarry(), 500e6);
+        vm.prank(owner);
+        router.observe();
+        vm.warp(block.timestamp + 1 hours);
+        _push();
+        assertEq(router.buyCarry(), 0);
+        assertGt(staking.queued(1), 0);
+    }
+
+    function test_S3_keeperMinOutIsHonoured() public {
+        _lpDeposit(1e6);
+        _fees(1000e6);
+        vm.prank(owner);
+        router.push(type(uint128).max);
+        assertEq(router.buyCarry(), 500e6);
     }
 }

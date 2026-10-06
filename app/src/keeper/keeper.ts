@@ -1,6 +1,7 @@
 import type { Ctx, JobResult } from "./context";
 import { runBeacon } from "./jobs/beacon";
 import { runExecute } from "./jobs/execute";
+import { runFeePush } from "./jobs/fee-push";
 import { runDeliverHidden } from "./jobs/hidden";
 import { runRefreshMockFeeds } from "./jobs/mock-feeds";
 import { runDeliverQuiet } from "./jobs/quiet";
@@ -16,10 +17,12 @@ import { runTopups } from "./jobs/topups";
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
  * deliver-open needs nothing from the keeper: users claim (claimOpen). deliver-quiet runs last: it delivers
  * books executed in earlier passes (it reads executions from the indexer). deliver-hidden (after it) settles Hidden users
- * into ShieldedPool notes and batches ready pending deposits into the tree.
+ * into ShieldedPool notes and batches ready pending deposits into the tree. fee-push (independent of the consumer
+ * jobs, right after the feed refresh) observes the PLTH pool and pushes the FeeRouter hourly: push is keeper-only.
  */
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["refresh-mock-feeds", runRefreshMockFeeds],
+  ["fee-push", runFeePush],
   ["topups", runTopups],
   ["roundups", runRoundups],
   ["spends", runSpends],
