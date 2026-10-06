@@ -45,7 +45,7 @@ contract PerpSleeveTest is TreasuryFixture {
         pool = new PerpPool(usdg, address(this));
         market = new PerpMarket(pool, valuer, address(aapl), address(this));
         pool.addMarket(address(market));
-        market.setParams(10, 0, 50, 0, 0, 2_000, 10_000, 5e6);
+        market.setParams(10, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
         usdg.mint(lp, 10_000_000e6);
         vm.startPrank(lp);
         usdg.approve(address(pool), type(uint256).max);
@@ -227,15 +227,21 @@ contract PerpSleeveTest is TreasuryFixture {
 
     /// Rule 7 (todo 29 fix): off-hours a pure perp reduction passes although its spread lifts the equity weight;
     /// new perp size off-hours is still refused.
-    function test_rule7_offHoursPerpReduceAllowed() public {
+    /// Rule 7 lets a pure perp reduction through off-hours, but the in-house market charges the hold spread
+    /// (the largest plausible gap) on a stale exit, a NAV loss the guard's op-loss bound refuses: the desk
+    /// reduces at the next fresh price.
+    function test_rule7_offHoursPerpReduceWaitsForReopen() public {
         _activateT2();
         _depositTo(0, 100_000e6);
         _short(100_000e6, 20_000e6);
         vm.warp(block.timestamp + 2 days); // feeds stale: off-hours
+        _expectCode(guard.R6_UNKNOWN_CHANGE());
         _hedge(_op(3, 0, abi.encode(address(aapl), uint256(50_000e6)), 0), new bytes32[](0));
-        assertEq(guard.snapshot(address(account)).venues[0].gross > 0, true);
         vm.expectRevert(); // the market itself refuses new size on a held feed
         _short(10_000e6, 0);
+        _warp(block.timestamp);
+        _hedge(_op(3, 0, abi.encode(address(aapl), uint256(50_000e6)), 0), new bytes32[](0));
+        assertEq(guard.snapshot(address(account)).venues[0].gross > 0, true);
     }
 
     // ------------------------------------------------------------ rule 6: allow-list, cap, staleness

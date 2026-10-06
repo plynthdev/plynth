@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {PerpFixture} from "./PerpFixture.sol";
 import {PerpPool} from "../../src/perps/PerpPool.sol";
+import {PerpMarket} from "../../src/perps/PerpMarket.sol";
 
 /// Exploits from the 2026-10-06 security review, written as tests (each failed before its fix).
 contract PerpSecurityTest is PerpFixture {
@@ -61,7 +62,7 @@ contract PerpSecurityTest is PerpFixture {
     // ------------------------------------------------------------ S4: funding over an idle interval
 
     function _skewedBookIdle() internal {
-        _params(0, 0, 50, 0, 1e12, 10_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 1e12, 10_000, 10_000, 5e6);
         _open(alice, true, 200_000e6, 20_000e6);
         _open(bob, false, 50_000e6, 5_000e6);
         skip(64 hours); // e.g. a weekend nobody touches the market
@@ -142,5 +143,33 @@ contract PerpSecurityTest is PerpFixture {
         uint256 shares = pool.balanceOf(lp);
         vm.prank(lp);
         pool.redeem(shares / 10, lp, lp);
+    }
+
+    // ------------------------------------------------------------ S10: hold exits as a free option
+
+    /// Earnings gap after the close: the stock trades 8% lower off-chain while the feed is stale. The trader
+    /// runs a long and a short, closes the losing long at the stale price and keeps the winning short until
+    /// the feed updates. With the deployed hold spread this must not be profitable against the LPs.
+    function test_S10_pairTradeAcrossAHoldGapDoesNotDrainLps() public {
+        uint256 spread = new PerpMarket(pool, valuer, address(token), owner).offHoursSpreadBps();
+        _params(10, 2, spread, 1, 0, 2_000, 10_000, 5e6);
+        uint256 lpBefore = pool.totalAssets();
+
+        _open(alice, true, 100_000e6, 10_000e6); // A
+        _open(bob, false, 100_000e6, 10_000e6); // B, same owner
+        _hold();
+        skip(2 hours);
+        uint256 got = _close(alice); // the losing leg exits at the stale price
+        _setPrice(92e8); // feed reopens at the real price
+        got += _close(bob);
+
+        assertLe(got, 20_000e6, "the pair trade must not profit from the stale exit");
+        assertGe(pool.totalAssets(), lpBefore, "LPs do not pay for the off-hours gap");
+    }
+
+    function test_S10_holdSpreadHasAFloor() public {
+        vm.prank(owner);
+        vm.expectRevert(PerpMarket.BadParams.selector);
+        market.setParams(10, 2, 50, 1, 0, 2_000, 10_000, 5e6);
     }
 }

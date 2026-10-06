@@ -13,7 +13,7 @@ contract PerpMarketTest is PerpFixture {
     function testFuzz_pnlMatchesReferenceModel(bool isLong, uint256 size, uint256 lev, uint256 p0, uint256 p1)
         public
     {
-        _params(10, 2, 50, 0, 0, 2_000, 10_000, 5e6);
+        _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         size = bound(size, 1e6, 100_000e6);
         lev = bound(lev, 1, 50);
         p0 = bound(p0, 1e8, 10_000e8);
@@ -56,7 +56,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_profitCappedAtMaxProfit() public {
-        _params(0, 0, 50, 0, 0, 2_000, 5_000, 5e6);
+        _params(0, 0, 1000, 0, 0, 2_000, 5_000, 5e6);
         _open(alice, true, 1_000e6, 1_000e6);
         _setPrice(300e8);
         assertEq(_close(alice), 1_500e6);
@@ -82,7 +82,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_open_revertsWhenFeeAboveMaxSlippage() public {
-        _params(10, 2, 50, 0, 0, 2_000, 10_000, 5e6);
+        _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         _fund(alice, 100e6);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpMarket.SlippageExceeded.selector, 10, 9));
@@ -168,24 +168,24 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_hold_allowsDecreaseAndCloseAtLastPriceWithSpread() public {
-        _open(alice, true, 1_000e6, 100e6);
-        _open(bob, false, 1_000e6, 100e6);
+        _open(alice, true, 1_000e6, 500e6);
+        _open(bob, false, 1_000e6, 500e6);
         _hold();
-        // 50 bps against the trader: long exits at 99.5, short at 100.5.
-        assertEq(_close(alice), 95e6);
-        assertEq(_close(bob), 95e6);
+        // 10% (the hold spread) against the trader: long exits at 90, short at 110.
+        assertEq(_close(alice), 400e6);
+        assertEq(_close(bob), 400e6);
     }
 
     function test_hold_delistedTokenStillCloses() public {
-        _open(alice, true, 1_000e6, 100e6);
+        _open(alice, true, 1_000e6, 500e6);
         registry.delist(address(token));
-        assertEq(_close(alice), 95e6);
+        assertEq(_close(alice), 400e6);
     }
 
     // ------------------------------------------------------------ funding and borrow
 
     function test_fundingRate_isKTimesSkewOverPool() public {
-        _params(0, 0, 50, 0, 2.78e11, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 2.78e11, 2_000, 10_000, 5e6);
         _open(alice, true, 100_000e6, 100_000e6);
         _open(bob, false, 20_000e6, 20_000e6);
         (uint256 rate, bool longsPay) = market.fundingRate();
@@ -194,7 +194,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_funding_heavierSidePaysLighter() public {
-        _params(0, 0, 50, 0, 1e13, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 1e13, 2_000, 10_000, 5e6);
         _open(alice, true, 100_000e6, 100_000e6);
         _open(bob, false, 20_000e6, 20_000e6);
         skip(1 days);
@@ -204,7 +204,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_funding_noneWhenOneSideEmpty() public {
-        _params(0, 0, 50, 0, 1e13, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 1e13, 2_000, 10_000, 5e6);
         _open(alice, true, 100_000e6, 100_000e6);
         skip(1 days);
         _refresh();
@@ -221,7 +221,7 @@ contract PerpMarketTest is PerpFixture {
         c = bound(c, 1_000e6, 50_000e6);
         dt = bound(dt, 1, 30 days);
         k = bound(k, 1e9, 1e11); // keeps total funding under collateral (1x), so no bad debt muddies the sum
-        _params(0, 0, 50, 0, k, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, k, 2_000, 10_000, 5e6);
         _open(alice, true, a, a);
         _open(bob, false, b, b);
         _open(operator, true, c, c);
@@ -249,7 +249,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_borrowFee_perHourToPool() public {
-        _params(0, 0, 50, 10, 0, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 10, 0, 2_000, 10_000, 5e6);
         _open(alice, true, 1_000e6, 100e6);
         uint256 liquid0 = pool.liquidAssets();
         skip(1 hours);
@@ -261,7 +261,7 @@ contract PerpMarketTest is PerpFixture {
     // ------------------------------------------------------------ fees: maker tier
 
     function test_makerFee_onlyForRegisteredAccounts() public {
-        _params(10, 2, 50, 0, 0, 2_000, 10_000, 5e6);
+        _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         address factory = makeAddr("factory");
         vm.prank(owner);
         pool.setMakerRegistrar(factory);
@@ -286,7 +286,7 @@ contract PerpMarketTest is PerpFixture {
     }
 
     function test_makerFee_followsAccountNotOperator() public {
-        _params(10, 2, 50, 0, 0, 2_000, 10_000, 5e6);
+        _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         address factory = makeAddr("factory");
         vm.prank(owner);
         pool.setMakerRegistrar(factory);
@@ -397,9 +397,9 @@ contract PerpMarketTest is PerpFixture {
     function test_setParams_onlyOwnerAndBounded() public {
         vm.prank(alice);
         vm.expectRevert();
-        market.setParams(10, 2, 50, 1, 0, 2_000, 10_000, 5e6);
+        market.setParams(10, 2, 1000, 1, 0, 2_000, 10_000, 5e6);
         vm.prank(owner);
         vm.expectRevert(PerpMarket.BadParams.selector);
-        market.setParams(10, 11, 50, 1, 0, 2_000, 10_000, 5e6); // maker above taker
+        market.setParams(10, 11, 1000, 1, 0, 2_000, 10_000, 5e6); // maker above taker
     }
 }

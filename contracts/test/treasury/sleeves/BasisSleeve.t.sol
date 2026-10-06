@@ -48,8 +48,8 @@ contract BasisSleeveTest is TreasuryFixture {
         thinMarket = new PerpMarket(pool, valuer, address(thin), address(this));
         pool.addMarket(address(market));
         pool.addMarket(address(thinMarket));
-        market.setParams(10, 0, 50, 0, 1e13, 2_000, 10_000, 5e6);
-        thinMarket.setParams(10, 0, 50, 0, 1e12, 2_000, 10_000, 5e6);
+        market.setParams(10, 0, 1000, 0, 1e13, 2_000, 10_000, 5e6);
+        thinMarket.setParams(10, 0, 1000, 0, 1e12, 2_000, 10_000, 5e6);
         usdg.mint(lp, 10_000_000e6);
         vm.startPrank(lp);
         usdg.approve(address(pool), type(uint256).max);
@@ -216,9 +216,14 @@ contract BasisSleeveTest is TreasuryFixture {
         assertEq(market.position(address(venue)).collateral, 50_000e6 - 100e6);
     }
 
-    function test_closeWorksOffHours() public {
+    /// Off-hours the market's exit costs the hold spread (the largest plausible gap), a NAV loss the guard
+    /// refuses; the pair closes at the next fresh price instead.
+    function test_closeOffHoursWaitsForReopen() public {
         _openPair(address(aapl), 100_000e6, 50_000e6);
         vm.warp(block.timestamp + 2 days); // feeds stale: off-hours
+        _expectCode(guard.R6_UNKNOWN_CHANGE());
+        _closePair(0);
+        _warp(block.timestamp); // feeds fresh again
         _closePair(0);
         assertGt(basis.pair(0).closedAt, 0);
     }

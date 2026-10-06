@@ -72,7 +72,7 @@ contract PerpPoolTest is PerpFixture {
 
     function test_pool_openRefusedWhenReserveExceedsCash() public {
         // Two more markets would let OI exceed the pool; the global reserve check refuses the excess.
-        _params(0, 0, 50, 0, 0, 10_000, 100_000, 5e6); // 10x profit cap, 100% OI cap
+        _params(0, 0, 1000, 0, 0, 10_000, 100_000, 5e6); // 10x profit cap, 100% OI cap
         _fund(alice, 10_000e6);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpPool.PoolCapacity.selector, LP_SEED, 1_000_010e6));

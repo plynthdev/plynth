@@ -34,7 +34,7 @@ beforeAll(async () => {
   market = await kit.deploy("PerpMarket.sol", "PerpMarket", [pool, kit.a.valuer, tsla.token, d]);
   await kit.send(pool, "PerpPool.sol", "PerpPool", "addMarket", [market]);
   // Same parameters as t2: skew funding (fundingK 1e13), 10 bps taker fee.
-  await kit.send(market, "PerpMarket.sol", "PerpMarket", "setParams", [10n, 0n, 50n, 0n, 10n ** 13n, 2000n, 10_000n, 5n * E6]);
+  await kit.send(market, "PerpMarket.sol", "PerpMarket", "setParams", [10n, 0n, 1000n, 0n, 10n ** 13n, 2000n, 10_000n, 5n * E6]);
   await kit.send(kit.a.usdg!, "MockUSDG.sol", "MockUSDG", "mint", [d, 10_000_000n * E6]);
   await kit.send(kit.a.usdg!, "MockUSDG.sol", "MockUSDG", "approve", [pool, 2n ** 255n]);
   await kit.send(pool, "PerpPool.sol", "PerpPool", "deposit", [10_000_000n * E6, d]);

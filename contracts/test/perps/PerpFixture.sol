@@ -43,7 +43,7 @@ abstract contract PerpFixture is Test {
         market = new PerpMarket(pool, valuer, address(token), owner);
         vm.prank(owner);
         pool.addMarket(address(market));
-        _params(0, 0, 50, 0, 0, 2_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
 
         _fund(lp, LP_SEED);
         vm.startPrank(lp);

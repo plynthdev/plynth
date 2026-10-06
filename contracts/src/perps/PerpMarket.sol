@@ -19,6 +19,12 @@ import {PerpPool} from "./PerpPool.sol";
 ///
 /// Hold (stale / off-hours / delisted feed): open and increase revert; decrease, close and adding margin
 /// work at the last price, with `offHoursSpreadBps` against the trader on decrease/close. Never trap a trader.
+/// The hold spread is the largest plausible off-hours gap (default 10%, floor 5%, max 30%), not a small fee:
+/// the real price keeps moving off-chain while the feed is stale, so a cheap exit at the stale price would be
+/// a free option against the LPs (close the leg that lost overnight, keep the one that won). A trader who does
+/// not want to pay it waits for the next fresh price. Liquidations still run at the stale price (a third
+/// party, not the trader, picks that moment), and open/increase in the first `maxStaleness` after the last
+/// update still use the frozen price: both are documented limits.
 ///
 /// Funding: rate/s = fundingK x (longOI - shortOI) / poolLiquid, heavier side pays, lighter side receives
 /// pro rata (only while both sides are open). The pool accrues every market before its liquidity changes, so
@@ -33,6 +39,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_LEVERAGE = 50;
     uint256 public constant MAINTENANCE_BPS = 100;
+    uint256 public constant MIN_HOLD_SPREAD_BPS = 500;
+    uint256 public constant MAX_HOLD_SPREAD_BPS = 3_000;
     uint256 internal constant WAD = 1e18;
 
     struct Position {
@@ -60,7 +68,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
 
     uint256 public takerFeeBps = 10;
     uint256 public makerFeeBps = 2;
-    uint256 public offHoursSpreadBps = 50;
+    uint256 public offHoursSpreadBps = 1_000;
     uint256 public borrowBpsPerHour = 1;
     uint256 public fundingK = 2.78e11; // ~0.1%/h when skew equals the pool
     uint256 public oiCapBps = 2_000; // per side, of pool liquid assets
@@ -123,7 +131,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         uint256 liquidationFee_
     ) external onlyOwner {
         if (
-            takerFeeBps_ > 100 || makerFeeBps_ > takerFeeBps_ || offHoursSpreadBps_ > 500 || borrowBpsPerHour_ > 100
+            takerFeeBps_ > 100 || makerFeeBps_ > takerFeeBps_ || offHoursSpreadBps_ < MIN_HOLD_SPREAD_BPS
+                || offHoursSpreadBps_ > MAX_HOLD_SPREAD_BPS || borrowBpsPerHour_ > 100
                 || fundingK_ > 1e14 || oiCapBps_ > BPS || maxProfitBps_ < MAINTENANCE_BPS || maxProfitBps_ > 10 * BPS
         ) revert BadParams();
         _accrue();
