@@ -56,6 +56,13 @@ contract PolicyGuard {
     uint8 public constant BAND_BASIS = 2;
     /// Equity growth at a venue below this (USD 1e18) is rounding, not new margin.
     uint256 public constant VENUE_DUST = 1e13;
+    /// A change of the equity weight (WAD, 1e18 = 100% of NAV) up to this is rounding, not new risk: 1e12 =
+    /// 0.0001 percentage points. Redeeming ERC-4626 shares returns a few wei less than they were valued at (and the
+    /// vault accrues every second), so NAV dips by dust and the equity weight of a neutral cash-to-cash move ticks
+    /// up, so whether it passed depended on the second it was mined. Rules 7 and 8 treat a change within this as no
+    /// change. On a $1M book 1e12 is ~$2 of NAV at a 50% equity weight; any Stock Token bought is still caught by
+    /// `stockIncreased`, whatever its size.
+    uint256 public constant WEIGHT_DUST = 1e12;
 
     /// Buckets cover the current hour plus the previous 24, so any true 24-hour window is inside the sum.
     uint256 public constant DAY_BUCKETS = 25;
@@ -369,10 +376,12 @@ contract PolicyGuard {
         uint256 eqBefore = _weight(b.equityUsd, b.nav);
         uint256 eqAfter = _weight(c.a.equityUsd, c.a.nav);
 
-        // Rule 7: off-hours (a held equity's feed on hold) only risk-reducing operations: equity weight down, or a
-        // pure perp reduction (gross notional down at a venue, no venue risk up, no stock bought, spot value not
-        // up). The perp reduction costs a spread, so NAV dips and the equity weight ticks up without new risk.
-        if (c.p.noNewRiskOffHours && (b.equityHold || c.a.equityHold) && !(eqAfter < eqBefore)) {
+        // Rule 7: off-hours (a held equity's feed on hold) only risk-reducing operations: equity weight down (by more
+        // than WEIGHT_DUST: a change within it is rounding and counts as unchanged, so a neutral cash -> cash move is
+        // refused whichever way its rounding falls), or a pure perp reduction (gross notional down at a venue, no
+        // venue risk up, no stock bought, spot value not up). The perp reduction costs a spread, so NAV dips and the
+        // equity weight ticks up without new risk.
+        if (c.p.noNewRiskOffHours && (b.equityHold || c.a.equityHold) && !(eqAfter + WEIGHT_DUST < eqBefore)) {
             bool perpReduce = c.venueGrossDown && !c.venueRiskUp && !c.stockIncreased && c.a.equityUsd <= b.equityUsd;
             if (!perpReduce) return R7_OFF_HOURS;
         }
@@ -387,8 +396,8 @@ contract PolicyGuard {
             // DERISK: only operations that move the book toward cash.
             if (c.stockIncreased || !(_weight(c.a.cashUsd, c.a.nav) > _weight(b.cashUsd, b.nav))) return R8_DERISK;
         } else if (dd <= c.p.pauseNewRiskAtDrawdownBps) {
-            // PAUSED: only risk-reducing operations (no Stock Token bought, equity weight not up).
-            if (c.stockIncreased || eqAfter > eqBefore) return R8_PAUSED;
+            // PAUSED: only risk-reducing operations (no Stock Token bought, equity weight not up beyond rounding).
+            if (c.stockIncreased || eqAfter > eqBefore + WEIGHT_DUST) return R8_PAUSED;
         }
         return OK;
     }

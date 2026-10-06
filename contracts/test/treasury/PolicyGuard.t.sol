@@ -381,6 +381,84 @@ contract PolicyGuardTest is TreasuryFixture {
         _buy(address(nvda), 1_000e6);
     }
 
+    // ------------------------------------------------------------ rules 7 and 8: rounding dust (B2, fork run 2026-10-06)
+
+    /// A cash -> cash deposit that loses `loss` USDG (a vault paying a few wei less than it was valued at).
+    function _lossy(uint256 amount, uint256 loss) internal view returns (bytes memory data) {
+        TreasuryAccount.Pull[] memory pulls = new TreasuryAccount.Pull[](1);
+        pulls[0] = TreasuryAccount.Pull(address(usdg), amount);
+        data = abi.encode(pulls, abi.encode(uint8(2), address(uint160(loss)), amount));
+    }
+
+    /// The equity weight change (WAD) the operation would cause, measured by running the adapter as the account
+    /// on a throwaway copy of the state.
+    function _eqWeightUp(uint256 amount, uint256 loss) internal returns (int256) {
+        PolicyGuard.Snapshot memory b = guard.snapshot(address(account));
+        uint256 id = vm.snapshotState();
+        vm.startPrank(address(account));
+        usdg.approve(address(cashSleeve), amount);
+        cashSleeve.run(abi.encode(uint8(2), address(uint160(loss)), amount));
+        vm.stopPrank();
+        PolicyGuard.Snapshot memory a = guard.snapshot(address(account));
+        vm.revertToState(id);
+        return int256(a.equityUsd * 1e18 / a.nav) - int256(b.equityUsd * 1e18 / b.nav);
+    }
+
+    function test_weightDustIs1e12() public view {
+        assertEq(guard.WEIGHT_DUST(), 1e12);
+    }
+
+    /// PAUSED: a neutral cash -> cash move whose rounding nudges the equity weight up by dust passes.
+    function test_rule8_pausedAllowsCashMoveWithRoundingDust() public {
+        periodClose.set(_nav() * 105 / 100);
+        int256 up = _eqWeightUp(10_000e6, 1);
+        assertGt(up, 0, "the rounding does raise the equity weight");
+        assertLe(up, 1e12);
+        vm.prank(cashKey);
+        account.execute(CASH_DESK, address(cashSleeve), _lossy(10_000e6, 1), _allow(address(vault)), 0);
+    }
+
+    /// PAUSED, fuzzed across the boundary: up to WEIGHT_DUST passes, anything above is R8_PAUSED.
+    function testFuzz_rule8_pausedDustBoundary(uint256 loss) public {
+        // NAV $1M at 40% equity: the 1e12 boundary is a loss of ~$2.50; fuzz $0 .. $10.
+        loss = bound(loss, 0, 10e6);
+        periodClose.set(_nav() * 105 / 100);
+        int256 up = _eqWeightUp(10_000e6, loss);
+        if (up > int256(guard.WEIGHT_DUST())) _expectCode(guard.R8_PAUSED());
+        vm.prank(cashKey);
+        account.execute(CASH_DESK, address(cashSleeve), _lossy(10_000e6, loss), _allow(address(vault)), 0);
+    }
+
+    function test_rule8_pausedRejectsEquityWeightJustAboveDust() public {
+        periodClose.set(_nav() * 105 / 100);
+        uint256 loss = 2_600_000; // $2.60 on $1M at 40% equity: just above 1e12
+        int256 up = _eqWeightUp(10_000e6, loss);
+        assertGt(up, 1e12);
+        assertLt(up, 1.1e12);
+        _expectCode(guard.R8_PAUSED());
+        vm.prank(cashKey);
+        account.execute(CASH_DESK, address(cashSleeve), _lossy(10_000e6, loss), _allow(address(vault)), 0);
+    }
+
+    /// The tolerance never lets a Stock Token in: a buy too small to move the weight by dust is still R8_PAUSED.
+    function test_rule8_pausedRejectsDustSizedBuy() public {
+        periodClose.set(_nav() * 105 / 100);
+        bytes memory data = _buyData(address(nvda), 1e5); // $0.10
+        _expectCode(guard.R8_PAUSED());
+        vm.prank(eqKey);
+        account.execute(EQUITY_DESK, address(eqSleeve), data, _allow(address(nvda)), 0);
+    }
+
+    /// Off-hours keeps its spec (only operations that reduce the equity weight): a cash move is refused whichever
+    /// way its rounding falls, because a change within WEIGHT_DUST is no change.
+    function testFuzz_rule7_offHoursCashMoveRefusedWhateverTheDust(uint256 loss) public {
+        loss = bound(loss, 0, 2e6);
+        _aaplOnHold();
+        _expectCode(guard.R7_OFF_HOURS());
+        vm.prank(cashKey);
+        account.execute(CASH_DESK, address(cashSleeve), _lossy(10_000e6, loss), _allow(address(vault)), 0);
+    }
+
     // ------------------------------------------------------------ rule 9: approvals
 
     function _bigBuy() internal view returns (bytes memory data, bytes32 opHash) {

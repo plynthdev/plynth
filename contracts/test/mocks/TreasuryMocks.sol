@@ -114,6 +114,7 @@ contract MockEquitySleeve is MockSleeveBase {
 contract MockCashSleeve is MockSleeveBase {
     uint8 public constant OP_DEPOSIT = 0; // b = USDG in
     uint8 public constant OP_REDEEM = 1; // b = shares in
+    uint8 public constant OP_LOSSY_DEPOSIT = 2; // b = USDG in, uint160(a) = USDG kept back (a vault paying less)
 
     IERC20 public immutable usdg;
     MockCashVault public immutable vault;
@@ -132,11 +133,16 @@ contract MockCashSleeve is MockSleeveBase {
     }
 
     function run(bytes calldata data) external returns (bytes memory) {
-        (uint8 op,, uint256 b) = abi.decode(data, (uint8, address, uint256));
+        (uint8 op, address a, uint256 b) = abi.decode(data, (uint8, address, uint256));
         if (op == OP_DEPOSIT) {
             usdg.transferFrom(msg.sender, address(this), b);
             usdg.approve(address(vault), b);
             return abi.encode(vault.deposit(b, msg.sender));
+        } else if (op == OP_LOSSY_DEPOSIT) {
+            uint256 loss = uint160(a);
+            usdg.transferFrom(msg.sender, address(this), b);
+            usdg.approve(address(vault), b - loss);
+            return abi.encode(vault.deposit(b - loss, msg.sender));
         } else {
             vault.transferFrom(msg.sender, address(this), b);
             return abi.encode(vault.redeem(b, msg.sender, address(this)));
