@@ -4,7 +4,9 @@
 // Env (config.ts): KEEPER_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // KEEPER_DEPLOYMENTS_DIR (default app/deployments), KEEPER_SECRET_KEY (32 bytes hex/base64, seals beacon secrets),
 // KEEPER_PRIVATE_KEY or KEEPER_KEYSTORE + KEEPER_KEYSTORE_PASSWORD_FILE, KEEPER_LOOKAHEAD (windows, default 2),
-// KEEPER_JOBS (comma-separated subset of topups,roundups,spends,sweep,beacon,execute,deliver-quiet,deliver-hidden; default all),
+// KEEPER_JOBS (comma-separated subset of refresh-mock-feeds,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,
+// deliver-hidden; default all), KEEPER_MOCK_FEED_* (refresh-mock-feeds on testnet kit deployments; mainnet feeds are
+// read over RHC_MAINNET_RPC_URL),
 // PLAID_CLIENT_ID + PLAID_SECRET (+ PLAID_ENV=sandbox|production, default sandbox) to sync linked Plaid items,
 // SPLIT_PARTS (Quiet delivery parts per allocation, 1-3, default 2).
 // The signing key is never logged.
@@ -15,6 +17,7 @@ import { createPublicClient, createWalletClient, defineChain, http, type PublicC
 import { keeperDeployment, type Ctx } from "@/keeper/context";
 import { healthApp } from "@/keeper/health";
 import { JOBS, runPass, type PassReport } from "@/keeper/keeper";
+import { mainnetFeedReader } from "@/keeper/jobs/mock-feeds";
 import { parseSecretKey, Sealer } from "@/keeper/seal";
 import { Sender } from "@/keeper/sender";
 import { loadSigner } from "@/keeper/signer";
@@ -47,7 +50,17 @@ const sender = new Sender(
   },
   account.address,
 );
-const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, plaid: plaidFromEnv(config.env)?.api, log };
+// Read only (refresh-mock-feeds): the real Chainlink feeds the testnet mock feeds track. Created lazily by viem,
+// so a keeper on a non-mock deployment never contacts mainnet.
+const mainnet = createPublicClient({ transport: http(rpcUrlFor(config, "mainnet"), { retryCount: 3, retryDelay: 1_000, timeout: 30_000 }) }) as PublicClient;
+const mockFeeds = {
+  reader: mainnetFeedReader(mainnet),
+  intervalS: config.KEEPER_MOCK_FEED_INTERVAL_S,
+  keepAlive: config.KEEPER_MOCK_FEED_KEEP_ALIVE,
+  realStaleS: config.KEEPER_MOCK_FEED_REAL_STALE_S,
+  alignBps: config.KEEPER_MOCK_FEED_ALIGN_BPS,
+};
+const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };
 
 const only = config.KEEPER_JOBS;
 for (const j of only) if (!JOBS.some(([n]) => n === j)) throw new Error(`unknown job in KEEPER_JOBS: ${j}`);

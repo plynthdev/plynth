@@ -82,7 +82,7 @@ Not deployed to mainnet. The deploy scripts in `contracts/script` write every ad
 | --- | --- | --- |
 | API | `bin/api.ts` | Read API (Hono, tRPC at `/trpc`, REST mirror at `/v1`). Returns unsigned transactions and holds no keys |
 | Indexer | `bin/indexer.ts` | The only process that polls the chain for logs. Writes events to Postgres |
-| Keeper | `bin/keeper.ts` | Jobs that send transactions: `topups`, `roundups`, `spends`, `sweep`, `beacon`, `execute`, `deliver-quiet`, `deliver-hidden` |
+| Keeper | `bin/keeper.ts` | Jobs that send transactions: `refresh-mock-feeds` (testnet kit only), `topups`, `roundups`, `spends`, `sweep`, `beacon`, `execute`, `deliver-quiet`, `deliver-hidden` |
 | Relayer | `bin/relayer.ts` | Gasless Quiet claims and Hidden Vault withdraws from its own wallet, rate-limited |
 | Eligibility | `bin/eligibility.ts` | Screens a wallet (signed self-attestation, IP country, sanctions list) and signs a registry attestation |
 | MCP | `bin/mcp.ts` | Read-only treasury tools and exception requests over MCP (stdio or HTTP), per-treasury tokens |
@@ -168,8 +168,12 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `KEEPER_KEYSTORE` | – |  |
 | `KEEPER_KEYSTORE_PASSWORD_FILE` | – |  |
 | `KEEPER_LOOKAHEAD` | `2` | Beacon windows committed ahead. |
-| `KEEPER_JOBS` | – | Comma-separated subset of topups,roundups,spends,sweep,beacon,execute,deliver-quiet,deliver-hidden (blank = all). |
+| `KEEPER_JOBS` | – | Comma-separated subset of refresh-mock-feeds,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,deliver-hidden (blank = all). |
 | `SPLIT_PARTS` | `2` | Quiet delivery: parts per allocation (1-3), released across consecutive crowd executions. |
+| `KEEPER_MOCK_FEED_INTERVAL_S` | `600` | `refresh-mock-feeds` (deployment files with `mockFeeds: true`): a mock feed older than this is re-posted from the real mainnet Chainlink feed of the same stock, read over `RHC_MAINNET_RPC_URL`. The keeper must own the feeds. |
+| `KEEPER_MOCK_FEED_KEEP_ALIVE` | `1` | 1 = when the real feed is stale (market closed), post its last answer anyway, so testnet keeps trading. 0 = the testnet market holds, as mainnet does. |
+| `KEEPER_MOCK_FEED_REAL_STALE_S` | `86400` | Age (s) after which a real feed counts as stale. |
+| `KEEPER_MOCK_FEED_ALIGN_BPS` | `50` | Swap the testnet kit's v4 pool back to the oracle price when it is further off than this (bps; 0 = never). |
 | **relayer (bin/relayer.ts)** | | |
 | `RELAYER_CHAIN` | `local` | Gasless Quiet claims and Hidden Vault withdraws. Its wallet pays gas. |
 | `RELAYER_PORT` | `8791` |  |
@@ -275,7 +279,7 @@ Never commit `.env` files or keys; they are ignored by `.gitignore`. Prefer Foun
 
 ### Deployment file
 
-The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids and `deployBlock`). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored: local and fork runs write the same chain ids.
+The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored: local and fork runs write the same chain ids.
 
 ## API
 

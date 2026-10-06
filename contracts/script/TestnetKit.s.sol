@@ -141,7 +141,11 @@ contract TestnetKit is Script {
         vm.serializeAddress(root, "stockRouter", address(d.router));
         vm.serializeAddress(root, "jitterBeacon", address(d.beacon));
         vm.serializeAddress(root, "poolSeeder", address(d.seeder));
+        // The feeds are MockFeeds the deployer can set: the keeper's refresh-mock-feeds job keys off this flag.
+        vm.serializeBool(root, "mockFeeds", true);
         string memory json = vm.serializeString(root, "stocks", stocks);
-        vm.writeJson(json, string.concat(dir, "/", vm.toString(block.chainid), ".json"));
+        // TESTNET_KIT_FILE: another file name inside app/deployments (tests; fs_permissions allow nothing else).
+        string memory file = vm.envOr("TESTNET_KIT_FILE", string.concat(vm.toString(block.chainid), ".json"));
+        vm.writeJson(json, string.concat(dir, "/", file));
     }
 }

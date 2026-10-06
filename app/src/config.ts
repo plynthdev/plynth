@@ -40,7 +40,8 @@ const optUrl = z.preprocess(blank, z.url().optional());
 const int = (d: number, min = 0, max = Number.MAX_SAFE_INTEGER) => z.preprocess(blank, z.coerce.number().int().min(min).max(max).default(d));
 const optInt = (min = 0) => z.preprocess(blank, z.coerce.number().int().min(min).optional());
 const port = (d: number) => int(d, 0, 65535);
-const flag = z.preprocess(blank, z.enum(["0", "1"]).default("0").transform((v) => v === "1"));
+const flagDefault = (d: "0" | "1") => z.preprocess(blank, z.enum(["0", "1"]).default(d).transform((v) => v === "1"));
+const flag = flagDefault("0");
 const chain = z.preprocess(blank, z.enum(["local", "testnet", "mainnet"]).default("local"));
 const address = z.preprocess(blank, z.string().regex(/^0x[0-9a-fA-F]{40}$/, "must be a 0x-prefixed 20-byte address").optional());
 const privateKey = z.preprocess(blank, z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/, "must be 32 bytes of hex").optional());
@@ -87,6 +88,11 @@ const schema = z.object({
   KEEPER_LOOKAHEAD: int(2, 1),
   KEEPER_JOBS: list,
   SPLIT_PARTS: int(2, 1, 3),
+  // keeper job refresh-mock-feeds (testnet kit deployments only)
+  KEEPER_MOCK_FEED_INTERVAL_S: int(600, 1),
+  KEEPER_MOCK_FEED_KEEP_ALIVE: flagDefault("1"),
+  KEEPER_MOCK_FEED_REAL_STALE_S: int(86_400, 1),
+  KEEPER_MOCK_FEED_ALIGN_BPS: int(50, 0, 10_000),
 
   // relayer
   RELAYER_CHAIN: chain,

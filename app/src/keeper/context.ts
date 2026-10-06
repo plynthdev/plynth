@@ -1,7 +1,8 @@
 import { contracts } from "@/chain";
 import type { Db } from "@/db";
 import type { Deployment } from "@/indexer";
-import { getAddress, type Abi, type Address, type PublicClient } from "viem";
+import { getAddress, isAddress, type Abi, type Address, type Hex, type PublicClient } from "viem";
+import type { MockFeedOptions } from "./jobs/mock-feeds";
 import type { Sealer } from "./seal";
 import type { PlaidLike } from "./sources/plaid";
 import { revertOf, type Sender, type SimResult } from "./sender";
@@ -22,7 +23,63 @@ export type KeeperDeployment = {
   erc6538Registry: Address;
   /** Hidden delivery; absent until ShieldedPool is deployed and wired. */
   shieldedPool?: Address | undefined;
+  /** Mock feeds of a testnet kit deployment (job refresh-mock-feeds). */
+  mock: MockFeedDeployment;
 };
+
+/** One mock Stock Token of a testnet kit: its feed and v4 pool (as TestnetKit.s.sol writes them). */
+export type MockStock = {
+  symbol: string;
+  /** Mainnet Stock Token whose real feed this one tracks: `underlying` in the file, else the symbol without its leading "m". */
+  underlying: string;
+  token: Address;
+  feed: Address;
+  poolId?: Hex | undefined;
+  fee?: number | undefined;
+  currency0?: Address | undefined;
+  currency1?: Address | undefined;
+};
+
+export type MockFeedDeployment = {
+  /** `mockFeeds` in the file: true = testnet kit feeds, false = never touch, undefined = file predates the flag. */
+  flag: boolean | undefined;
+  stocks: MockStock[];
+  usdg?: Address | undefined;
+  registry?: Address | undefined;
+  valuer?: Address | undefined;
+  router?: Address | undefined;
+  poolManager?: Address | undefined;
+};
+
+/** The refresh-mock-feeds slice of a deployment file. Never throws on a missing field: old files stay readable. */
+export function mockFeedDeployment(dep: Deployment): MockFeedDeployment {
+  const addr = (v: unknown): Address | undefined => (typeof v === "string" && isAddress(v) ? getAddress(v) : undefined);
+  const stocks: MockStock[] = [];
+  for (const [symbol, raw] of Object.entries((dep.stocks ?? {}) as Record<string, Record<string, unknown>>)) {
+    const token = addr(raw.token);
+    const feed = addr(raw.feed);
+    if (!token || !feed) continue;
+    stocks.push({
+      symbol,
+      underlying: typeof raw.underlying === "string" ? raw.underlying : symbol.replace(/^m(?=[A-Z])/, ""),
+      token,
+      feed,
+      poolId: typeof raw.poolId === "string" && /^0x[0-9a-fA-F]{64}$/.test(raw.poolId) ? (raw.poolId as Hex) : undefined,
+      fee: raw.fee === undefined ? undefined : Number(raw.fee),
+      currency0: addr(raw.currency0),
+      currency1: addr(raw.currency1),
+    });
+  }
+  return {
+    flag: typeof dep.mockFeeds === "boolean" ? dep.mockFeeds : undefined,
+    stocks,
+    usdg: addr(dep.usdg),
+    registry: addr(dep.stockTokenRegistry),
+    valuer: addr(dep.valuer),
+    router: addr(dep.stockRouter),
+    poolManager: addr(dep.poolManager),
+  };
+}
 
 const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 const CANONICAL_MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
@@ -55,6 +112,7 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     stealthClaims: typeof dep.stealthClaims === "string" ? getAddress(dep.stealthClaims) : undefined,
     erc6538Registry: opt("erc6538Registry", CANONICAL_ERC6538),
     shieldedPool: typeof dep.shieldedPool === "string" ? getAddress(dep.shieldedPool) : undefined,
+    mock: mockFeedDeployment(dep),
   };
 }
 
@@ -72,6 +130,8 @@ export type Ctx = {
   splitParts?: number;
   /** Plaid client (PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV); absent = Plaid sources are not synced. */
   plaid?: PlaidLike | undefined;
+  /** refresh-mock-feeds settings and its mainnet feed reader; absent = the job does nothing. */
+  mockFeeds?: MockFeedOptions | undefined;
   log: (m: string) => void;
 };
 
