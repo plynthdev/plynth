@@ -4,14 +4,18 @@ pragma solidity ^0.8.28;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// Commit-reveal execution timing. On Robinhood Chain `block.prevrandao` is a counter, and Chainlink VRF
-/// is paid, so the keeper commits to a secret before a window opens and reveals it once the window is open.
-/// The execution time is `windowStart + offset`, offset = keccak256(abi.encode(secret, key)) mod (window - GRACE).
+/// is paid, so the keeper commits to a secret before a window opens and reveals it at the execution time.
+/// commitment = keccak256(abi.encode(secret, key)); the execution time is `windowStart + offset` with
+/// offset = keccak256(abi.encode(OFFSET_TAG, secret, key)) mod (window - GRACE), a different hash than the
+/// commitment, so the published commitment says nothing about the time. A reveal is accepted only from the
+/// execution time on (until windowEnd - GRACE), so revealing never publishes the time before it has come.
 ///
 /// Trust: the keeper knows the execution time in advance (it chose the secret). This hides the time from
 /// the public, not from the keeper. If the keeper never reveals, execution falls back to
 /// `windowEnd - GRACE`, so a dead keeper delays execution but never blocks it.
 contract JitterBeacon is Ownable {
     uint64 public constant GRACE = 1 hours;
+    bytes32 public constant OFFSET_TAG = keccak256("plynth.jitter-beacon.offset");
 
     struct Beacon {
         uint64 windowStart;
@@ -37,6 +41,7 @@ contract JitterBeacon is Ownable {
     error WindowNotStarted();
     error RevealTooLate();
     error WrongSecret();
+    error RevealTooEarly(uint64 executeAt);
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -64,8 +69,8 @@ contract JitterBeacon is Ownable {
         emit Committed(key, windowStart, windowEnd, commitment);
     }
 
-    /// Anyone may reveal once the window is open and before `windowEnd - GRACE`.
-    /// A late reveal reverts: the deterministic fallback time already applies.
+    /// Anyone may reveal from the execution time it sets (never earlier: that would publish the time ahead)
+    /// until `windowEnd - GRACE`. A late reveal reverts: the deterministic fallback time already applies.
     function reveal(bytes32 key, bytes32 secret) external {
         Beacon storage b = _beacons[key];
         if (b.commitment == bytes32(0)) revert UnknownKey(key);
@@ -74,6 +79,7 @@ contract JitterBeacon is Ownable {
         if (block.timestamp >= b.windowEnd - GRACE) revert RevealTooLate();
         if (keccak256(abi.encode(secret, key)) != b.commitment) revert WrongSecret();
         uint64 at = b.windowStart + offsetOf(secret, key, b.windowStart, b.windowEnd);
+        if (block.timestamp < at) revert RevealTooEarly(at);
         b.executeAt = at;
         emit Revealed(key, secret, at);
     }
@@ -91,8 +97,9 @@ contract JitterBeacon is Ownable {
         return _beacons[key];
     }
 
-    /// offset = uint256(keccak256(abi.encode(secret, key))) % (windowEnd - windowStart - GRACE)
+    /// offset = uint256(keccak256(abi.encode(OFFSET_TAG, secret, key))) % (windowEnd - windowStart - GRACE).
+    /// Domain-separated from the commitment: the old offset was the commitment itself mod the range.
     function offsetOf(bytes32 secret, bytes32 key, uint64 windowStart, uint64 windowEnd) public pure returns (uint64) {
-        return uint64(uint256(keccak256(abi.encode(secret, key))) % (windowEnd - windowStart - GRACE));
+        return uint64(uint256(keccak256(abi.encode(OFFSET_TAG, secret, key))) % (windowEnd - windowStart - GRACE));
     }
 }

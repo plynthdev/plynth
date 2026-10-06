@@ -31,10 +31,11 @@ contract JitterBeaconTest is Test {
     function test_happyPath() public {
         _commit(KEY, SECRET);
         assertEq(beacon.executeAfter(KEY), end - 1 hours, "before reveal = fallback");
-        vm.warp(start);
+        uint64 expected =
+            start + uint64(uint256(keccak256(abi.encode(beacon.OFFSET_TAG(), SECRET, KEY))) % (end - start - 1 hours));
+        vm.warp(expected);
         vm.prank(anyone);
         beacon.reveal(KEY, SECRET);
-        uint64 expected = start + uint64(uint256(keccak256(abi.encode(SECRET, KEY))) % (end - start - 1 hours));
         assertEq(beacon.executeAfter(KEY), expected);
         assertLt(beacon.executeAfter(KEY), end - 1 hours);
     }
@@ -66,7 +67,7 @@ contract JitterBeaconTest is Test {
 
     function test_doubleRevealReverts() public {
         _commit(KEY, SECRET);
-        vm.warp(start);
+        vm.warp(start + beacon.offsetOf(SECRET, KEY, start, end));
         beacon.reveal(KEY, SECRET);
         vm.expectRevert(abi.encodeWithSelector(JitterBeacon.AlreadyRevealed.selector, KEY));
         beacon.reveal(KEY, SECRET);
@@ -121,11 +122,36 @@ contract JitterBeaconTest is Test {
         uint64 e = s + len;
         vm.prank(keeper);
         beacon.commit(key, s, e, keccak256(abi.encode(secret, key)));
-        vm.warp(s);
+        vm.warp(s + beacon.offsetOf(secret, key, s, e));
         beacon.reveal(key, secret);
         uint64 at = beacon.executeAfter(key);
         assertGe(at, s);
         assertLt(at, e - 1 hours);
         assertLt(beacon.offsetOf(secret, key, s, e), len - 1 hours);
+    }
+
+    // ------------------------------------------------------------ S5 (security review 2026-10-06)
+
+    /// The Committed event publishes the commitment; the execution time must not be computable from it.
+    function test_S5_executeAtNotDerivableFromCommitment() public view {
+        for (uint256 i; i < 8; ++i) {
+            bytes32 secret = keccak256(abi.encode("secret", i));
+            bytes32 commitment = keccak256(abi.encode(secret, KEY));
+            uint64 fromCommitment = uint64(uint256(commitment) % (end - start - 1 hours));
+            assertTrue(beacon.offsetOf(secret, KEY, start, end) != fromCommitment, "offset leaks from the commitment");
+        }
+    }
+
+    /// Revealing publishes the time; it may happen only once that time has come.
+    function test_S5_revealOnlyAtOrAfterExecuteAt() public {
+        _commit(KEY, SECRET);
+        uint64 at = start + beacon.offsetOf(SECRET, KEY, start, end);
+        vm.assume(at > start);
+        vm.warp(start);
+        vm.expectRevert(abi.encodeWithSelector(JitterBeacon.RevealTooEarly.selector, at));
+        beacon.reveal(KEY, SECRET);
+        vm.warp(at);
+        beacon.reveal(KEY, SECRET);
+        assertEq(beacon.executeAfter(KEY), at);
     }
 }

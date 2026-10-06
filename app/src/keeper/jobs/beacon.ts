@@ -3,7 +3,9 @@
 // The secret is generated with crypto.getRandomValues, sealed (AES-GCM, KEEPER_SECRET_KEY) and stored in
 // keeper_jobs BEFORE the commit is sent, so a crash between the two never loses a committed secret.
 // If the keeper misses a reveal, the beacon's fallback time (windowEnd - GRACE) still lets the book execute.
-import { bytesToHex, encodeAbiParameters, keccak256, type Address, type Hex } from "viem";
+// The reveal waits for the execution time it sets (computed locally from the secret, never sent to an RPC
+// before then): the beacon refuses earlier reveals, which would publish the time ahead of it.
+import { bytesToHex, encodeAbiParameters, keccak256, toBytes, type Address, type Hex } from "viem";
 import { beaconAbi, crowdAbi } from "@/abi/keeper";
 import { chainNow, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { newSecret } from "@/keeper/seal";
@@ -24,6 +26,15 @@ export function beaconKey(asset: Address, windowStart: bigint): Hex {
 /** JitterBeacon commitment: keccak256(abi.encode(secret, key)). */
 export function commitmentOf(secret: Hex, key: Hex): Hex {
   return keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [secret, key]));
+}
+
+/** JitterBeacon.OFFSET_TAG: the offset hash is domain-separated from the commitment. */
+export const OFFSET_TAG: Hex = keccak256(toBytes("plynth.jitter-beacon.offset"));
+
+/** JitterBeacon.offsetOf: keccak256(abi.encode(OFFSET_TAG, secret, key)) mod (windowEnd - windowStart - grace). */
+export function offsetOf(secret: Hex, key: Hex, windowStart: bigint, windowEnd: bigint, grace: bigint): bigint {
+  const h = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }], [OFFSET_TAG, secret, key]));
+  return BigInt(h) % (windowEnd - windowStart - grace);
 }
 
 /** Window starts to commit for, given the current window start: the next `lookahead` windows. */
@@ -83,6 +94,7 @@ async function reveal(ctx: Ctx, res: JobResult, asset: Address, start: bigint, e
     res.notes.push(`${asset} window ${start}: commitment mismatch, fallback applies`);
     return;
   }
+  if (now < start + offsetOf(secret, key, start, end, t.grace)) return; // not time yet: revealing would publish it
   const sim = await simulate(ctx, ctx.dep.beacon, beaconAbi, "reveal", [key, secret]);
   if (!sim.ok) {
     if (sim.errorName === "AlreadyRevealed") await setJob(ctx, "beacon", key.toLowerCase(), { status: "revealed" });

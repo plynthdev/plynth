@@ -22,7 +22,7 @@ Core (`core/`):
 | `StockTokenRegistry` | Board-curated list of canonical Stock Tokens and their price feeds. Unknown tokens are refused |
 | `Valuer` | Values Stock Tokens in USD from Chainlink feeds and each token's `uiMultiplier`. A stale feed returns `hold` instead of reverting |
 | `StockRouter` | Buys and sells Stock Tokens for USDG through one Uniswap v4 pool per token, with the minimum output set by the oracle |
-| `JitterBeacon` | Commit-reveal execution timing (the keeper commits to a secret before a window opens and reveals it inside) |
+| `JitterBeacon` | Commit-reveal execution timing (the keeper commits to a secret before a window opens and reveals it at the time it sets; the commitment does not show the time) |
 | `EligibilityRegistry` | On-chain record of the eligibility service's signed attestations. Exits never check it |
 
 Consumer (`consumer/`):

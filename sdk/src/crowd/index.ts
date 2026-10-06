@@ -1,7 +1,7 @@
 // Crowd-buy engine: savers pool small USDG buys of one Stock Token into one swap (CrowdBuy + SavingsVault).
 // Unsigned transaction builders, pure helpers that mirror the contract's arithmetic, and read helpers that
 // take a viem PublicClient you create. No module-level network access.
-import { encodeAbiParameters, encodeFunctionData, getAddress, keccak256, type Address, type Hex, type PublicClient } from "viem";
+import { encodeAbiParameters, encodeFunctionData, getAddress, keccak256, toBytes, type Address, type Hex, type PublicClient } from "viem";
 import { crowdBuyAbi, jitterBeaconAbi, savingsVaultAbi } from "./abi";
 
 export { crowdBuyAbi, jitterBeaconAbi, savingsVaultAbi };
@@ -87,6 +87,17 @@ export function windowOf(genesis: bigint, t: bigint): { start: bigint; end: bigi
 /** CrowdBuy.beaconKey: keccak256(abi.encode(asset, windowStart)). */
 export function beaconKey(asset: Address, windowStart: bigint): Hex {
   return keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint64" }], [getAddress(asset), windowStart]));
+}
+
+/** JitterBeacon.OFFSET_TAG: the offset hash is domain-separated from the public commitment. */
+export const BEACON_OFFSET_TAG: Hex = keccak256(toBytes("plynth.jitter-beacon.offset"));
+export const BEACON_GRACE = 3_600n;
+
+/** JitterBeacon.offsetOf: keccak256(abi.encode(OFFSET_TAG, secret, key)) mod (windowEnd - windowStart - GRACE).
+ *  Only the secret's holder can compute it; the beacon accepts the reveal from windowStart + offset on. */
+export function beaconOffsetOf(secret: Hex, key: Hex, windowStart: bigint, windowEnd: bigint, grace = BEACON_GRACE): bigint {
+  const h = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }], [BEACON_OFFSET_TAG, secret, key]));
+  return BigInt(h) % (windowEnd - windowStart - grace);
 }
 
 // ------------------------------------------------------------------ reads

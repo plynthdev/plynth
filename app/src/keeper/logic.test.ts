@@ -7,7 +7,7 @@ import { encodeAbiParameters, keccak256, toEventSelector, toFunctionSelector, ty
 import { beaconAbi, crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
 import { shieldedPoolAbi } from "@plynth/sdk/vault";
 import { keeperDeployment } from "./context";
-import { beaconKey, commitmentOf, revealOpen, windowAt, windowsToCommit } from "./jobs/beacon";
+import { beaconKey, commitmentOf, offsetOf, OFFSET_TAG, revealOpen, windowAt, windowsToCommit } from "./jobs/beacon";
 import { executeBlocker } from "./jobs/execute";
 import { classifySpend } from "./jobs/roundups";
 import { chunks, MULTICALL_BASE_GAS, MULTICALL_PER_CALL_GAS, sweepGasFloor } from "./jobs/sweep";
@@ -92,6 +92,13 @@ describe("beacon: windows, keys, commitments", () => {
     const secret = keccak256("0x01"); // derived, not a key
     const key = beaconKey(asset, 77n);
     expect(commitmentOf(secret, key)).toBe(keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [secret, key])));
+  });
+  test("S5: offset = keccak256(abi.encode(OFFSET_TAG, secret, key)) mod range, not the commitment mod range", () => {
+    expect(OFFSET_TAG).toBe("0xfd3a63e3edf1e244b5ceca9a9661a6da731cdf004dff5c4dd53d6b58a6d879cc"); // not-a-key
+    const secret = keccak256("0x01");
+    const key = keccak256("0x02");
+    expect(offsetOf(secret, key, 0n, DAY, 3_600n)).toBe(33_227n); // computed with cast (keccak + abi-encode)
+    expect(offsetOf(secret, key, 0n, DAY, 3_600n)).not.toBe(BigInt(commitmentOf(secret, key)) % (DAY - 3_600n));
   });
   test("commit the next `lookahead` windows; reveal only in [start, end - GRACE)", () => {
     expect(windowsToCommit(G, DAY, 2)).toEqual([G + DAY, G + 2n * DAY]);

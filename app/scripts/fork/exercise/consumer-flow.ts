@@ -7,7 +7,10 @@ import { bytesToHex, encodeAbiParameters, getAddress, keccak256, maxUint256, par
 import { privateKeyToAccount } from "viem/accounts";
 import { roundupMessage } from "@/api/routes/roundups";
 import { sha256Hex } from "@/keeper/sources/types";
-import { FORK_CHAIN_ID, PORTS } from "../lib";
+import { offsetOf } from "@/keeper/jobs/beacon";
+import { parseSecretKey, Sealer } from "@/keeper/seal";
+import { FORK_CHAIN_ID, PORTS, secrets } from "../lib";
+import { db } from "./services";
 import { expect, j } from "./core";
 import { api, balanceOf, DAY, erc20Abi, events, HOUR, U, usdgOf, type Ctx } from "./context";
 
@@ -229,7 +232,36 @@ export async function crowd(x: Ctx) {
     return `${Number(fa + fp) / 1e6} USDG received`;
   });
 
-  // Into the window: the keeper reveals; the equity desk reveals its own beacon for the same day.
+  // The keeper reveals each beacon only at the execution time it sets (an earlier reveal would publish the time),
+  // so nothing on-chain says when a book runs. The harness, on the same machine, opens the keeper's sealed
+  // secret (keeper_jobs.secret_enc, KEEPER_SECRET_KEY) to know when to move chain time.
+  const sealer = await Sealer.create(parseSecretKey(secrets().keeperSecretKey));
+  const keeperRevealAt = async (a: Address): Promise<bigint> => {
+    const key = crowdKey(a, wStart);
+    const row = (await db().sql`select secret_enc from keeper_jobs where kind = 'beacon' and job_key = ${key.toLowerCase()}`)[0] as { secret_enc: string } | undefined;
+    if (!row) throw new Error(`no keeper beacon secret for ${r.who(a)}`);
+    const secret = bytesToHex(await sealer.open(row.secret_enc, `beacon:${FORK_CHAIN_ID}:${key.toLowerCase()}`));
+    return wStart + offsetOf(secret, key, wStart, wStart + DAY, HOUR);
+  };
+  const router = x.addr("stockRouter");
+  const whale = A.deployer;
+
+  // Slippage case, prepared before the window: a whale pushes the real MSFT pool up through the router (5% guard)
+  // until a 1% buy fails, so the MSFT book's execution will hit the oracle slippage guard.
+  let pushed = 0n;
+  await r.send("whale approves the router", whale, { address: x.addr("usdg"), abi: erc20Abi, functionName: "approve", args: [router, maxUint256] });
+  for (let i = 0; i < 12; i++) {
+    try {
+      await r.pub.simulateContract({ account: whale.address, address: router, abi: routerAbi, functionName: "buy", args: [MSFT, 100n * U, 100, whale.address] });
+    } catch {
+      break; // a 1% buy now fails: the pool is more than 1% above the oracle
+    }
+    const rc = await r.send(`whale buys 25k USDG of MSFT on the real pool (push ${i + 1})`, whale, { address: router, abi: routerAbi, functionName: "buy", args: [MSFT, 25_000n * U, 500, whale.address] });
+    if (!rc) break;
+    pushed += 25_000n * U;
+  }
+
+  // Into the window: no beacon is revealed yet; the equity desk runs (it reveals its own day beacon at its time).
   await r.check("warp to the crowd window start", async () => {
     await r.warpTo(wStart + 60n);
     return `chain time ${await r.now()} (window ${wStart})`;
@@ -237,38 +269,44 @@ export async function crowd(x: Ctx) {
   if (x.state.deskPass) await x.state.deskPass("reveal");
   const execAt: Record<string, bigint> = {};
   for (const a of [...assets, MSFT]) {
-    await r.external(`keeper reveals the ${r.who(a)} beacon`, "keeper", async () => {
+    await r.check(`${r.who(a)}: the execution time is not public at the window start (beacon still at its fallback)`, async () => {
       const key = crowdKey(a, wStart);
-      const e = await r.until(`Revealed ${r.who(a)}`, async () => (await events(x, beacon, "JitterBeacon", "Revealed", from, { key }))[0], 120_000);
-      execAt[a] = BigInt(e.args.executeAt);
-      expect(execAt[a]! >= wStart && execAt[a]! < wStart + DAY, "executeAt outside the window");
-      return { tx: e.transactionHash, assertion: `executeAt = window + ${Number(execAt[a]! - wStart) / 3600}h` };
+      const b = await r.read<{ executeAt: bigint }>(beacon, x.abi("JitterBeacon"), "beacon", [key]);
+      expect(BigInt(b.executeAt) === 0n, `revealed early: ${b.executeAt}`);
+      execAt[a] = await keeperRevealAt(a);
+      return `not revealed; the keeper will reveal at window + ${(Number(execAt[a]! - wStart) / 3600).toFixed(2)}h`;
     });
   }
 
   // Book ids now, before any execution opens the next book.
   x.state.books = {} as Record<string, bigint>;
   for (const a of [...assets, MSFT]) x.state.books[a] = (await r.read<[bigint]>(crowd, C, "openBook", [a]))[0];
-  const router = x.addr("stockRouter");
-  const whale = A.deployer;
 
-  // Slippage path: a whale pushes the real MSFT pool up through the router (5% guard) until a 1% buy fails;
-  // the MSFT book's execution then reverts on the oracle slippage guard and its savers cancel.
+  const revealed = async (a: Address) => {
+    await r.external(`keeper reveals the ${r.who(a)} beacon at its execution time`, "keeper", async () => {
+      const key = crowdKey(a, wStart);
+      const e = await r.until(`Revealed ${r.who(a)}`, async () => (await events(x, beacon, "JitterBeacon", "Revealed", from, { key }))[0], 120_000);
+      expect(BigInt(e.args.executeAt) === execAt[a], `executeAt ${e.args.executeAt} != ${execAt[a]}`);
+      const blk = await r.pub.getBlock({ blockNumber: e.blockNumber });
+      expect(blk.timestamp >= execAt[a]!, `revealed at ${blk.timestamp}, before its time ${execAt[a]}`);
+      return { tx: e.transactionHash, assertion: `executeAt = window + ${(Number(execAt[a]! - wStart) / 3600).toFixed(2)}h, revealed at/after it` };
+    });
+  };
+
   const slippage = async () => {
-    await r.send("whale approves the router", whale, { address: x.addr("usdg"), abi: erc20Abi, functionName: "approve", args: [router, maxUint256] });
-    let pushed = 0n;
-    for (let i = 0; i < 12; i++) {
+    await r.check("the keeper's MSFT execution reverts on the oracle slippage guard (book stays open)", async () => {
+      const id = x.state.books[MSFT];
+      await Bun.sleep(8_000); // a few keeper passes
+      const b = await r.read<{ executed: boolean }>(crowd, C, "book", [MSFT, id]);
+      expect(!b.executed, "MSFT book executed against the pushed pool");
       try {
-        await r.pub.simulateContract({ account: whale.address, address: router, abi: routerAbi, functionName: "buy", args: [MSFT, 100n * U, 100, whale.address] });
-      } catch {
-        break; // a 1% buy now fails: the pool is more than 1% above the oracle
+        await r.pub.simulateContract({ account: A.keeper.address, address: crowd, abi: C, functionName: "execute", args: [MSFT] });
+        throw new Error("execute did not revert");
+      } catch (e) {
+        expect(/Slippage/.test(String((e as Error).message)), `reverted with ${(e as Error).message.split("\n")[0]}`);
       }
-      const rc = await r.send(`whale buys 25k USDG of MSFT on the real pool (push ${i + 1})`, whale, { address: router, abi: routerAbi, functionName: "buy", args: [MSFT, 25_000n * U, 500, whale.address] });
-      if (!rc) break;
-      pushed += 25_000n * U;
-    }
-    if ((await r.now()) < execAt[MSFT]!) await r.warpTo(execAt[MSFT]! + 1n);
-    await r.reverts("crowd execution against the pushed MSFT pool reverts on the oracle slippage guard", A.outsider, { address: crowd, abi: C, functionName: "execute", args: [MSFT] }, "Slippage");
+      return "execute (as the keeper) reverts Slippage; book not executed";
+    });
     for (const s of ["slipA", "slipB", "slipC"] as const) {
       const id = x.state.books[MSFT];
       await r.send(`${s} cancels the unexecuted MSFT order`, A[s], { address: crowd, abi: C, functionName: "cancel", args: [MSFT, id] }, async () => {
@@ -281,19 +319,20 @@ export async function crowd(x: Ctx) {
     if (pushed > 0n) await r.send("whale sells the MSFT back (pool returns toward the oracle)", whale, { address: router, abi: routerAbi, functionName: "sell", args: [MSFT, held, 500, whale.address] });
   };
 
-  // In beacon order: each TSLA/AAPL/NVDA book executed by the running keeper with a REAL v4 swap at a REAL feed
-  // price; the MSFT book is the slippage case.
-  const timeline = [...assets, MSFT].filter((a) => execAt[a] !== undefined).sort((a, b) => (execAt[a]! < execAt[b]! ? -1 : 1));
+  // In beacon order: each TSLA/AAPL/NVDA book revealed and executed by the running keeper with a REAL v4 swap at
+  // a REAL feed price; the MSFT book is the slippage case.
+  const timeline = [...assets, MSFT].sort((a, b) => (execAt[a]! < execAt[b]! ? -1 : 1));
   const order = timeline.filter((a) => a !== MSFT);
   for (const a of timeline) {
+    const at = execAt[a]!;
+    const id = x.state.books[a];
+    if ((await r.now()) < at - 1n) await r.reverts(`${r.who(a)}: execute one second before its beacon time reverts`, A.keeper, { address: crowd, abi: C, functionName: "execute", args: [a] }, "TooEarly", { blockOverrides: { time: at - 1n } });
+    if ((await r.now()) < at) await r.warpTo(at + 1n);
+    await revealed(a);
     if (a === MSFT) {
       await slippage();
       continue;
     }
-    const at = execAt[a]!;
-    const id = x.state.books[a];
-    if ((await r.now()) < at - 1n) await r.reverts(`${r.who(a)}: execute one second before its beacon time reverts`, A.outsider, { address: crowd, abi: C, functionName: "execute", args: [a] }, "TooEarly", { blockOverrides: { time: at - 1n } });
-    if ((await r.now()) < at) await r.warpTo(at + 1n);
     await r.external(`keeper executes the ${r.who(a)} book on the real v4 pool`, "keeper", async () => {
       const e = await r.until(`Executed ${r.who(a)}`, async () => (await events(x, crowd, "CrowdBuy", "Executed", from, { asset: a, bookId: id }))[0], 120_000);
       const q = await r.read<{ priceUsdPerToken: bigint }>(x.addr("valuer"), x.abi("Valuer"), "quote", [a]);

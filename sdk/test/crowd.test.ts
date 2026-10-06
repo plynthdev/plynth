@@ -6,6 +6,7 @@ import { decodeFunctionData, encodeAbiParameters, getAddress, keccak256, toEvent
 import {
   allocation,
   beaconKey,
+  beaconOffsetOf,
   cancelTx,
   claimOpenTx,
   crowdBuyAbi,
@@ -96,6 +97,14 @@ describe("contract arithmetic", () => {
     expect(windowOf(g, g + 86_399n).start).toBe(g);
     expect(windowOf(g, g + 86_400n).start).toBe(g + 86_400n);
     expect(() => windowOf(g, g - 1n)).toThrow(/genesis/);
+  });
+
+  test("beaconOffsetOf = JitterBeacon.offsetOf (domain-separated from the commitment)", () => {
+    const secret = keccak256("0x01");
+    const key = keccak256("0x02");
+    expect(beaconOffsetOf(secret, key, 0n, 86_400n)).toBe(33_227n); // computed with cast
+    const commitment = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [secret, key]));
+    expect(beaconOffsetOf(secret, key, 0n, 86_400n)).not.toBe(BigInt(commitment) % 82_800n);
   });
 
   test("beaconKey = keccak256(abi.encode(asset, uint64 windowStart)), as CrowdBuy.beaconKey", () => {

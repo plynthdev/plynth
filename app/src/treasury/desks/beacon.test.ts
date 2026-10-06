@@ -46,4 +46,13 @@ describe("one commit/reveal per period day", () => {
     expect(beaconSteps(start + DAY - GRACE, GRACE, { key: "0x01", b: today }, { key: "0x02", b: tomorrow })).toEqual([]);
     expect(beaconSteps(start + 60n, GRACE, { key: "0x01", b: { ...today, executeAt: start + 99n } }, { key: "0x02", b: tomorrow })).toEqual([]);
   });
+
+  test("S5: waits for the execution time before revealing (an early reveal would publish it)", () => {
+    const start = 1_799_971_200n;
+    const today: BeaconState = { windowStart: start, windowEnd: start + DAY, executeAt: 0n, commitment: keccak256("0x01") };
+    const tomorrow: BeaconState = { ...today, windowStart: start + DAY, windowEnd: start + 2n * DAY };
+    const revealAt = start + 5000n;
+    expect(beaconSteps(revealAt - 1n, GRACE, { key: "0x01", b: today, revealAt }, { key: "0x02", b: tomorrow })).toEqual([]);
+    expect(beaconSteps(revealAt, GRACE, { key: "0x01", b: today, revealAt }, { key: "0x02", b: tomorrow })).toEqual([{ kind: "reveal", key: "0x01" }]);
+  });
 });

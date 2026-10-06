@@ -18,6 +18,7 @@ import {
   vaultDepositTx,
   windowOf,
   beaconKey,
+  beaconOffsetOf,
 } from "@plynth/sdk/crowd";
 import { check, runExample } from "./_local";
 
@@ -71,11 +72,13 @@ await runExample("crowd-join", async ({ dep, pub, accounts, now, warpTo, send, c
   check(book.accounts === 3 && book.usdgTotal === 3n * 22_980_000n, "book holds three accounts");
   console.log(`book ${bookId}: ${book.accounts} accounts, ${book.usdgTotal} USDG base units`);
 
-  // 4. Inside tomorrow's window the secret is revealed (anyone may), which fixes the jittered time.
-  await warpTo(tomorrow + 5n);
+  // 4. The secret is revealed (anyone holding it may) at the jittered time it fixes, never earlier: an early
+  //    reveal would publish the time. Only the secret's holder can compute it.
+  const at = tomorrow + beaconOffsetOf(secret as Hex, key, tomorrow, tomorrow + DAY);
+  await warpTo(at);
   await call(anyone, dep.jitterBeacon, jitterBeaconAbi, "reveal", [key, secret as Hex]);
   const { executeAfter } = await nextExecution(pub, crowd, tsla);
-  check(executeAfter >= tomorrow && executeAfter < tomorrow + DAY, "execution time inside the window");
+  check(executeAfter === at && executeAfter < tomorrow + DAY, "execution time inside the window");
   await warpTo((executeAfter > (await now()) ? executeAfter : await now()) + 1n);
   await send(anyone, executeTx(crowd, tsla));
 

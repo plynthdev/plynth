@@ -19,7 +19,7 @@ import {
   type WalletClient,
 } from "viem";
 import { accountAbi, beaconAbi, equitySleeveAbi, erc20Abi, guardAbi, policyAbi, valuerAbi, vaultAbi } from "@/abi/treasury-desks";
-import { beaconKey, beaconSteps, commitmentOf, dayStart, DAY, secretFor } from "./beacon";
+import { beaconKey, beaconSteps, commitmentOf, dayStart, DAY, offsetOf, secretFor } from "./beacon";
 import type { DeskConfig } from "./runner-config";
 import { decodeRejection, type Rejection } from "./errors";
 import type { ActionLog, ActionRow } from "./log";
@@ -294,7 +294,10 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
     pub.readContract({ address: cfg.beacon, abi: beaconAbi, functionName: "keeper" }),
   ]);
   const sign = (key: Hex) => ctx.equity.account.signMessage({ message: { raw: key } });
-  for (const step of beaconSteps(s.ts, grace, { key: kToday, b: bToday }, { key: kTomorrow, b: bTomorrow })) {
+  const revealAt = bToday.windowEnd > bToday.windowStart
+    ? bToday.windowStart + offsetOf(await secretFor(sign, kToday), kToday, bToday.windowStart, bToday.windowEnd, grace)
+    : undefined;
+  for (const step of beaconSteps(s.ts, grace, { key: kToday, b: bToday, ...(revealAt === undefined ? {} : { revealAt }) }, { key: kTomorrow, b: bTomorrow })) {
     const secret = await secretFor(sign, step.key);
     if (step.kind === "commit" && keeper.toLowerCase() !== ctx.equity.account.address.toLowerCase()) {
       await ctx.log.record({ chainId: ctx.chain.id, account: cfg.account, desk: "equity", action: "beacon_commit", status: "skipped", reason: "NOT_BEACON_KEEPER", beaconKey: step.key });

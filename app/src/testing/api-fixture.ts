@@ -146,8 +146,21 @@ export async function seedFixture() {
     const genesis = BigInt(dep.genesis);
     const w1 = genesis + (((await now()) - genesis) / DAY) * DAY + DAY;
     await warpTo(w1 + 5n);
-    keeper("topups,roundups,sweep,beacon"); // reveal w1
-    const executeAt = (await pub.readContract({ address: dep.jitterBeacon, abi: userAbi, functionName: "executeAfter", args: [await pub.readContract({ address: dep.crowdBuy, abi: userAbi, functionName: "beaconKey", args: [tsla, w1] })] })) as bigint;
+    // The keeper reveals each w1 beacon only at its execution time: step chain time (never past the reveal deadline)
+    // until both committed beacons (mTSLA, mNVDA) are revealed, so the API shows revealed times for every book.
+    const keys = await Promise.all([tsla, nvda].map((a) => pub.readContract({ address: dep.crowdBuy, abi: userAbi, functionName: "beaconKey", args: [a, w1] })));
+    const fallbackAt = w1 + DAY - 3600n;
+    const after = () => Promise.all(keys.map(async (k) => (await pub.readContract({ address: dep.jitterBeacon, abi: userAbi, functionName: "executeAfter", args: [k] })) as bigint));
+    let times = await after();
+    for (let i = 0; i < 40 && times.some((t) => t >= fallbackAt); i++) {
+      keeper("topups,roundups,sweep,beacon");
+      times = await after();
+      if (times.every((t) => t < fallbackAt)) break;
+      const t = await now();
+      const half = (fallbackAt - t) / 2n;
+      await warpTo(t + (half > 7_200n ? 7_200n : half > 30n ? half : 30n));
+    }
+    const executeAt = times[0]!;
     await warpTo((executeAt > (await now()) ? executeAt : await now()) + 1n);
     const out = cycle();
     if (!out.includes("execute: ok actions=1")) throw new Error(`book 0 did not execute:\n${out}`);

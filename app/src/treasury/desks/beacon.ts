@@ -28,16 +28,20 @@ export async function secretFor(sign: (key: Hex) => Promise<Hex>, key: Hex): Pro
 
 export type BeaconState = { windowStart: bigint; windowEnd: bigint; executeAt: bigint; commitment: Hex };
 
+export { offsetOf } from "@/keeper/jobs/beacon";
+
 export type BeaconStep =
   | { kind: "commit"; key: Hex; windowStart: bigint; windowEnd: bigint }
   | { kind: "reveal"; key: Hex };
 
-/** What the desk should do with the beacon now: commit tomorrow's window, reveal today's. */
-export function beaconSteps(now: bigint, grace: bigint, today: { key: Hex; b: BeaconState }, tomorrow: { key: Hex; b: BeaconState }): BeaconStep[] {
+/** What the desk should do with the beacon now: commit tomorrow's window, reveal today's once its execution
+ *  time (`revealAt` = windowStart + offsetOf(secret, ...)) has come; the beacon refuses earlier reveals. */
+export function beaconSteps(now: bigint, grace: bigint, today: { key: Hex; b: BeaconState; revealAt?: bigint }, tomorrow: { key: Hex; b: BeaconState }): BeaconStep[] {
   const steps: BeaconStep[] = [];
   const zero = /^0x0+$/;
   const t = today.b;
-  if (!zero.test(t.commitment) && t.executeAt === 0n && now >= t.windowStart && now < t.windowEnd - grace) {
+  const due = today.revealAt === undefined || now >= today.revealAt;
+  if (!zero.test(t.commitment) && t.executeAt === 0n && due && now >= t.windowStart && now < t.windowEnd - grace) {
     steps.push({ kind: "reveal", key: today.key });
   }
   const start = dayStart(now) + DAY;

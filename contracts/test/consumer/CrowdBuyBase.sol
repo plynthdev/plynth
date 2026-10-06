@@ -167,10 +167,14 @@ abstract contract CrowdBuyBase is Test {
         beacon.commit(key, s, s + 1 days, keccak256(abi.encode(secret, key)));
     }
 
+    /// Reveals at the execution time (the beacon refuses earlier reveals); warps there if needed.
     function _reveal(address asset, uint256 idx, bytes32 secret) internal returns (uint64 at) {
-        bytes32 key = crowd.beaconKey(asset, _windowStart(idx));
+        uint64 s = _windowStart(idx);
+        bytes32 key = crowd.beaconKey(asset, s);
+        at = s + beacon.offsetOf(secret, key, s, s + 1 days);
+        if (block.timestamp < at) vm.warp(at);
         beacon.reveal(key, secret);
-        at = beacon.executeAfter(key);
+        assertEq(beacon.executeAfter(key), at);
     }
 
     function _freshFeeds() internal {

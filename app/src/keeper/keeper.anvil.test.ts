@@ -87,6 +87,27 @@ const cycle = () => {
   return keeper();
 };
 
+/** The keeper reveals only at the execution time (the beacon refuses earlier reveals): run beacon passes in
+ *  2h steps until it has revealed `key`. Returns the reveal time and the last pass time that did not reveal. */
+async function revealByKeeper(key: Hex, jobs = "topups,roundups,sweep,beacon"): Promise<{ executeAt: bigint; lastWithout?: bigint }> {
+  let lastWithout: bigint | undefined;
+  const b = (await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "beacon", args: [key] })) as { windowEnd: bigint };
+  const deadline = BigInt(b.windowEnd) - GRACE; // reveals are refused from here on
+  for (let i = 0; i < 40; i++) {
+    keeper(jobs);
+    const st = (await t.sql`select status from keeper_jobs where job_key = ${key.toLowerCase()}`)[0]?.status;
+    if (st === "revealed") {
+      const executeAt = (await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "executeAfter", args: [key] })) as bigint;
+      return lastWithout === undefined ? { executeAt } : { executeAt, lastWithout };
+    }
+    lastWithout = await now();
+    const left = deadline - lastWithout;
+    const step = left / 2n > 7_200n ? 7_200n : left / 2n > 30n ? left / 2n : 30n; // never jump past the deadline
+    await warpTo(lastWithout + step);
+  }
+  throw new Error("the keeper never revealed");
+}
+
 async function now(): Promise<bigint> {
   return (await pub.getBlock({ blockTag: "latest" })).timestamp;
 }
@@ -247,20 +268,14 @@ describe("keeper on anvil", () => {
     expect(keeper("execute")).toContain("execute: ok actions=0");
     expect((await book(0n)).executed).toBe(false);
 
-    keeper("topups,roundups,sweep,beacon"); // reveal
     const key = beaconKey(tsla(), w1);
-    const executeAt = (await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "executeAfter", args: [key] })) as bigint;
+    const { executeAt, lastWithout } = await revealByKeeper(key); // reveals only once the time has come
     expect(executeAt).toBeGreaterThanOrEqual(w1);
     expect(executeAt).toBeLessThan(w1 + DAY - GRACE);
+    expect(executeAt).toBeLessThanOrEqual(await now());
+    if (lastWithout !== undefined) expect(executeAt).toBeGreaterThan(lastWithout); // never published early
     expect((await t.sql`select status from keeper_jobs where job_key = ${key.toLowerCase()}`)[0]!.status).toBe("revealed");
 
-    if (executeAt > (await now()) + 1n) {
-      await warpTo(executeAt - 1n);
-      expect(cycle()).toContain("execute: ok actions=0");
-      expect((await book(0n)).executed).toBe(false);
-      const early = await pub.simulateContract({ address: dep.crowdBuy, abi: crowdAbi, functionName: "execute", args: [tsla()], account: ANVIL_ADDR_1 }).catch((e) => e);
-      expect(String(early)).toContain("TooEarly");
-    }
     await warpTo((executeAt > (await now()) ? executeAt : await now()) + 1n);
     expect(cycle()).toContain("execute: ok actions=1");
     const b0 = await book(0n);
@@ -315,11 +330,11 @@ describe("keeper on anvil", () => {
     const w4 = w3 + DAY;
     // Skip all of w3. Come back at w4's start: w4 was committed before the outage, so it reveals and runs.
     await warpTo(w4 + 1n);
-    keeper();
-    const executeAt = (await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "executeAfter", args: [beaconKey(tsla(), w4)] })) as bigint;
+    const { executeAt } = await revealByKeeper(beaconKey(tsla(), w4), "beacon");
     expect(executeAt).toBeLessThan(w4 + DAY - GRACE);
     if (!(await book(2n)).executed) {
-      await warpTo(executeAt + 1n);
+      const n = await now();
+      await warpTo((executeAt > n ? executeAt : n) + 1n);
       expect(keeper()).toContain("execute: ok actions=1");
     }
     expect((await book(2n)).executed).toBe(true);

@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringToHex, zeroHash, type Address } from "viem";
 import { accountAbi, guardAbi, beaconAbi } from "@/abi/treasury-desks";
-import { beaconKey, dayStart, DAY } from "./beacon";
+import { privateKeyToAccount } from "viem/accounts";
+import { beaconKey, dayStart, DAY, offsetOf, secretFor } from "./beacon";
 import { loadConfig } from "./runner-config";
 import { MemoryActionLog } from "./log";
 import { attempt, equityRunData, executeArgs, wrapData, type DeskContext, type Op } from "./runner";
@@ -172,23 +173,34 @@ describe("treasury desks on anvil (balanced template, 100k USDG)", () => {
     if (!res.ok) expect(res.rejection).toMatchObject({ code: 1, reason: "R1_DESK_SCOPE" });
   }, 60_000);
 
-  test("day 1: reveal, rebalance at the beacon time, sweep; weights end inside the bands", async () => {
+  /** The desk's reveal time for its day-`d` beacon (it reveals only then: earlier would publish the time). */
+  async function revealAt(d: bigint): Promise<bigint> {
+    const acct = privateKeyToAccount(KEYS.equity as `0x${string}`);
+    const key = beaconKey(kit.a.account!, d);
+    const secret = await secretFor((k) => acct.signMessage({ message: { raw: k } }), key);
+    return d + offsetOf(secret, key, d, d + DAY, 3600n);
+  }
+
+  test("day 1: reveal at the beacon time, rebalance, sweep; weights end inside the bands", async () => {
     if (!ready) return;
     const d1 = dayStart(await kit.now()) + DAY;
     await kit.warpTo(d1 + 60n);
     await kit.refreshFeeds();
-    desks(); // reveals (and rebalances if the revealed time already passed)
+    const at = await revealAt(d1);
     const key = beaconKey(kit.a.account!, d1);
-    const b = await kit.pub.readContract({ address: kit.a.beacon!, abi: beaconAbi, functionName: "beacon", args: [key] });
-    expect(b.executeAt).toBeGreaterThan(0n); // revealed
-    expect(b.executeAt).toBeLessThan(d1 + DAY - 3600n);
-    if ((await kit.now()) < b.executeAt) {
-      // Not yet: nothing traded before the beacon time.
-      expect((await rows()).some((x) => x.action === "buy" && x.status === "sent")).toBe(false);
-      await kit.warpTo(b.executeAt);
-      await kit.refreshFeeds();
+    if ((await kit.now()) < at) {
       desks();
+      // Not yet: not revealed (the time stays private) and nothing traded before the beacon time.
+      const early = await kit.pub.readContract({ address: kit.a.beacon!, abi: beaconAbi, functionName: "beacon", args: [key] });
+      expect(early.executeAt).toBe(0n);
+      expect((await rows()).some((x) => x.action === "buy" && x.status === "sent")).toBe(false);
+      await kit.warpTo(at);
+      await kit.refreshFeeds();
     }
+    desks(); // reveals and rebalances
+    const b = await kit.pub.readContract({ address: kit.a.beacon!, abi: beaconAbi, functionName: "beacon", args: [key] });
+    expect(b.executeAt).toBe(at); // revealed
+    expect(b.executeAt).toBeLessThan(d1 + DAY - 3600n);
     const r = await rows();
     const buys = r.filter((x) => x.action === "buy" && x.status === "sent");
     expect(buys.length).toBe(3);
@@ -216,11 +228,10 @@ describe("treasury desks on anvil (balanced template, 100k USDG)", () => {
     const d2 = dayStart(await kit.now()) + DAY;
     await kit.warpTo(d2 + 60n);
     await kit.refreshFeeds();
-    desks(); // reveal day 2
     const key = beaconKey(kit.a.account!, d2);
-    const b = await kit.pub.readContract({ address: kit.a.beacon!, abi: beaconAbi, functionName: "beacon", args: [key] });
-    // Let every feed go stale (> 6h) and land past the execution time.
-    await kit.warpTo((b.executeAt > d2 + 7n * 3600n ? b.executeAt : d2 + 7n * 3600n) + 1n);
+    const at = await revealAt(d2);
+    // Let every feed go stale (> 6h) and land at/after the execution time: the desk reveals, then skips.
+    await kit.warpTo(at > d2 + 7n * 3600n ? at : d2 + 7n * 3600n + 1n);
     desks();
     const r1 = await rows();
     expect(r1.some((x) => x.action === "rebalance" && x.status === "skipped" && x.reason === "FEED_HOLD" && x.beacon_key === key)).toBe(true);

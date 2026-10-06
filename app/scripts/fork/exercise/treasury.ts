@@ -10,10 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodeAbiParameters, getAddress, stringToHex, toFunctionSelector, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { issueMessage } from "@/api";
-import { beaconKey, dayStart } from "@/treasury/desks/beacon";
+import { beaconKey, dayStart, offsetOf, secretFor } from "@/treasury/desks/beacon";
 import { exceptionFromChain, JuryService, PgJuryStore } from "@/treasury/jury";
 import { packProofs } from "@/treasury/desks/runner";
-import { FORK_CHAIN_ID, PORTS } from "../lib";
+import { devAccount, FORK_CHAIN_ID, PORTS } from "../lib";
 import { abiOf, expect, j } from "./core";
 import { api, DAY, E18, erc20Abi, HOUR, U, usdgOf, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
@@ -48,12 +48,21 @@ export async function treasury(x: Ctx) {
   const exec = (deskId: string, adapter: Address, data: Hex, proofs: Hex[][], ticket: Hex = ZERO32) => ({ address: t.account!, abi: ACC, functionName: "execute", args: [stringToHex(deskId, { size: 32 }), adapter, data, packProofs(proofs), ticket] }) as const;
   const sharesFor = async (usd: bigint) => r.read<bigint>(steak, abiOf("ERC4626"), "convertToShares", [usd * U]);
 
-  // ---- desk passes until the equity desk has rebalanced at its beacon time (the beacon was revealed earlier)
+  // ---- desk passes until the equity desk has rebalanced at its beacon time. The desk reveals only at that time
+  // (its secret is a signature with its own key, which the harness can re-derive: dev account 5).
   const rows: { desk: string; action: string; status: string; asset: string | null }[] = [];
+  const equityKey = devAccount(5);
   for (let i = 0; i < 3; i++) {
     const day = dayStart(await r.now());
-    const at = await r.read<bigint>(t.beacon!, abiOf("JitterBeacon"), "executeAfter", [beaconKey(t.account!, day)]);
-    if (at !== 2n ** 64n - 1n && (await r.now()) < at) await r.warpTo(at + 1n);
+    const key = beaconKey(t.account!, day);
+    const b = await r.read<{ windowStart: bigint; windowEnd: bigint; executeAt: bigint }>(t.beacon!, abiOf("JitterBeacon"), "beacon", [key]);
+    let at = await r.read<bigint>(t.beacon!, abiOf("JitterBeacon"), "executeAfter", [key]);
+    if (BigInt(b.windowEnd) !== 0n && BigInt(b.executeAt) === 0n) {
+      const secret = await secretFor((k) => equityKey.signMessage({ message: { raw: k } }), key);
+      const revealAt = BigInt(b.windowStart) + offsetOf(secret, key, BigInt(b.windowStart), BigInt(b.windowEnd), HOUR);
+      if ((await r.now()) < BigInt(b.windowEnd) - HOUR) at = revealAt; // still revealable: go to the reveal time
+    }
+    if (at !== 2n ** 64n - 1n && (await r.now()) < at) await r.warpTo(at);
     rows.push(...(await x.state.deskPass(`day ${(day - dayStart(BigInt(x.dep.genesis as number))) / DAY}`)));
     if (rows.some((w) => w.action === "rebalance_done")) break;
   }
