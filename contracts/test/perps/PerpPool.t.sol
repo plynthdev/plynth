@@ -39,19 +39,20 @@ contract PerpPoolTest is PerpFixture {
         vm.stopPrank();
     }
 
-    function test_pool_shareTransferCarriesCooldown() public {
+    function test_pool_sharesInCooldownCannotBeTransferred() public {
         skip(2 days); // lp's own cooldown is over
         _fund(alice, 100e6);
         vm.startPrank(alice);
         usdg.approve(address(pool), 100e6);
         uint256 shares = pool.deposit(100e6, alice);
+        vm.expectRevert(abi.encodeWithSelector(PerpPool.Cooldown.selector, block.timestamp + 24 hours));
         pool.transfer(bob, shares / 2);
-        pool.transfer(lp, shares / 2);
         vm.stopPrank();
-        assertEq(pool.maxRedeem(bob), 0);
-        assertEq(pool.maxRedeem(lp), 0, "receiving fresh shares restarts the receiver's cooldown");
         skip(24 hours);
-        assertGt(pool.maxRedeem(bob), 0);
+        _refresh();
+        vm.prank(alice);
+        pool.transfer(bob, shares / 2);
+        assertGt(pool.maxRedeem(bob), 0, "shares past cooldown arrive free");
     }
 
     function test_pool_withdrawCappedByReserve() public {

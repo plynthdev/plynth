@@ -21,8 +21,9 @@ interface IPerpMarketValuation {
 /// `liquidAssets >= totalReserved` always holds: whatever prices do, every capped trader profit can be paid.
 ///
 /// Share price (`totalAssets`) also nets the markets' unrealized trader PnL, so an LP cannot leave just before
-/// traders realize a gain. Deposits start a 24h redeem cooldown on the receiver (and on anyone the shares
-/// are transferred to), so LPs cannot sandwich an oracle update.
+/// traders realize a gain. Deposits start a 24h redeem cooldown on the receiver, and shares cannot leave an
+/// account (redeem or transfer) during its cooldown, so LPs cannot sandwich an oracle update. A transfer never
+/// re-dates the receiver: otherwise anyone could freeze any LP's exit with 0-value or 1-wei transfers.
 contract PerpPool is ERC4626, Ownable2Step {
     using SafeERC20 for IERC20;
 
@@ -53,6 +54,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     error Cooldown(uint256 until);
     error PoolCapacity(uint256 liquid, uint256 reserved);
     error CollateralUnderflow();
+    error ZeroAmount();
 
     modifier onlyMarket() {
         if (!isMarket[msg.sender]) revert NotMarket();
@@ -139,11 +141,13 @@ contract PerpPool is ERC4626, Ownable2Step {
     /// anyone would let a stranger lock an LP in forever with 1 wei.
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
+        if (assets == 0) revert ZeroAmount();
         return super.deposit(assets, receiver);
     }
 
     function mint(uint256 shares, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
+        if (shares == 0) revert ZeroAmount();
         return super.mint(shares, receiver);
     }
 
@@ -162,10 +166,12 @@ contract PerpPool is ERC4626, Ownable2Step {
         if (liquidAssets() < totalReserved) revert PoolCapacity(liquidAssets(), totalReserved);
     }
 
-    /// Transferred shares carry the stricter cooldown, so a transfer cannot skip it.
+    /// Shares in cooldown cannot be transferred (any amount, including 0), so a transfer cannot skip the
+    /// cooldown; the receiver's own cooldown is left alone.
     function _update(address from, address to, uint256 value) internal override {
-        if (from != address(0) && to != address(0) && lastDepositAt[from] > lastDepositAt[to]) {
-            lastDepositAt[to] = lastDepositAt[from];
+        if (from != address(0) && to != address(0)) {
+            uint256 until = lastDepositAt[from] + REDEEM_COOLDOWN;
+            if (block.timestamp < until) revert Cooldown(until);
         }
         super._update(from, to, value);
     }
