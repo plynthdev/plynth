@@ -27,10 +27,10 @@ import {
 import { devWalletAllowed, forkConfig, type ForkConfig } from "./config";
 import { devWallet } from "./dev-wallet";
 
-export function plynthForkChain(cfg: Pick<ForkConfig, "chainId" | "rpcUrl">) {
+export function plynthForkChain(cfg: Pick<ForkConfig, "chainId" | "rpcUrl"> & { chainName?: string }) {
   return defineChain({
     id: cfg.chainId,
-    name: "Plynth fork",
+    name: cfg.chainName ?? "Plynth fork",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
     testnet: true,

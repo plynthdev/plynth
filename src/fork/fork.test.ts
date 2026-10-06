@@ -67,6 +67,21 @@ describe("config", () => {
   it("VITE_FORK=0 brings back the preview dashboard", () => {
     expect(readForkConfig({ VITE_FORK: "0" }).enabled).toBe(false);
   });
+  it("testnet profile (.env.testnet.local): chain 46630 named Robinhood Chain Testnet, public RPC, dev wallet refused", () => {
+    const c = readForkConfig({
+      VITE_RPC_URL: "https://rpc.testnet.chain.robinhood.com",
+      VITE_CHAIN_ID: "46630",
+      VITE_DEV_WALLET: "0",
+    });
+    expect(c).toMatchObject({ chainId: 46630, chainName: "Robinhood Chain Testnet", devWalletFlag: false });
+    expect(plynthForkChain(c).name).toBe("Robinhood Chain Testnet");
+    // Even with the flag forced on, the anvil key is never offered for a real chain.
+    expect(devWalletAllowed({ devWalletFlag: true, chainId: 46630 }, "localhost")).toBe(false);
+  });
+  it("names the fork network 'Plynth fork' unless VITE_CHAIN_NAME says otherwise", () => {
+    expect(readForkConfig({}).chainName).toBe("Plynth fork");
+    expect(readForkConfig({ VITE_CHAIN_NAME: "Mine" }).chainName).toBe("Mine");
+  });
   it("refuses a malformed chain id", () => {
     expect(() => readForkConfig({ VITE_CHAIN_ID: "abc" })).toThrow(/VITE_CHAIN_ID/);
     expect(() => readForkConfig({ VITE_CHAIN_ID: "0" })).toThrow(/VITE_CHAIN_ID/);

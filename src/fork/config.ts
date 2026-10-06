@@ -8,6 +8,8 @@ export type ForkEnv = {
   VITE_CHAIN_ID?: string;
   VITE_RELAYER_URL?: string;
   VITE_DEV_WALLET?: string;
+  /** Network name shown to the wallet: "Plynth fork" (31337) or "Robinhood Chain Testnet" (46630 profile). */
+  VITE_CHAIN_NAME?: string;
   DEV?: boolean;
 };
 
@@ -22,6 +24,7 @@ export type ForkConfig = {
   relayerUrl: string;
   rpcUrl: string;
   chainId: number;
+  chainName: string;
   /** VITE_DEV_WALLET=1: the anvil dev-key connector may be offered (still only on a localhost page). */
   devWalletFlag: boolean;
 };
@@ -31,7 +34,11 @@ export const DEFAULTS = {
   rpcUrl: "http://127.0.0.1:8545",
   relayerUrl: "http://127.0.0.1:8791",
   chainId: 31337,
+  chainName: "Plynth fork",
 } as const;
+
+/** Robinhood Chain testnet (the `vite dev --mode testnet` profile, .env.testnet.local). */
+export const TESTNET_CHAIN_ID = 46630;
 
 /** Paths the Vite dev server proxies to the API and the relayer (vite.config.ts), so no CORS setup is needed. */
 export const PROXY = {
@@ -55,6 +62,7 @@ export function readForkConfig(env: ForkEnv): ForkConfig {
     relayerUrl,
     rpcUrl,
     chainId,
+    chainName: env.VITE_CHAIN_NAME?.trim() || (chainId === TESTNET_CHAIN_ID ? "Robinhood Chain Testnet" : DEFAULTS.chainName),
     apiBase: env.DEV ? PROXY.api : apiUrl,
     relayerBase: env.DEV ? PROXY.relayer : relayerUrl,
     devWalletFlag: env.VITE_DEV_WALLET === "1",

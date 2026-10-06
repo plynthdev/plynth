@@ -13,7 +13,7 @@ import {
   type Settings,
   type Statements,
 } from "./api";
-import { forkConfig } from "./config";
+import { forkConfig, TESTNET_CHAIN_ID } from "./config";
 import {
   chartPoints,
   esc,
@@ -408,7 +408,7 @@ function html(path: string, kit: DashboardKit): string {
     ? `<button class="solid-button" data-action="disconnect" title="${acct.address}">${shortHash(acct.address)} · DISCONNECT</button>`
     : `<button class="solid-button" data-action="connect">CONNECT WALLET</button>${dev ? `<button class="solid-button" data-action="connect-dev">DEV WALLET</button>` : ""}`;
   const body = !acct
-    ? `<section class="dash-panel"><p class="mono">LOCAL FORK · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “Plynth fork” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with an imported anvil dev account${dev ? ", or the dev wallet" : ""}. Never import a real wallet.</p></section>`
+    ? `<section class="dash-panel"><p class="mono">${cfg.chainId === TESTNET_CHAIN_ID ? "TESTNET" : "LOCAL FORK"} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${cfg.chainId === TESTNET_CHAIN_ID ? "a testnet-only account (mock USDG, testnet ETH)" : `an imported anvil dev account${dev ? ", or the dev wallet" : ""}`}. Never import a real wallet.</p></section>`
     : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE LOCAL FORK…</p>` : ""}${tabHtml(tab)}`;
   return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono">LOCAL FORK · ${cfg.chainId}</span>${
     dev

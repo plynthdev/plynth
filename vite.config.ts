@@ -12,11 +12,16 @@ import { loadEnv, searchForWorkspaceRoot, type Plugin } from "vite";
 // Local-fork wiring (branch local-fork-testing only): `vite dev` proxies the fork stack's API and relayer, so the
 // browser never makes a cross-origin call (the API's CORS list and the relayer need no change), and serves the
 // fork's deployment file. Targets come from VITE_API_URL / VITE_RELAYER_URL (.env.local).
-const env = loadEnv(
-  process.env.NODE_ENV === "production" ? "production" : "development",
-  process.cwd(),
-  "",
-);
+// `vite dev --mode testnet` (bun run dev:testnet) loads .env.testnet.local: Robinhood Chain testnet 46630, the
+// public testnet RPC, the testnet stack's API/relayer on this Mac, app/deployments/46630.json, no dev wallet.
+const modeAt = process.argv.indexOf("--mode");
+const MODE =
+  modeAt > 0 && process.argv[modeAt + 1]
+    ? process.argv[modeAt + 1]!
+    : process.env.NODE_ENV === "production"
+      ? "production"
+      : "development";
+const env = loadEnv(MODE, process.cwd(), "");
 const API = (env.VITE_API_URL || "http://127.0.0.1:8789").replace(/\/+$/, "");
 const RELAYER = (env.VITE_RELAYER_URL || "http://127.0.0.1:8791").replace(/\/+$/, "");
 const DEPLOYMENT = resolve(env.FORK_DEPLOYMENT_JSON || "../backend/app/deployments/fork.json");
