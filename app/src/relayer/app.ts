@@ -7,7 +7,8 @@
 // Hidden Vault withdraws (todo 16). POST /withdraw {proof, pub}: shape check -> rate limit per IP ->
 // recipient is not a Plynth contract -> relayerFee >= the configured minimum for the asset -> one in flight per
 // nullifier -> nullifier unspent and root known (on-chain reads) -> eth_call simulation -> send -> { txHash }.
-// The proof binds recipient, amount and fee, so the relayer cannot redirect funds; it keeps pub.relayerFee.
+// The proof binds recipient, amount, fee and the encrypted change (ext_hash), so the relayer cannot redirect
+// funds or strand the change note by swapping its ciphertext; it keeps pub.relayerFee.
 import { claimDomain, claimTypes, type ClaimMessage } from "@plynth/sdk/stealth";
 import type { PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";

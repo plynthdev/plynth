@@ -42,6 +42,8 @@ export async function prove(circuit: Circuit, inputs: InputMap, bb?: Barretenber
 const ASSET = 0x5fbdb2315678afecb367f032d93f642f64180aa3n; // a token address as uint160
 const RECIPIENT = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8n;
 const s = (x: bigint) => hex(x);
+/** A stand-in ext_hash (keccak256 of the spend's encrypted notes mod p in the pool): any field element works here. */
+const EXT = 0xe7e7n;
 
 export function transferInputs() {
   const secrets = [0x1111n, 0x2222n];
@@ -59,6 +61,7 @@ export function transferInputs() {
     nullifiers: [0, 1].map((i) => s(nullifier(leaves[i]!, secrets[i]!, BigInt(i)))),
     out_commitments: outs.map((o) => s(commitment(ASSET, o.amount, o.owner_pk, o.blinding))),
     asset_id: s(ASSET),
+    ext_hash: s(EXT),
     inputs: [0, 1].map((i) => ({
       amount: s(amounts[i]!),
       secret: s(secrets[i]!),
@@ -83,6 +86,7 @@ export function withdrawInputs() {
     amount: s(600_000n),
     recipient: s(RECIPIENT),
     relayer_fee: s(1_000n),
+    ext_hash: s(EXT),
     in_amount: s(1_000_000n),
     in_secret: s(secret),
     in_blinding: s(0xd1n),
@@ -113,6 +117,7 @@ export function swapInputs() {
     min_out: s(990_000n),
     out_partial: s(partialCommitment(USDG, ownerPk(secret), 0xe3n)),
     deadline: s(1_800_000_000n),
+    ext_hash: s(EXT),
     in_is_v2: false,
     in_amount: s(1_000_000n),
     in_secret: s(secret),
@@ -137,6 +142,7 @@ export function settleInputs() {
     root: s(tree.root),
     nullifier_hash: s(nullifier(mine, secret, 1n)),
     out_commitment: s(commitment(USDG, 1_234_567n, ownerPk(secret), 0xf2n)),
+    ext_hash: s(EXT),
     asset_id: s(USDG),
     amount: s(1_234_567n),
     in_secret: s(secret),

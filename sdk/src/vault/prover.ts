@@ -3,12 +3,12 @@
 // (compact copies of circuits/<c>/target, see scripts/sync-circuits.ts).
 import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js";
 import { Noir } from "@noir-lang/noir_js";
-import { getAddress, type Address, type Hex } from "viem";
+import { encodeAbiParameters, getAddress, keccak256, type Address, type Hex } from "viem";
 import transferArtifact from "./artifacts/transfer.json" with { type: "json" };
 import withdrawArtifact from "./artifacts/withdraw.json" with { type: "json" };
 import { encryptNote } from "./ecies";
 import type { VaultKeys } from "./keys";
-import { MAX_RAW, TREE_DEPTH, commitmentOf, nullifierOf, randomField, toBytes32 } from "./note";
+import { MAX_RAW, P, TREE_DEPTH, commitmentOf, nullifierOf, randomField, toBytes32 } from "./note";
 import type { OwnedNote } from "./sync";
 import type { NoteTree } from "./tree";
 
@@ -45,6 +45,17 @@ export async function proveCircuit(program: { bytecode: string; abi: unknown }, 
 }
 
 const f = (x: bigint) => toBytes32(x);
+
+/** ShieldedPool/ShieldedTrade.extHashOf: keccak256(data) mod p. The public input that binds a spend's encrypted
+ *  notes to its proof, so whoever submits it (a relayer) cannot replace them. */
+export function extHashOf(data: Hex): bigint {
+  return BigInt(keccak256(data)) % P;
+}
+
+/** abi.encode(bytes, bytes): what transfer (two output notes) and swap (change, output) hash. */
+export function encodeTwoNotes(a: Hex, b: Hex): Hex {
+  return encodeAbiParameters([{ type: "bytes" }, { type: "bytes" }], [a, b]);
+}
 
 /** Throws unless `n` is inserted, unspent and in the local tree. v2 notes (swap outputs) need `allowV2`
  * (the swap circuit); transfer/withdraw take v1 only, so settle a v2 note first (proveSettle). */
@@ -87,19 +98,22 @@ export async function proveTransfer(p: {
     { raw: total - p.raw, ownerPk: keys.ownerPk, blinding: randomField(), viewingPub: keys.viewingPub },
   ];
   const outCommitments = outs.map((o) => commitmentOf(assetId, o.raw, o.ownerPk, o.blinding));
+  // Encrypted before proving: the proof binds them (ext_hash), so they cannot be swapped on the way to the chain.
+  const encryptedNotes = [encryptNote({ asset, raw: outs[0]!.raw, blinding: outs[0]!.blinding }, outs[0]!.viewingPub), encryptNote({ asset, raw: outs[1]!.raw, blinding: outs[1]!.blinding }, outs[1]!.viewingPub)] as const;
 
   const { proof } = await proveCircuit(transferArtifact, {
     root: f(root),
     nullifiers: nullifiers.map(f),
     out_commitments: outCommitments.map(f),
     asset_id: f(assetId),
+    ext_hash: f(extHashOf(encodeTwoNotes(encryptedNotes[0], encryptedNotes[1]))),
     inputs: ins.map((i) => ({ amount: f(i.amount), secret: f(i.secret), blinding: f(i.blinding), index: f(i.index), path: i.path.map(f) })),
     outputs: outs.map((o) => ({ amount: f(o.raw), owner_pk: f(o.ownerPk), blinding: f(o.blinding) })),
   });
   return {
     proof,
     pub: { root: f(root), nullifiers: [f(nullifiers[0]!), f(nullifiers[1]!)], outCommitments: [f(outCommitments[0]!), f(outCommitments[1]!)], asset },
-    encryptedNotes: [encryptNote({ asset, raw: outs[0]!.raw, blinding: outs[0]!.blinding }, outs[0]!.viewingPub), encryptNote({ asset, raw: outs[1]!.raw, blinding: outs[1]!.blinding }, outs[1]!.viewingPub)],
+    encryptedNotes,
     outputs: outs.map(({ raw, ownerPk, blinding }) => ({ raw, ownerPk, blinding })),
   };
 }
@@ -126,6 +140,7 @@ export async function proveWithdraw(p: {
   const change = note.raw - p.amount;
   const changeBlinding = randomField();
   const changeCommitment = commitmentOf(assetId, change, keys.ownerPk, changeBlinding);
+  const encryptedChange = encryptNote({ asset, raw: change, blinding: changeBlinding }, keys.viewingPub);
   const { proof } = await proveCircuit(withdrawArtifact, {
     root: f(root),
     nullifier_hash: f(nullifier),
@@ -134,6 +149,7 @@ export async function proveWithdraw(p: {
     amount: f(p.amount),
     recipient: f(BigInt(recipient)),
     relayer_fee: f(fee),
+    ext_hash: f(extHashOf(encryptedChange)),
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
     in_blinding: f(note.blinding),
@@ -153,7 +169,7 @@ export async function proveWithdraw(p: {
       amount: p.amount,
       recipient,
       relayerFee: fee,
-      encryptedChange: encryptNote({ asset, raw: change, blinding: changeBlinding }, keys.viewingPub),
+      encryptedChange,
     },
   };
 }

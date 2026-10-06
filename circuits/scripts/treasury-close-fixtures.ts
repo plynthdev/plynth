@@ -9,6 +9,7 @@
 // Also writes a withdraw proof that unshields the AAPL 200 note in full to the account (relayer fee 0).
 // Hex is written without 0x and field elements in decimal so public-guard's key pattern does not fire.
 import { writeFileSync } from "node:fs";
+import { keccak256 } from "viem";
 import { join } from "node:path";
 import { Barretenberg } from "@aztec/bb.js";
 import { cpus } from "node:os";
@@ -91,6 +92,7 @@ if (import.meta.main) {
     amount: s(200n * E18),
     recipient: s(ACCOUNT),
     relayer_fee: s(0n),
+    ext_hash: s(BigInt(keccak256("0x")) % P), // the sleeve's unshield publishes no encrypted change
     in_amount: s(200n * E18),
     in_secret: s(SECRET),
     in_blinding: s(0x52n),

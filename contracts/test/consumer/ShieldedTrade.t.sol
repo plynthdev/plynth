@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ShieldedPool} from "../../src/consumer/ShieldedPool.sol";
+import {Poseidon2} from "../../src/consumer/verifiers/Poseidon2.sol";
 import {ShieldedTrade} from "../../src/consumer/ShieldedTrade.sol";
 import {StockRouter} from "../../src/core/StockRouter.sol";
 import {Poseidon2} from "../../src/consumer/verifiers/Poseidon2.sol";
@@ -223,7 +224,7 @@ contract ShieldedTradeTest is ShieldedTradeBase {
 
         ShieldedTrade.PublicSwap memory s = _pub(address(stock), 1e18, 5, address(usdg), 7);
         s.root = p2.currentRoot();
-        bytes32[] memory inputs = new bytes32[](10);
+        bytes32[] memory inputs = new bytes32[](11);
         inputs[0] = s.root;
         inputs[1] = s.nullifier;
         inputs[2] = s.changeCommitment;
@@ -234,6 +235,7 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         inputs[7] = bytes32(uint256(7));
         inputs[8] = s.outPartial;
         inputs[9] = bytes32(uint256(s.deadline));
+        inputs[10] = bytes32(uint256(keccak256(abi.encode(bytes(""), bytes("")))) % Poseidon2.P); // ext_hash
         ev.expect_(inputs);
         t2.swap("", s, BPS, "", "");
         assertTrue(p2.nullifierSpent(s.nullifier));

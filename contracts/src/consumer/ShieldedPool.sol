@@ -37,7 +37,9 @@ interface IHonkVerifier {
 /// settle verifiers. Treat its code as part of this contract for audit purposes.
 ///
 /// Encrypted notes (ECIES to the owner's viewing key, see sdk vault) are opaque bytes here, at
-/// most MAX_NOTE_BYTES each, emitted in `NoteEncrypted` keyed by commitment.
+/// most MAX_NOTE_BYTES each, emitted in `NoteEncrypted` keyed by commitment. A spend's ciphertexts are bound to
+/// its proof (public input ext_hash = keccak256 of them mod p, see extHashOf): the ciphertext is the only copy
+/// of a new note's blinding, so a relayer that could swap it could make the note unspendable.
 contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -290,7 +292,8 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- spends (never gated)
 
-    /// 2-in/2-out private transfer within one asset. Public inputs: root, nullifiers[2], outCommitments[2], asset.
+    /// 2-in/2-out private transfer within one asset. Public inputs: root, nullifiers[2], outCommitments[2], asset,
+    /// extHashOf(abi.encode(encryptedNotes[0], encryptedNotes[1])).
     function transfer(bytes calldata proof, PublicTransfer calldata pub, bytes[2] calldata encryptedNotes)
         external
         nonReentrant
@@ -305,13 +308,14 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         _spend(pub.nullifiers[0]);
         _spend(pub.nullifiers[1]);
 
-        bytes32[] memory inputs = new bytes32[](6);
+        bytes32[] memory inputs = new bytes32[](7);
         inputs[0] = pub.root;
         inputs[1] = pub.nullifiers[0];
         inputs[2] = pub.nullifiers[1];
         inputs[3] = pub.outCommitments[0];
         inputs[4] = pub.outCommitments[1];
         inputs[5] = bytes32(uint256(uint160(pub.asset)));
+        inputs[6] = extHashOf(abi.encode(encryptedNotes[0], encryptedNotes[1]));
         _verify(transferVerifier, proof, inputs);
 
         _insert(pub.outCommitments[0]);
@@ -323,7 +327,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     /// Spends one note: `amount` leaves the pool (amount - relayerFee to recipient, relayerFee to msg.sender)
     /// and the change note goes back into the tree. Public inputs: root, nullifier, changeCommitment, asset,
-    /// amount, recipient, relayerFee. Reverts only on a bad proof/root/nullifier or at the token itself
+    /// amount, recipient, relayerFee, extHashOf(encryptedChange). Reverts only on a bad proof/root/nullifier or at the token itself
     /// (e.g. an issuer freeze of USDG), never on owner, pause or keeper state.
     function withdraw(bytes calldata proof, PublicWithdraw calldata pub) external nonReentrant {
         if (pub.encryptedChange.length > MAX_NOTE_BYTES) revert NoteTooLarge();
@@ -333,7 +337,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         _knownRoot(pub.root);
         _spend(pub.nullifier);
 
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](8);
         inputs[0] = pub.root;
         inputs[1] = pub.nullifier;
         inputs[2] = pub.changeCommitment;
@@ -341,6 +345,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         inputs[4] = bytes32(pub.amount);
         inputs[5] = bytes32(uint256(uint160(pub.recipient)));
         inputs[6] = bytes32(pub.relayerFee);
+        inputs[7] = extHashOf(pub.encryptedChange);
         _verify(withdrawVerifier, proof, inputs);
 
         (, bytes32 root) = _insert(pub.changeCommitment);
@@ -402,6 +407,11 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     function isKnownRoot(bytes32 root) public view returns (bool) {
         uint256 seq = rootSeq[root];
         return seq != 0 && rootCount - seq < ROOT_HISTORY;
+    }
+
+    /// keccak256(data) mod p: the public input binding a spend's encrypted notes to its proof.
+    function extHashOf(bytes memory data) public pure returns (bytes32) {
+        return bytes32(uint256(keccak256(data)) % P);
     }
 
     /// The note commitment for (asset, raw, ownerPk, blinding), as deposits compute it.

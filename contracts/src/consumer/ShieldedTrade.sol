@@ -168,17 +168,19 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
         bytes calldata encryptedChange,
         bytes calldata encryptedOut
     ) external nonReentrant returns (uint256 out, bytes32 outCommitment) {
-        Kind kind = _begin(proof, pub);
+        Kind kind = _begin(proof, pub, extHashOf(abi.encode(encryptedChange, encryptedOut)));
         out = _trade(pub, kind, maxSlippageBps);
         outCommitment = _finish(pub, kind, out, encryptedChange, encryptedOut);
     }
 
     /// Checks, spends the nullifier and verifies the proof.
-    function _begin(bytes calldata proof, PublicSwap calldata pub) private returns (Kind kind) {
+    function _begin(bytes calldata proof, PublicSwap calldata pub, bytes32 extHash) private returns (Kind kind) {
         kind = kindOf(pub.assetIn, pub.assetOut);
         _checkSwap(pub, kind);
         pool.tradeSpend(pub.root, pub.nullifier);
-        _verify(swapVerifier, proof, _swapInputs(pub));
+        bytes32[] memory inputs = _swapInputs(pub);
+        inputs[10] = extHash;
+        _verify(swapVerifier, proof, inputs);
     }
 
     /// Takes amountIn from the pool, pays the relayer, trades the rest; enforces minOut.
@@ -219,10 +221,11 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
     {
         _field(outCommitment);
         pool.tradeSpend(root, nullifier);
-        bytes32[] memory inputs = new bytes32[](3);
+        bytes32[] memory inputs = new bytes32[](4);
         inputs[0] = root;
         inputs[1] = nullifier;
         inputs[2] = outCommitment;
+        inputs[3] = extHashOf(encryptedOut);
         _verify(settleVerifier, proof, inputs);
         bytes32[] memory leaves = new bytes32[](1);
         leaves[0] = outCommitment;
@@ -233,6 +236,12 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------- views
+
+    /// keccak256(data) mod p: the public input that binds a spend's encrypted notes to its proof (swap:
+    /// abi.encode(encryptedChange, encryptedOut); settle: encryptedOut), so a relayer cannot swap them.
+    function extHashOf(bytes memory data) public pure returns (bytes32) {
+        return bytes32(uint256(keccak256(data)) % P);
+    }
 
     /// The trade a pair means; reverts for any other pair.
     function kindOf(address assetIn, address assetOut) public view returns (Kind) {
@@ -279,7 +288,7 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
     }
 
     function _swapInputs(PublicSwap calldata pub) private pure returns (bytes32[] memory inputs) {
-        inputs = new bytes32[](10);
+        inputs = new bytes32[](11); // [10] = ext hash, set by the caller
         inputs[0] = pub.root;
         inputs[1] = pub.nullifier;
         inputs[2] = pub.changeCommitment;

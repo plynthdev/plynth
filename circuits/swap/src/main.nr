@@ -2,7 +2,7 @@
 // park or unpark, keep the rest as a v1 change note, and fix the output note except for its amount.
 //
 // Public: root, nullifier, change_commitment, asset_in, amount_in, relayer_fee, asset_out, min_out,
-//         out_partial, deadline.
+//         out_partial, deadline, ext_hash.
 //
 // The output amount is only known after the on-chain swap, so the proof commits to
 //   out_partial = H(asset_out, out_owner_pk, out_blinding)
@@ -10,6 +10,11 @@
 // (a v2 note, see hidden/src/lib.nr). Every public input is bound by the proof, so a relayer cannot change
 // the output asset, owner, minimum, deadline or fee. The input note may be v1 or v2 (a previous swap's output
 // can be swapped again without settling it first).
+//
+// ext_hash (public) = keccak256 of the encrypted note(s) this spend publishes, mod p (the pool recomputes it from
+// calldata). It is not used in any constraint: being a public input binds it to the proof, so whoever submits
+// the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
+// ext_hash = keccak256(abi.encode(encryptedChange, encryptedOut)) mod p.
 
 use hidden::{commitment, commitment_any, merkle_root, nullifier, owner_pk, partial_commitment, TREE_DEPTH};
 
@@ -24,6 +29,7 @@ fn main(
     min_out: pub Field,
     out_partial: pub Field,
     deadline: pub Field,
+    ext_hash: pub Field,
     in_is_v2: bool,
     in_amount: Field,
     in_secret: Field,
@@ -135,6 +141,7 @@ fn run(c: Case) {
         c.min_out,
         c.out_partial,
         c.deadline,
+        0x1234,
         c.in_is_v2,
         c.in_amount,
         c.in_secret,

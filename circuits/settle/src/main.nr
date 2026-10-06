@@ -2,7 +2,12 @@
 // same asset and amount, so transfer/withdraw (and threshold proofs) can use it. Nothing leaves the pool and
 // nothing about the note is public except its nullifier and the new commitment.
 //
-// Public: root, nullifier, out_commitment.
+// Public: root, nullifier, out_commitment, ext_hash.
+//
+// ext_hash (public) = keccak256 of the encrypted note(s) this spend publishes, mod p (the pool recomputes it from
+// calldata). It is not used in any constraint: being a public input binds it to the proof, so whoever submits
+// the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
+// ext_hash = keccak256(encryptedOut) mod p.
 
 use hidden::{commitment, commitment_v2, merkle_root, nullifier, owner_pk, partial_commitment, TREE_DEPTH};
 
@@ -10,6 +15,7 @@ fn main(
     root: pub Field,
     nullifier_hash: pub Field,
     out_commitment: pub Field,
+    ext_hash: pub Field,
     asset_id: Field,
     amount: Field,
     in_secret: Field,
@@ -64,6 +70,7 @@ fn run(c: Case) {
         c.root,
         c.nullifier_hash,
         c.out_commitment,
+        0x1234,
         c.asset_id,
         c.amount,
         c.in_secret,

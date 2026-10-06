@@ -89,8 +89,9 @@ contract TransferVerifierTest is VerifierCase {
 
     /// Public input order is the pool's ABI: root, nullifier[2], outCommitment[2], assetId.
     function test_publicInputLayout() public view {
-        assertEq(pub.length, 6);
+        assertEq(pub.length, 7);
         assertEq(uint256(pub[5]), uint256(uint160(0x5FbDB2315678afecb367f032d93F642f64180aa3)));
+        assertEq(uint256(pub[6]), 0xe7e7, "ext_hash (the fixture's stand-in)");
     }
 
     function test_rejectsSwappedNullifiers() public view {
@@ -117,10 +118,11 @@ contract WithdrawVerifierTest is VerifierCase {
 
     /// root, nullifier, changeCommitment, assetId, amount, recipient, relayerFee.
     function test_publicInputLayout() public view {
-        assertEq(pub.length, 7);
+        assertEq(pub.length, 8);
         assertEq(uint256(pub[4]), 600_000);
         assertEq(uint256(pub[5]), uint256(uint160(0x70997970C51812dc3A010C7d01b50e0d17dc79C8)));
         assertEq(uint256(pub[6]), 1_000);
+        assertEq(uint256(pub[7]), 0xe7e7, "ext_hash (the fixture's stand-in)");
     }
 
     /// A relayer cannot redirect the payout or raise its fee.
@@ -149,7 +151,8 @@ contract SwapVerifierTest is VerifierCase {
     /// ShieldedTrade order: root, nullifier, changeCommitment, assetIn, amountIn, relayerFee, assetOut, minOut,
     /// outPartial, deadline.
     function test_publicInputLayout() public view {
-        assertEq(pub.length, 10);
+        assertEq(pub.length, 11);
+        assertEq(uint256(pub[10]), 0xe7e7, "ext_hash (the fixture's stand-in)");
         assertEq(uint256(pub[3]), uint256(uint160(0x5FbDB2315678afecb367f032d93F642f64180aa3)));
         assertEq(uint256(pub[4]), 600_000);
         assertEq(uint256(pub[5]), 1_000);
@@ -180,6 +183,7 @@ contract SettleVerifierTest is VerifierCase {
     }
 
     function test_publicInputLayout() public view {
-        assertEq(pub.length, 3);
+        assertEq(pub.length, 4);
+        assertEq(uint256(pub[3]), 0xe7e7, "ext_hash (the fixture's stand-in)");
     }
 }

@@ -1,10 +1,15 @@
 // Hidden Vault 2-in/2-out shielded transfer of a single asset.
 //
-// Public: root, nullifiers[2], out_commitments[2], asset_id.
+// Public: root, nullifiers[2], out_commitments[2], asset_id, ext_hash.
 // Proves: each non-dummy input note is in the tree under `root` and is owned by the prover,
 // each nullifier is that note's nullifier, the two nullifiers differ, every amount < 2^128,
 // asset_id < 2^160, and sum(in) == sum(out). An input with amount 0 is a dummy: membership is
 // skipped (so 1-in transfers work) but its nullifier is still bound, so the pool spends it.
+//
+// ext_hash (public) = keccak256 of the encrypted note(s) this spend publishes, mod p (the pool recomputes it from
+// calldata). It is not used in any constraint: being a public input binds it to the proof, so whoever submits
+// the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
+// ext_hash = keccak256(abi.encode(encryptedNotes[0], encryptedNotes[1])) mod p.
 
 use hidden::{commitment, merkle_root, nullifier, owner_pk, TREE_DEPTH};
 
@@ -27,6 +32,7 @@ fn main(
     nullifiers: pub [Field; 2],
     out_commitments: pub [Field; 2],
     asset_id: pub Field,
+    ext_hash: pub Field,
     inputs: [InputNote; 2],
     outputs: [OutputNote; 2],
 ) {
@@ -101,7 +107,7 @@ fn case(in_amounts: [Field; 2], out_amounts: [Field; 2]) -> Case {
 }
 
 fn run(c: Case) {
-    main(c.root, c.nullifiers, c.out_commitments, ASSET, c.inputs, c.outputs);
+    main(c.root, c.nullifiers, c.out_commitments, ASSET, 0x1234, c.inputs, c.outputs);
 }
 
 #[test]
@@ -187,5 +193,5 @@ fn amount_overflow_input() {
 #[test(should_fail)]
 fn asset_id_must_fit_160_bits() {
     let c = case([1000, 250], [600, 650]);
-    main(c.root, c.nullifiers, c.out_commitments, TWO_POW_128 * TWO_POW_128, c.inputs, c.outputs);
+    main(c.root, c.nullifiers, c.out_commitments, TWO_POW_128 * TWO_POW_128, 0x1234, c.inputs, c.outputs);
 }

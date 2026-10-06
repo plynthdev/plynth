@@ -11,7 +11,7 @@ import { shieldedTradeAbi } from "./abi";
 import { NOTE_VERSION_PARTIAL, encryptNote } from "./ecies";
 import type { VaultKeys } from "./keys";
 import { MAX_RAW, commitmentOf, nullifierOf, partialCommitmentOf, randomField, toBytes32 } from "./note";
-import { proveCircuit, spendable, type Recipient } from "./prover";
+import { encodeTwoNotes, extHashOf, proveCircuit, spendable, type Recipient } from "./prover";
 import type { OwnedNote } from "./sync";
 import type { NoteTree } from "./tree";
 import type { UnsignedTx } from "./tx";
@@ -70,6 +70,9 @@ export async function proveSwap(p: {
   const changeCommitment = commitmentOf(BigInt(assetIn), change, keys.ownerPk, changeBlinding);
   const outBlinding = randomField();
   const partial = partialCommitmentOf(BigInt(assetOut), to.ownerPk, outBlinding);
+  // Encrypted before proving: the proof binds both (ext_hash), so a relayer cannot replace them.
+  const encryptedChange = encryptNote({ asset: assetIn, raw: change, blinding: changeBlinding }, keys.viewingPub);
+  const encryptedOut = encryptNote({ asset: assetOut, raw: p.minOut, blinding: outBlinding }, to.viewingPub, NOTE_VERSION_PARTIAL);
   const { proof } = await proveCircuit(swapArtifact, {
     root: f(root),
     nullifier_hash: f(nullifier),
@@ -81,6 +84,7 @@ export async function proveSwap(p: {
     min_out: f(p.minOut),
     out_partial: f(partial),
     deadline: f(p.deadline),
+    ext_hash: f(extHashOf(encodeTwoNotes(encryptedChange, encryptedOut))),
     in_is_v2: note.version === 2,
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
@@ -96,8 +100,8 @@ export async function proveSwap(p: {
   return {
     proof,
     pub: { root: f(root), nullifier: f(nullifier), changeCommitment: f(changeCommitment), assetIn, amountIn: p.amountIn, relayerFee: fee, assetOut, minOut: p.minOut, outPartial: f(partial), deadline: p.deadline },
-    encryptedChange: encryptNote({ asset: assetIn, raw: change, blinding: changeBlinding }, keys.viewingPub),
-    encryptedOut: encryptNote({ asset: assetOut, raw: p.minOut, blinding: outBlinding }, to.viewingPub, NOTE_VERSION_PARTIAL),
+    encryptedChange,
+    encryptedOut,
     out: { ownerPk: to.ownerPk, blinding: outBlinding, partial },
   };
 }
@@ -112,10 +116,12 @@ export async function proveSettle(p: { keys: VaultKeys; tree: NoteTree; note: Ow
   const nullifier = nullifierOf(note.commitment, keys.spendingSecret, BigInt(note.leafIndex));
   const blinding = randomField();
   const outCommitment = commitmentOf(BigInt(asset), note.raw, keys.ownerPk, blinding);
+  const encryptedOut = encryptNote({ asset, raw: note.raw, blinding }, keys.viewingPub);
   const { proof } = await proveCircuit(settleArtifact, {
     root: f(root),
     nullifier_hash: f(nullifier),
     out_commitment: f(outCommitment),
+    ext_hash: f(extHashOf(encryptedOut)),
     asset_id: f(BigInt(asset)),
     amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
@@ -130,7 +136,7 @@ export async function proveSettle(p: { keys: VaultKeys; tree: NoteTree; note: Ow
     root: f(root),
     nullifier: f(nullifier),
     outCommitment: f(outCommitment),
-    encryptedOut: encryptNote({ asset, raw: note.raw, blinding }, keys.viewingPub),
+    encryptedOut,
     out: { raw: note.raw, blinding },
   };
 }

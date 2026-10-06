@@ -15,7 +15,7 @@ export function compactArtifact(circuit: string): string {
 
 if (import.meta.main) {
   for (const c of CIRCUITS) {
-    writeFileSync(join(root, "packages", "sdk", "src", "vault", "artifacts", `${c}.json`), compactArtifact(c));
+    writeFileSync(join(root, "sdk", "src", "vault", "artifacts", `${c}.json`), compactArtifact(c));
     console.log(`${c}: synced`);
   }
 }

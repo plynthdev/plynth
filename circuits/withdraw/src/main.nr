@@ -1,9 +1,14 @@
 // Hidden Vault withdraw: spend one note, pay `amount` publicly, keep the rest as a change note.
 //
-// Public: root, nullifier, change_commitment, asset_id, amount, recipient, relayer_fee.
+// Public: root, nullifier, change_commitment, asset_id, amount, recipient, relayer_fee, ext_hash.
 // `recipient` and `relayer_fee` are public inputs of the proof, so a relayer that changes
 // either one invalidates it and cannot redirect the funds. The pool pays
 // `amount - relayer_fee` to `recipient` and `relayer_fee` to the relayer.
+//
+// ext_hash (public) = keccak256 of the encrypted note(s) this spend publishes, mod p (the pool recomputes it from
+// calldata). It is not used in any constraint: being a public input binds it to the proof, so whoever submits
+// the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
+// ext_hash = keccak256(encryptedChange) mod p.
 
 use hidden::{commitment, merkle_root, nullifier, owner_pk, TREE_DEPTH};
 
@@ -15,6 +20,7 @@ fn main(
     amount: pub Field,
     recipient: pub Field,
     relayer_fee: pub Field,
+    ext_hash: pub Field,
     in_amount: Field,
     in_secret: Field,
     in_blinding: Field,
@@ -94,6 +100,7 @@ fn run(c: Case) {
         c.amount,
         c.recipient,
         c.relayer_fee,
+        0x1234,
         c.in_amount,
         c.in_secret,
         7,

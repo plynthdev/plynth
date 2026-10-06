@@ -20,6 +20,8 @@ import {
   deriveVaultKeys,
   destroyProver,
   emptyState,
+  encodeTwoNotes,
+  extHashOf,
   encryptNote,
   hash,
   initVault,
@@ -236,7 +238,7 @@ describe("proofs (noir_js + bb.js) and tx builders", () => {
     expect(decryptNote(t.encryptedNotes[1], alice().viewingSecret)).toMatchObject({ raw: 300n });
     expect(t.pub.root).toBe(toBytes32(tree.root()));
     expect(t.pub.nullifiers[0]).toBe(toBytes32(nullifierOf(notes[0]!.commitment, alice().spendingSecret, 1n)));
-    const inputs = [t.pub.root, ...t.pub.nullifiers, ...t.pub.outCommitments, toBytes32(BigInt(ASSET))];
+    const inputs = [t.pub.root, ...t.pub.nullifiers, ...t.pub.outCommitments, toBytes32(BigInt(ASSET)), toBytes32(extHashOf(encodeTwoNotes(t.encryptedNotes[0], t.encryptedNotes[1])))];
     expect(await verifies("transfer", t.proof, inputs)).toBe(true);
     const flipped = [...inputs];
     flipped[3] = toBytes32(BigInt(flipped[3]!) ^ 1n);
@@ -261,7 +263,7 @@ describe("proofs (noir_js + bb.js) and tx builders", () => {
   test("withdraw: public inputs in circuit order, relayer request round-trips, fee <= amount", async () => {
     const { tree, notes } = seeded([1_000n]);
     const w = await proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 600n, recipient: RECIPIENT, relayerFee: 5n });
-    const inputs = [w.pub.root, w.pub.nullifier, w.pub.changeCommitment, toBytes32(BigInt(ASSET)), toBytes32(600n), toBytes32(BigInt(RECIPIENT)), toBytes32(5n)];
+    const inputs = [w.pub.root, w.pub.nullifier, w.pub.changeCommitment, toBytes32(BigInt(ASSET)), toBytes32(600n), toBytes32(BigInt(RECIPIENT)), toBytes32(5n), toBytes32(extHashOf(w.pub.encryptedChange))];
     expect(await verifies("withdraw", w.proof, inputs)).toBe(true);
     expect(decryptNote(w.pub.encryptedChange, alice().viewingSecret)).toMatchObject({ raw: 400n });
     await expect(proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 10n, recipient: RECIPIENT, relayerFee: 11n })).rejects.toThrow(/fee/);

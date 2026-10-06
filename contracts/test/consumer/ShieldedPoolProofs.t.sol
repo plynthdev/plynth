@@ -142,7 +142,7 @@ contract ShieldedPoolProofsTest is Test {
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.withdraw(proof, w);
 
-        // the encrypted change is not bound (opaque); anyone submitting the honest values succeeds
+        // anyone submitting the honest values (including the encrypted change, bound too) succeeds
         w = _withdrawPub();
         vm.prank(makeAddr("anyRelayer"));
         pool.withdraw(proof, w);
@@ -154,5 +154,37 @@ contract ShieldedPoolProofsTest is Test {
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         vm.expectRevert(abi.encodeWithSelector(ShieldedPool.UnknownRoot.selector, w.root));
         pool.withdraw(_hex(".withdraw.proofHex"), w);
+    }
+
+    // ------------------------------------------------------------ S7 (security review 2026-10-06)
+
+    /// A relayer that swaps the encrypted change (the only copy of the change note's blinding) would leave the
+    /// change note unspendable forever. The ciphertext is bound by the proof, so the swap is refused.
+    function test_S7_relayerCannotReplaceTheEncryptedChange() public {
+        _depositAndInsert();
+        (ShieldedPool.PublicTransfer memory t, bytes[2] memory e) = _transferPub();
+        pool.transfer(_hex(".transfer.proofHex"), t, e);
+        bytes memory proof = _hex(".withdraw.proofHex");
+        ShieldedPool.PublicWithdraw memory w = _withdrawPub();
+        w.encryptedChange = hex"00";
+        vm.prank(makeAddr("relayer"));
+        vm.expectRevert(ShieldedPool.InvalidProof.selector);
+        pool.withdraw(proof, w);
+        assertFalse(pool.nullifierSpent(w.nullifier));
+        pool.withdraw(proof, _withdrawPub());
+    }
+
+    /// The same for a transfer's two output notes (a recipient could otherwise never find a payment).
+    function test_S7_relayerCannotReplaceTransferNotes() public {
+        _depositAndInsert();
+        (ShieldedPool.PublicTransfer memory t, bytes[2] memory e) = _transferPub();
+        bytes memory proof = _hex(".transfer.proofHex");
+        bytes[2] memory junk = [e[0], bytes(hex"00")];
+        vm.expectRevert(ShieldedPool.InvalidProof.selector);
+        pool.transfer(proof, t, junk);
+        junk = [e[1], e[0]];
+        vm.expectRevert(ShieldedPool.InvalidProof.selector);
+        pool.transfer(proof, t, junk);
+        pool.transfer(proof, t, e);
     }
 }

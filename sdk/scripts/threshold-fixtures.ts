@@ -80,6 +80,7 @@ if (import.meta.main) {
       nullifier: d(w.pub.nullifier),
       changeCommitment: d(w.pub.changeCommitment),
       amount: w.pub.amount.toString(),
+      encryptedChangeHex: nx(w.pub.encryptedChange),
     },
   };
   writeFileSync(FIXTURE, JSON.stringify(fixture, null, 2) + "\n");

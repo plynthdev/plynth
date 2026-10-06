@@ -136,7 +136,7 @@ contract ThresholdVerifierTest is Test {
             amount: _u(".withdraw.amount"),
             recipient: vm.parseJsonAddress(json, ".recipient"),
             relayerFee: 0,
-            encryptedChange: ""
+            encryptedChange: _hex(".withdraw.encryptedChangeHex") // bound by the proof (ext_hash)
         });
         pool.withdraw(_hex(".withdraw.proofHex"), w);
     }

@@ -33,6 +33,8 @@ import {
   swapTx,
   toBytes32,
   verifyCircuitProof,
+  extHashOf,
+  encodeTwoNotes,
   type OwnedNote,
 } from "../src/vault";
 
@@ -109,9 +111,13 @@ describe("swap and settle proofs", () => {
     expect(BigInt(s.pub.outPartial)).toBe(partialCommitmentOf(BigInt(USDG), alice().ownerPk, s.out.blinding));
     expect(decryptNote(s.encryptedChange, alice().viewingSecret)).toMatchObject({ asset: STOCK, raw: 6n * 10n ** 17n });
     expect(decryptNoteAny(s.encryptedOut, alice().viewingSecret)).toMatchObject({ asset: USDG, version: 2, blinding: s.out.blinding });
-    const inputs = [s.pub.root, s.pub.nullifier, s.pub.changeCommitment, BigInt(STOCK), s.pub.amountIn, s.pub.relayerFee, BigInt(USDG), s.pub.minOut, s.pub.outPartial, s.pub.deadline].map((x) => BigInt(x));
+    const ext = extHashOf(encodeTwoNotes(s.encryptedChange, s.encryptedOut));
+    const inputs = [s.pub.root, s.pub.nullifier, s.pub.changeCommitment, BigInt(STOCK), s.pub.amountIn, s.pub.relayerFee, BigInt(USDG), s.pub.minOut, s.pub.outPartial, s.pub.deadline, ext].map((x) => BigInt(x));
     expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(true);
     inputs[7] = 1n; // a relayer lowering minOut
+    expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
+    inputs[7] = s.pub.minOut;
+    inputs[10] = extHashOf(encodeTwoNotes("0x00", s.encryptedOut)); // S7: a relayer replacing the encrypted change
     expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
 
     const tx = swapTx(TRADE, s, 150);
@@ -132,7 +138,8 @@ describe("swap and settle proofs", () => {
     const st = await proveSettle({ keys: alice(), tree, note });
     expect(BigInt(st.outCommitment)).toBe(commitmentOf(BigInt(USDG), note.raw, alice().ownerPk, st.out.blinding));
     expect(decryptNote(st.encryptedOut, alice().viewingSecret)).toEqual({ asset: USDG, raw: note.raw, blinding: st.out.blinding });
-    expect(await verifyCircuitProof(settleArtifact, st.proof, [st.root, st.nullifier, st.outCommitment].map((x) => BigInt(x)))).toBe(true);
+    expect(await verifyCircuitProof(settleArtifact, st.proof, [st.root, st.nullifier, st.outCommitment, extHashOf(st.encryptedOut)].map((x) => BigInt(x)))).toBe(true);
+    expect(await verifyCircuitProof(settleArtifact, st.proof, [st.root, st.nullifier, st.outCommitment, extHashOf("0x00")].map((x) => BigInt(x)))).toBe(false);
     const d = decodeFunctionData({ abi: shieldedTradeAbi, data: settleTx(TRADE, st).data });
     expect(d.functionName).toBe("settle");
   }, 60_000);

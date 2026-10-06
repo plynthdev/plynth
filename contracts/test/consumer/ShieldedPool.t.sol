@@ -442,9 +442,11 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         ShieldedPool p = new ShieldedPool(et, ew, owner);
         bytes32 root = p.currentRoot();
 
-        bytes32[] memory ti = new bytes32[](6);
+        bytes32[] memory ti = new bytes32[](7);
         (ti[0], ti[1], ti[2], ti[3], ti[4]) = (root, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)), bytes32(uint256(4)));
         ti[5] = bytes32(uint256(uint160(address(usdg))));
+        bytes[2] memory notes = _notes();
+        ti[6] = bytes32(uint256(keccak256(abi.encode(notes[0], notes[1]))) % Poseidon2.P);
         et.expect_(ti);
         ShieldedPool.PublicTransfer memory t;
         t.root = root;
@@ -454,9 +456,10 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         p.transfer("", t, _notes());
 
         root = p.currentRoot();
-        bytes32[] memory wi = new bytes32[](7);
+        bytes32[] memory wi = new bytes32[](8);
         (wi[0], wi[1], wi[2], wi[3]) = (root, bytes32(uint256(5)), bytes32(uint256(6)), bytes32(uint256(uint160(address(usdg)))));
         (wi[4], wi[5], wi[6]) = (bytes32(uint256(0)), bytes32(uint256(uint160(bob))), bytes32(uint256(0)));
+        wi[7] = bytes32(uint256(keccak256("")) % Poseidon2.P); // encryptedChange is empty here
         ew.expect_(wi);
         ShieldedPool.PublicWithdraw memory w;
         (w.root, w.nullifier, w.changeCommitment, w.asset, w.recipient) =
