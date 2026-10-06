@@ -9,11 +9,18 @@ import {PolicyGuard} from "./PolicyGuard.sol";
 import {IAdapter, ISleeve} from "../interfaces/ISleeve.sol";
 import {IPositionSleeve} from "../interfaces/IPerpVenue.sol";
 import {ITierSource} from "../interfaces/ITierSource.sol";
+import {AssetValuation} from "../libs/AssetValuation.sol";
+import {Valuer} from "../core/Valuer.sol";
 
 /// The parts of a PrivateSleeve the account reads.
 interface IPrivateSleeveAccount {
     function account() external view returns (address);
     function bookUsd() external view returns (uint256);
+}
+
+/// The part of a PeriodClose the account reads: the cash asset fees are paid in (USDG).
+interface IPeriodCloseCash {
+    function cash() external view returns (address);
 }
 
 /// The treasury's wallet. Desks are plain keys that call `execute`: the account checks the desk's scope,
@@ -31,6 +38,11 @@ interface IPrivateSleeveAccount {
 /// `tierOf(board).maxDesks`; revoked desks do not count. The tier is read only when a desk is registered: a board
 /// that unstakes below its tier keeps the desks it already has (revoking is the board's call), it just cannot add
 /// more until it stakes again or revokes down to the limit.
+///
+/// Cash before desks: the PeriodClose's cash asset (USDG) is always in `trackedAssets` and `navUsd`, also when
+/// no registered sleeve lists it yet ("loose cash"), so a treasury funded before its first desk shows its money
+/// to the guard, the close, the fee and the CFO pack. Once a sleeve lists the asset, the sleeve's entry replaces
+/// the loose one (same balance, same value).
 contract TreasuryAccount is ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -262,12 +274,25 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         return keccak256(abi.encode(block.chainid, address(this), deskId, adapter, keccak256(data)));
     }
 
-    /// NAV in USD (1e18) as the sum of every sleeve's `valueOf`; `hold` if any price is stale.
+    /// NAV in USD (1e18) as the sum of every sleeve's `valueOf` plus loose cash; `hold` if any price is stale.
     function navUsd() external view returns (uint256 nav, bool hold) {
         for (uint256 i; i < _sleeves.length; ++i) {
             (uint256 v, bool h) = ISleeve(_sleeves[i]).valueOf(address(this));
             nav += v;
             hold = hold || h;
+        }
+        (, uint256 loose) = looseCash();
+        nav += loose;
+    }
+
+    /// The PeriodClose's cash asset while no registered sleeve lists it (zero otherwise), and its USD value (1e18).
+    /// It counts in NAV and in the cash band.
+    function looseCash() public view returns (address asset, uint256 usd) {
+        asset = _looseCashAsset();
+        if (asset != address(0)) {
+            (usd,) = AssetValuation.value(
+                Valuer(address(0)), asset, AssetValuation.KIND_CASH, IERC20(asset).balanceOf(address(this))
+            );
         }
     }
 
@@ -287,6 +312,8 @@ contract TreasuryAccount is ReentrancyGuardTransient {
             perBand[i] = s.band();
             n += perAssets[i].length;
         }
+        address loose = _looseCashAsset();
+        if (loose != address(0)) ++n;
         assets = new address[](n);
         kinds = new uint8[](n);
         bands = new uint8[](n);
@@ -298,6 +325,9 @@ contract TreasuryAccount is ReentrancyGuardTransient {
                 bands[k] = perBand[i];
                 ++k;
             }
+        }
+        if (loose != address(0)) {
+            assets[k] = loose; // kind 0 (cash) and band 0 (cash) are the zero defaults
         }
     }
 
@@ -319,6 +349,18 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     }
 
     // ---------------------------------------------------------------- internal
+
+    /// A PeriodClose without `cash()` (or none) means no loose cash: the account then tracks sleeves only.
+    function _looseCashAsset() private view returns (address) {
+        address pc = periodClose;
+        if (pc == address(0) || pc.code.length == 0) return address(0);
+        try IPeriodCloseCash(pc).cash() returns (address c) {
+            if (c == address(0) || _assetTaken[c]) return address(0);
+            return c;
+        } catch {
+            return address(0);
+        }
+    }
 
     function _inScope(bytes32 deskId, address adapter) private view returns (bool) {
         Desk storage d = _desks[deskId];

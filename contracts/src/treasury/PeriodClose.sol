@@ -24,7 +24,8 @@ interface ICloseFeeHook {
 ///
 /// - `navUsd` must equal `account.navUsd()` exactly (no tolerance), so a statement cannot claim money that
 ///   is not there;
-/// - `cashBps` / `equityBps` must equal the band weights from the sleeves' own `valueOf`;
+/// - `cashBps` / `equityBps` must equal the band weights from the sleeves' own `valueOf` (plus the account's
+///   loose cash, see TreasuryAccount);
 /// - `positionsHash` must equal keccak256(abi.encode(Position[])) over every held asset (raw > 0), sorted
 ///   by address, each with its raw balance, USD price per whole token, multiplier and Chainlink round id;
 /// - no held, canonical Stock Token's feed may be on hold (`HoldAtClose`; the service retries when markets
@@ -336,7 +337,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         if (!tiers.tierOf(board).weeklyClose) revert TierTooLow(board);
     }
 
-    /// Public cash / equity / basis USD from the sleeves' own `valueOf` (a private sleeve's is 0).
+    /// Public cash / equity / basis USD from the sleeves' own `valueOf` (a private sleeve's is 0), plus the
+    /// account's loose cash (USDG no registered sleeve lists yet) in the cash band, matching `account.navUsd()`.
     function _bandUsd() private view returns (uint256[3] memory usd) {
         address[] memory sl = account.sleeves();
         for (uint256 i; i < sl.length; ++i) {
@@ -344,6 +346,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
             uint8 band = ISleeve(sl[i]).band();
             usd[band > 2 ? 2 : band] += v;
         }
+        (, uint256 loose) = account.looseCash();
+        usd[0] += loose;
     }
 
     /// A basis sleeve (2) is in NAV but in neither weight.
