@@ -23,7 +23,7 @@ import {TemplateRegistry} from "./TemplateRegistry.sol";
 /// Clone addresses are deterministic per (board, nonce) so a front end can show them before the Safe signs
 /// (`predict`). If someone else deploys for the same board first, the board's transaction still succeeds at the
 /// next nonce; the event is the source of truth. `feeRecipient` and `tiers` are factory-wide settings handed to
-/// every PeriodClose, and either may be zero.
+/// every PeriodClose (and `tiers` to every TreasuryAccount, for its desk limit), and either may be zero.
 ///
 /// Templates marketplace (todo 30): `deployFromTemplate` builds a treasury from a template the
 /// TemplateRegistry lists. The compiled policy must equal the template with only `controller` filled in
@@ -156,7 +156,7 @@ contract TreasuryFactory {
 
         TreasuryPolicy(policy).initialize(boardSafe, p);
         BoardApprovals(approvals).initialize(boardSafe, address(guard), account);
-        TreasuryAccount(payable(account)).initialize(boardSafe, TreasuryPolicy(policy), guard, approvals, close);
+        TreasuryAccount(payable(account)).initialize(boardSafe, TreasuryPolicy(policy), guard, approvals, close, tiers);
         PeriodClose(close).initialize(TreasuryAccount(payable(account)), cash, feeRecipient, tiers);
 
         isTreasury[account] = true;

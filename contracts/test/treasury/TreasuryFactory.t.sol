@@ -126,7 +126,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
         vm.expectRevert(TreasuryPolicy.AlreadyInitialized.selector);
         policyImpl.initialize(stranger, p);
         vm.expectRevert(TreasuryAccount.AlreadyInitialized.selector);
-        accountImpl.initialize(stranger, policy, guard, address(approvals), address(0));
+        accountImpl.initialize(stranger, policy, guard, address(approvals), address(0), ITierSource(address(0)));
         vm.expectRevert(PeriodClose.AlreadyInitialized.selector);
         closeImpl.initialize(account, IERC20Metadata(address(usdg)), stranger, ITierSource(address(0)));
         vm.expectRevert(BoardApprovals.AlreadyInitialized.selector);
@@ -142,7 +142,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
         vm.expectRevert(TreasuryPolicy.AlreadyInitialized.selector);
         fPolicy.initialize(stranger, p);
         vm.expectRevert(TreasuryAccount.AlreadyInitialized.selector);
-        fAccount.initialize(stranger, fPolicy, guard, stranger, stranger);
+        fAccount.initialize(stranger, fPolicy, guard, stranger, stranger, ITierSource(address(0)));
         vm.expectRevert(PeriodClose.AlreadyInitialized.selector);
         fClose.initialize(fAccount, IERC20Metadata(address(usdg)), stranger, ITierSource(address(0)));
         vm.expectRevert(BoardApprovals.AlreadyInitialized.selector);
@@ -156,7 +156,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
         vm.expectRevert(TreasuryPolicy.AlreadyInitialized.selector);
         policy.initialize(stranger, p);
         vm.expectRevert(TreasuryAccount.AlreadyInitialized.selector);
-        account.initialize(stranger, policy, guard, address(approvals), address(0));
+        account.initialize(stranger, policy, guard, address(approvals), address(0), ITierSource(address(0)));
         vm.expectRevert(BoardApprovals.AlreadyInitialized.selector);
         approvals.initialize(stranger, address(guard), stranger);
     }

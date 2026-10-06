@@ -8,6 +8,7 @@ import {TreasuryPolicy} from "./TreasuryPolicy.sol";
 import {PolicyGuard} from "./PolicyGuard.sol";
 import {IAdapter, ISleeve} from "../interfaces/ISleeve.sol";
 import {IPositionSleeve} from "../interfaces/IPerpVenue.sol";
+import {ITierSource} from "../interfaces/ITierSource.sol";
 
 /// The parts of a PrivateSleeve the account reads.
 interface IPrivateSleeveAccount {
@@ -25,6 +26,11 @@ interface IPrivateSleeveAccount {
 ///
 /// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once).
 /// All-zero constructor arguments deploy a locked implementation for the factory.
+///
+/// Desk limit: with a tier source (the factory's PLTH staking), `registerDesk` refuses a desk beyond the board's
+/// `tierOf(board).maxDesks`; revoked desks do not count. The tier is read only when a desk is registered: a board
+/// that unstakes below its tier keeps the desks it already has (revoking is the board's call), it just cannot add
+/// more until it stakes again or revokes down to the limit.
 contract TreasuryAccount is ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -53,6 +59,10 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     address public approvals;
     bool private _initialized;
     address public periodClose;
+    /// PLTH staking tiers (TreasuryFactory's); zero = no desk limit.
+    ITierSource public tiers;
+    /// Registered desks that are not revoked (counted against `tiers.tierOf(board).maxDesks`).
+    uint256 public activeDeskCount;
 
     mapping(bytes32 deskId => Desk) private _desks;
     mapping(address key => uint256) private _activeDesksOfKey;
@@ -73,6 +83,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     event WithdrawnToBoard(address indexed token, uint256 amount);
     event CloseFeePaid(address indexed token, address indexed to, uint256 amount);
     event PrivateSleeveSet(address indexed sleeve, bytes32 indexed deskId);
+    event TiersSet(address indexed tiers);
 
     error NotBoard();
     error ZeroAddress();
@@ -87,6 +98,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error NotPeriodClose();
     error AlreadyInitialized();
     error PrivateBookOpen();
+    error TierTooLow(address board, uint256 maxDesks);
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -104,18 +116,24 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         _init(board_, policy_, guard_, approvals_);
     }
 
-    /// Clone setup (TreasuryFactory), once. `periodClose_` may be zero (drawdown rule off until the board sets it).
+    /// Clone setup (TreasuryFactory), once. `periodClose_` may be zero (drawdown rule off until the board sets it);
+    /// `tiers_` may be zero (no desk limit).
     function initialize(
         address board_,
         TreasuryPolicy policy_,
         PolicyGuard guard_,
         address approvals_,
-        address periodClose_
+        address periodClose_,
+        ITierSource tiers_
     ) external {
         _init(board_, policy_, guard_, approvals_);
         if (periodClose_ != address(0)) {
             periodClose = periodClose_;
             emit PeriodCloseSet(periodClose_);
+        }
+        if (address(tiers_) != address(0)) {
+            tiers = tiers_;
+            emit TiersSet(address(tiers_));
         }
     }
 
@@ -138,6 +156,10 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         if (deskId == bytes32(0) || key == address(0)) revert BadDesk();
         if (_desks[deskId].active) revert DeskActive();
         if (adapters.length == 0 || adapters.length > MAX_ADAPTERS_PER_DESK) revert BadAdapters();
+        if (address(tiers) != address(0)) {
+            uint256 maxDesks = tiers.tierOf(board).maxDesks;
+            if (activeDeskCount >= maxDesks) revert TierTooLow(board, maxDesks);
+        }
         for (uint256 i; i < adapters.length; ++i) {
             for (uint256 j; j < i; ++j) {
                 if (adapters[i] == adapters[j]) revert BadAdapters();
@@ -146,6 +168,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         }
         _desks[deskId] = Desk(key, true, adapters);
         ++_activeDesksOfKey[key];
+        ++activeDeskCount;
         emit DeskRegistered(deskId, key, adapters);
     }
 
@@ -154,6 +177,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         if (!d.active) revert DeskNotActive();
         d.active = false;
         --_activeDesksOfKey[d.key];
+        --activeDeskCount;
         emit DeskRevoked(deskId);
     }
 
