@@ -13,6 +13,8 @@ interface IPerpMarketValuation {
     function traderPnl() external view returns (int256);
     /// Accrue funding and borrow to now (no-op if already accrued this second).
     function accrue() external;
+    /// True while the market prices open interest at a stale (hold) price.
+    function staleWithOpenInterest() external view returns (bool);
 }
 
 /// LP vault (ERC-4626 over USDG) that is the counterparty to every PerpMarket it lists.
@@ -26,6 +28,11 @@ interface IPerpMarketValuation {
 /// traders realize a gain. Deposits start a 24h redeem cooldown on the receiver, and shares cannot leave an
 /// account (redeem or transfer) during its cooldown, so LPs cannot sandwich an oracle update. A transfer never
 /// re-dates the receiver: otherwise anyone could freeze any LP's exit with 0-value or 1-wei transfers.
+///
+/// While any market prices open interest at a stale (hold) price, the share price is stale too, so deposits
+/// and withdrawals wait for a fresh price (max* return 0, the calls revert MarketOnHold): nobody enters or
+/// leaves ahead of a reprice that is already known off-chain. A held market with no open interest (e.g. a
+/// delisted token) does not block.
 contract PerpPool is ERC4626, Ownable2Step {
     using SafeERC20 for IERC20;
 
@@ -57,6 +64,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     error PoolCapacity(uint256 liquid, uint256 reserved);
     error CollateralUnderflow();
     error ZeroAmount();
+    error MarketOnHold(address market);
 
     modifier onlyMarket() {
         if (!isMarket[msg.sender]) revert NotMarket();
@@ -127,12 +135,37 @@ contract PerpPool is ERC4626, Ownable2Step {
         return l > totalReserved ? l - totalReserved : 0;
     }
 
+    /// The first market whose open interest is priced at a stale price, or address(0).
+    function heldMarket() public view returns (address) {
+        for (uint256 i; i < _markets.length; i++) {
+            if (IPerpMarketValuation(_markets[i]).staleWithOpenInterest()) return _markets[i];
+        }
+        return address(0);
+    }
+
+    function _notHeld() internal view {
+        address m = heldMarket();
+        if (m != address(0)) revert MarketOnHold(m);
+    }
+
+    function maxDeposit(address receiver) public view override returns (uint256) {
+        if (heldMarket() != address(0)) return 0;
+        return super.maxDeposit(receiver);
+    }
+
+    function maxMint(address receiver) public view override returns (uint256) {
+        if (heldMarket() != address(0)) return 0;
+        return super.maxMint(receiver);
+    }
+
     function maxWithdraw(address owner_) public view override returns (uint256) {
+        if (heldMarket() != address(0)) return 0;
         if (block.timestamp < lastDepositAt[owner_] + REDEEM_COOLDOWN) return 0;
         return Math.min(super.maxWithdraw(owner_), freeAssets());
     }
 
     function maxRedeem(address owner_) public view override returns (uint256) {
+        if (heldMarket() != address(0)) return 0;
         if (block.timestamp < lastDepositAt[owner_] + REDEEM_COOLDOWN) return 0;
         return Math.min(super.maxRedeem(owner_), _convertToShares(freeAssets(), Math.Rounding.Floor));
     }
@@ -144,12 +177,14 @@ contract PerpPool is ERC4626, Ownable2Step {
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (assets == 0) revert ZeroAmount();
+        _notHeld();
         return super.deposit(assets, receiver);
     }
 
     function mint(uint256 shares, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (shares == 0) revert ZeroAmount();
+        _notHeld();
         return super.mint(shares, receiver);
     }
 
@@ -159,6 +194,16 @@ contract PerpPool is ERC4626, Ownable2Step {
         for (uint256 i; i < _markets.length; i++) {
             IPerpMarketValuation(_markets[i]).accrue();
         }
+    }
+
+    function withdraw(uint256 assets, address receiver, address owner_) public override returns (uint256) {
+        _notHeld();
+        return super.withdraw(assets, receiver, owner_);
+    }
+
+    function redeem(uint256 shares, address receiver, address owner_) public override returns (uint256) {
+        _notHeld();
+        return super.redeem(shares, receiver, owner_);
     }
 
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {

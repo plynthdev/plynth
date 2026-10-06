@@ -251,6 +251,13 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         return _sidePnl(longs, true, pr) + _sidePnl(shorts, false, pr);
     }
 
+    /// True while open interest is valued at a stale price (the pool then pauses LP entries and exits).
+    function staleWithOpenInterest() external view returns (bool) {
+        if (longs.size + shorts.size == 0) return false;
+        (, bool hold) = _quote();
+        return hold;
+    }
+
     function reserve() public view returns (uint256) {
         return (longs.size + shorts.size) * maxProfitBps / BPS;
     }

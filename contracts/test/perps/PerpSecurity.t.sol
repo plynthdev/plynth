@@ -99,4 +99,48 @@ contract PerpSecurityTest is PerpFixture {
         market.funding();
         assertEq(market.longFundingIndex(), honest);
     }
+
+    // ------------------------------------------------------------ S11: LP entry/exit at a stale share price
+
+    /// Traders are long, the feed is on hold and the real price has moved up off-chain: an LP past cooldown
+    /// must not redeem at the stale (overstated) share price and leave the reprice to the others.
+    function test_S11_noRedeemAtStaleSharePrice() public {
+        _open(alice, true, 200_000e6, 20_000e6);
+        skip(2 days);
+        _hold();
+        uint256 shares = pool.balanceOf(lp);
+        assertEq(pool.maxRedeem(lp), 0, "exits wait for a fresh price");
+        assertEq(pool.maxWithdraw(lp), 0);
+        vm.prank(lp);
+        vm.expectRevert(abi.encodeWithSelector(PerpPool.MarketOnHold.selector, address(market)));
+        pool.redeem(shares / 10, lp, lp);
+
+        _refresh();
+        vm.prank(lp);
+        pool.redeem(shares / 10, lp, lp);
+    }
+
+    /// Mirror: nobody buys shares at a stale (understated) price ahead of a known favourable reprice.
+    function test_S11_noDepositAtStaleSharePrice() public {
+        _open(alice, true, 200_000e6, 20_000e6);
+        _hold();
+        _fund(attacker, 100_000e6);
+        vm.startPrank(attacker);
+        usdg.approve(address(pool), type(uint256).max);
+        assertEq(pool.maxDeposit(attacker), 0);
+        vm.expectRevert(abi.encodeWithSelector(PerpPool.MarketOnHold.selector, address(market)));
+        pool.deposit(100_000e6, attacker);
+        vm.expectRevert(abi.encodeWithSelector(PerpPool.MarketOnHold.selector, address(market)));
+        pool.mint(1e12, attacker);
+        vm.stopPrank();
+    }
+
+    /// A market on hold with no open interest (e.g. a delisted token) does not block the pool.
+    function test_S11_heldMarketWithoutOpenInterestDoesNotBlock() public {
+        skip(2 days);
+        _hold();
+        uint256 shares = pool.balanceOf(lp);
+        vm.prank(lp);
+        pool.redeem(shares / 10, lp, lp);
+    }
 }
