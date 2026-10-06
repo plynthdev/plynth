@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BaseError, ContractFunctionRevertedError, decodeErrorResult, type Abi, type Address, type Hex, type PublicClient, type TransactionReceipt } from "viem";
 import type { HDAccount } from "viem/accounts";
-import { withGasHeadroom } from "@/lib/gas";
+import { estimateGasAhead, withGasHeadroom } from "@/lib/gas";
 import { clients, ROOT } from "../lib";
 import type { KnownBug } from "./known-bugs";
 
@@ -97,17 +97,6 @@ export type Step = {
 
 export type Call = { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint };
 
-/**
- * Gas limit for the exercise's own transactions: lib/gas.ts headroom, but at least +50% +150k. On the fork a
- * PerpMarket.open estimated in the same second as the market's last accrual ran out of gas with the standard
- * headroom (estimate ~283k, limit 404k, all used): see the report notes.
- */
-export function harnessGas(estimate: bigint): bigint {
-  const wide = (estimate * 3n) / 2n + 150_000n;
-  const std = withGasHeadroom(estimate);
-  return wide > std ? wide : std;
-}
-
 export class AssertionFailed extends Error {}
 export function expect(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new AssertionFailed(msg);
@@ -172,7 +161,8 @@ export class Recorder {
     try {
       const abi = [...call.abi, ...errorAbi()] as Abi;
       const base = { account: from, address: call.address, abi, functionName: call.functionName, args: call.args ?? [], ...(call.value ? { value: call.value } : {}) } as const;
-      const gas = harnessGas(await this.pub.estimateContractGas(base as never));
+      // lib/gas.ts: priced now and one second ahead, plus the standard headroom (what the desk services use).
+      const gas = withGasHeadroom(await estimateGasAhead(this.pub as never, base as never));
       hash = await this.wallet(from).writeContract({ ...base, gas } as never);
       r = await this.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error("reverted on chain");
@@ -191,7 +181,7 @@ export class Recorder {
     let hash: Hex | undefined;
     let r: TransactionReceipt | undefined;
     try {
-      const gas = harnessGas(await this.pub.estimateGas({ account: from, ...tx } as never));
+      const gas = withGasHeadroom(await this.pub.estimateGas({ account: from, ...tx } as never));
       hash = await this.wallet(from).sendTransaction({ ...tx, gas } as never);
       r = await this.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error("reverted on chain");

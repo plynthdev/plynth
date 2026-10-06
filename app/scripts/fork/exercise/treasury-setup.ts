@@ -8,8 +8,9 @@ import { decodeEventLog, encodeAbiParameters, getAddress, stringToHex, type Addr
 import { compileTemplate, loadTemplate, policyAbiParam, type Compiled } from "@/treasury/policy-compiler";
 import { PATHS, ROOT, RPC } from "../lib";
 import { abiOf, expect } from "./core";
-import { erc20Abi, U, type Ctx } from "./context";
+import { E18, erc20Abi, U, type Ctx } from "./context";
 import { deskRows, runOnce, treasuryEnv, type DeskRow } from "./services";
+import { stake } from "./treasury";
 import { devKey } from "../lib";
 
 export const PERIOD_DAYS = 1;
@@ -96,8 +97,25 @@ export async function treasurySetup(x: Ctx) {
   await r.send("board adds the in-house venue to the basis sleeve", board, { address: basis, abi: abiOf("BasisSleeve"), functionName: "addVenue", args: [basisVenue] });
   await r.send("board adds the in-house venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [hedgeVenue] });
   await r.send("board adds the mirrored venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [mirrorVenue] });
+  // Desk limit by staking tier (B1): tier 0 allows two desks; the board stakes 10,000 PLTH (tier 1, four desks)
+  // for the basis and hedge desks, then unstakes: the four desks stay (the tier is read when a desk is added), and
+  // the board is back at tier 0 for the weekly-close refusal in the treasury area.
+  await r.reverts("tier-0 board cannot register a third desk (TierTooLow, maxDesks 2)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("basis", { size: 32 }), A.basisDesk.address, [basis]] }, "TierTooLow");
+  await stake(x, board, 10_000n * E18, "board");
   await r.send("board registers the basis desk", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("basis", { size: 32 }), A.basisDesk.address, [basis]] });
   await r.send("board registers the hedge desk", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("hedge", { size: 32 }), A.hedgeDesk.address, [perp]] });
+  const S = abiOf("PlinthStaking");
+  await r.send("board unstakes its 10,000 PLTH: tier 0 again, the four desks stay registered", board, { address: x.addr("staking"), abi: S, functionName: "unstake", args: [10_000n * E18] }, async () => {
+    const tier = await r.read<{ maxDesks: number; weeklyClose: boolean }>(x.addr("staking"), S, "tierOf", [board.address]);
+    expect(tier.maxDesks === 2 && !tier.weeklyClose, `tier ${JSON.stringify(tier)}`);
+    const count = await r.read<bigint>(t.account!, ACC, "activeDeskCount");
+    expect(count === 4n, `activeDeskCount ${count}`);
+    for (const d of ["cash", "equity", "basis", "hedge"]) {
+      const desk = await r.read<{ active: boolean }>(t.account!, ACC, "desk", [stringToHex(d, { size: 32 })]);
+      expect(desk.active, `${d} desk not active`);
+    }
+    return "tierOf(board).maxDesks = 2, activeDeskCount = 4 (unstaking never revokes a desk)";
+  });
   Object.assign(t, { beacon: beacon!, basis, basisVenue, perp, hedgeVenue, mirror, mirrorVenue });
   for (const [k, v] of Object.entries({ basis, basisVenue, perp, hedgeVenue, mirror, mirrorVenue })) r.names.set(v.toLowerCase(), k);
 

@@ -8,7 +8,7 @@ import { cacheKey, isPrunedError, RpcCache } from "./rpc-cache";
 import { devAccount, FORK_CHAIN_ID, ROLE, splitDeployment } from "./lib";
 import { exitCode, renderHtml, renderMarkdown, summarize } from "./exercise/report";
 import type { Step } from "./exercise/core";
-import { KNOWN_BUGS } from "./exercise/known-bugs";
+import { KNOWN_BUGS, type KnownBug } from "./exercise/known-bugs";
 import { roundUp } from "./exercise/consumer-flow";
 import { parseFundArgs } from "./fund";
 
@@ -130,15 +130,20 @@ describe("report", () => {
     ]);
   });
 
+  test("no known bugs are left (todo 37 fixed B1-B3): every step has to pass", () => {
+    expect(KNOWN_BUGS).toEqual([]);
+  });
+
   test("markdown and html list failures with diagnosis and the bugs found; html has no scripts or remote assets", () => {
-    const steps = [step("token", KNOWN_BUGS[0]!.steps[0] as string, "known", "B1"), step("crowd", "x | y", "fail"), step("crowd", "ok", "pass")];
+    const bugs: KnownBug[] = [{ id: "B1", area: "token", steps: ["a known step"], title: "A sample bug", repro: "r", diagnosis: "d" }];
+    const steps = [step("token", "a known step", "known", "B1"), step("crowd", "x | y", "fail"), step("crowd", "ok", "pass")];
     const meta = { date: "2026-10-06", startedAt: "s", finishedAt: "f", forkBlock: "1", forkSource: "https://rpc.example", chainId: 31337, notes: ["n"], diagnosis: { "crowd/x | y": "because" } };
-    const md = renderMarkdown(meta, steps, KNOWN_BUGS);
+    const md = renderMarkdown(meta, steps, bugs);
     expect(md).toContain("## Bugs found");
-    expect(md).toContain(KNOWN_BUGS[0]!.title);
+    expect(md).toContain(bugs[0]!.title);
     expect(md).toContain("Diagnosis: because");
     expect(md).toContain("x \\| y");
-    const html = renderHtml(meta, steps, KNOWN_BUGS);
+    const html = renderHtml(meta, steps, bugs);
     expect(html).not.toMatch(/<script|src=|href=/i);
     expect(html).toContain("known B1");
   });

@@ -11,46 +11,15 @@ export type KnownBug = {
   diagnosis: string;
 };
 
-export const KNOWN_BUGS: KnownBug[] = [
-  {
-    id: "B1",
-    area: "token",
-    steps: ["tier 0 board cannot register a third desk (maxDesks 2)"],
-    title: "Tier.maxDesks is not enforced anywhere",
-    repro:
-      "Board with no PLTH stake (tier 0, maxDesks = 2) creates a treasury through TreasuryFactory and calls TreasuryAccount.registerDesk three times: the third registration succeeds.",
-    diagnosis:
-      "ITierSource documents maxDesks as factory-enforced, but neither TreasuryFactory nor TreasuryAccount reads it (the account has no tier source; registerDesk only checks its own arguments). Staking tiers therefore change weekly closes, private sleeves and template priority, but not desk limits. Fix: give TreasuryAccount the factory's tier source at initialize() and check the board's tier in registerDesk (a contract change with its own tests).",
-  },
-  {
-    id: "B2",
-    area: "treasury",
-    steps: ["PAUSED: the cash desk moves $5k from steakUSDG back to USDG (cash -> cash)"],
-    title: "In PAUSED, a cash-to-cash move (redeem vault shares to USDG) is refused by vault rounding",
-    repro:
-      "Treasury in PAUSED (drawdown between pauseNewRiskAtDrawdownBps and deriskAtDrawdownBps). Cash desk executes CashSleeve OP_REDEEM of $5k of steakUSDG shares: GuardRejected(9) R8_PAUSED, either in the simulation or, when the simulation passes, on chain one second later (seen both ways on 2026-10-06).",
-    diagnosis:
-      "PolicyGuard rule 8 (PAUSED) refuses any operation where the equity weight goes up (eqAfter > eqBefore). Redeeming ERC-4626 shares returns a few wei less USDG than the shares were valued at (vault rounding, and steakUSDG accrues every second), so NAV dips by dust and the equity weight rises by a rounding error: a neutral cash-to-cash move is treated as new risk, and whether it passes depends on the second it is mined. The same strict comparison exists in rule 7 (off-hours). Fix: compare weights with a dust tolerance (e.g. 1e12 WAD) or exempt operations whose equity value is unchanged; needs a PolicyGuard change and tests.",
-  },
-  {
-    id: "B3",
-    area: "treasury",
-    steps: ["a treasury holding cash but no desks reports that cash in its NAV"],
-    title: "NAV counts only assets of registered sleeves: a funded treasury with no desks closes at NAV 0",
-    repro:
-      "Deploy a treasury from the factory, send it 50,000 USDG, register no desk: TreasuryAccount.navUsd() = 0 and PeriodClose commits navUsd 0, so the platform fee (and the template author's share) is 0 and the period statement shows no assets.",
-    diagnosis:
-      "TreasuryAccount.trackedAssets() is built from the sleeves of registered desks only; the policy's cash asset (USDG, always allowed) is not tracked until a desk whose sleeve lists it is registered. Funds sent before that are invisible to the guard, the close and the CFO pack. Fix: always track the PeriodClose cash asset (or the policy's cash instruments) in trackedAssets, with tests for NAV, close and fee before any desk exists.",
-  },
-];
+export const KNOWN_BUGS: KnownBug[] = [];
 
 /** Observations that are not failing steps but belong in the report. */
-export const OBSERVATIONS: string[] = [
-  "Gas estimation on PerpMarket: on the 2026-10-06 run a 10k TSLA perp short estimated at ~283k gas and sent with the lib/gas.ts headroom (+25% +50k = 404,180) ran out of gas on chain (gasUsed = limit). The estimate is taken in the same second as the market's last accrual (accrual skipped), the mined transaction pays for it (todo 34's diagnosis), and here the extra cost exceeded the headroom. The exercise now sends with at least +50% +150k; the desk services (AccountExecutor, desk runner) still use lib/gas.ts and can hit the same out-of-gas on in-house perp opens. Suggested follow-up: a larger flat headroom for PerpMarket/PerpPool calls, or estimate against a block one second ahead.",
-];
+export const OBSERVATIONS: string[] = [];
 
-/** Defects the fork run found that are fixed in the same change (each with its regression test). */
+/** Defects an earlier fork run found that this change fixes (each with its regression test); the run proves them. */
 export const FIXED_BUGS: string[] = [
-  "SDK verifyDisclosure called Poseidon2 without loading it, so the API's stateless POST /v1/statements/verify answered 500 in a process that had not proved anything before (tests had always loaded it first). verifyDisclosure now loads it itself; sdk/test/disclosure-init.test.ts checks it in a fresh process.",
-  "The API logged nothing for a 500: the REST handler now writes the cause to the service log (the client still sees only 'internal error').",
+  "B1 (2026-10-06 run): Tier.maxDesks was enforced nowhere. TreasuryFactory now hands its tier source to every TreasuryAccount (initialize), and registerDesk refuses a desk beyond tierOf(board).maxDesks with TierTooLow(board, maxDesks); revoked desks do not count, and unstaking keeps the desks already registered (the tier is read when a desk is added). The fork board stakes 10,000 PLTH before its third desk. Tests: contracts/test/treasury/DeskTiers.t.sol.",
+  "B2 (2026-10-06 run): PAUSED refused a neutral cash-to-cash redeem when rounding nudged the equity weight up. PolicyGuard treats an equity weight change within WEIGHT_DUST (1e12 WAD, 0.0001 percentage points) as no change in rules 7 and 8; a Stock Token buy is still refused whatever its size. Tests: PolicyGuard.t.sol (fuzzed boundary), test/fork/PausedRedeem.fork.t.sol (20 seconds on the real steakUSDG).",
+  "B3 (2026-10-06 run): a treasury funded before its first desk had NAV 0. The PeriodClose's cash asset (USDG) is now always in trackedAssets and navUsd (TreasuryAccount.looseCash until a sleeve lists it), so the guard, the close, the fee and the CFO pack see it. Tests: contracts/test/treasury/LooseCash.t.sol.",
+  "Perp gas headroom (2026-10-06 run): lib/gas.ts estimateGasAhead also estimates one second ahead (eth_estimateGas block override), so accrual a per-second path skips at estimate time is priced; AccountExecutor, the desk runner and this exercise use it (the exercise no longer widens the headroom). Test: app/src/lib/gas.anvil.test.ts.",
 ];

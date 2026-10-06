@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { encodeAbiParameters, getAddress, stringToHex, toFunctionSelector, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { encodeAbiParameters, getAddress, stringToHex, toFunctionSelector, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { issueMessage } from "@/api";
 import { beaconKey, dayStart } from "@/treasury/desks/beacon";
 import { exceptionFromChain, JuryService, PgJuryStore } from "@/treasury/jury";
@@ -302,11 +302,15 @@ export async function treasury(x: Ctx) {
     await r.check("a treasury holding cash but no desks reports that cash in its NAV", async () => {
       const [nav] = await r.read<[bigint, boolean]>(m.account, ACC, "navUsd");
       expect(nav === 50_000n * E18, `navUsd ${nav} while it holds 50,000 USDG`);
-      return "navUsd = $50,000";
+      const [assets] = await r.read<[Address[], number[], number[]]>(m.account, ACC, "trackedAssets");
+      expect(assets.length === 1 && getAddress(assets[0]!) === getAddress(x.addr("usdg")), `trackedAssets ${assets.join(",")}`);
+      return "navUsd = $50,000; trackedAssets = [USDG] (loose cash)";
     });
-    await r.send("second board registers a cash desk (its USDG becomes tracked)", A.board2, { address: m.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("cash", { size: 32 }), A.trader2.address, [cashSleeve]] }, async () => {
+    await r.send("second board registers a cash desk (its USDG moves from loose cash to the cash sleeve)", A.board2, { address: m.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("cash", { size: 32 }), A.trader2.address, [cashSleeve]] }, async () => {
       const [nav] = await r.read<[bigint, boolean]>(m.account, ACC, "navUsd");
       expect(nav >= 50_000n * E18, `navUsd ${nav}`);
+      const [loose] = await r.read<[Address, bigint]>(m.account, ACC, "looseCash");
+      expect(loose === zeroAddress, `looseCash ${loose}`);
       return `navUsd = $${Number(nav / 10n ** 16n) / 100}`;
     });
     await stake(x, A.board2, 10_000n * E18, "board2");
