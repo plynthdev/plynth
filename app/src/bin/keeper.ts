@@ -13,13 +13,13 @@
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { connect, databaseUrl } from "@/db";
 import { readDeployment } from "@/indexer";
-import { createPublicClient, createWalletClient, defineChain, http, type PublicClient } from "viem";
+import { createPublicClient, defineChain, http, type PublicClient } from "viem";
 import { keeperDeployment, type Ctx } from "@/keeper/context";
 import { healthApp } from "@/keeper/health";
 import { JOBS, runPass, type PassReport } from "@/keeper/keeper";
 import { mainnetFeedReader } from "@/keeper/jobs/mock-feeds";
 import { parseSecretKey, Sealer } from "@/keeper/seal";
-import { Sender } from "@/keeper/sender";
+import { Sender, viemSenderIO } from "@/keeper/sender";
 import { loadSigner } from "@/keeper/signer";
 import { plaidFromEnv } from "@/keeper/sources/plaid";
 
@@ -35,21 +35,11 @@ const chainId = await probe.getChainId();
 const chain = defineChain({ id: chainId, name: `chain-${chainId}`, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
 // The sender retries itself (backoff + nonce resync), so the transport does not.
 const pub = createPublicClient({ chain, transport: http(rpcUrl, { retryCount: 0, timeout: 30_000 }), pollingInterval: chainName === "local" ? 50 : 1_000 }) as PublicClient;
-const wallet = createWalletClient({ chain, account, transport: http(rpcUrl, { retryCount: 0, timeout: 30_000 }) });
 
 const dep = keeperDeployment(readDeployment(config.KEEPER_DEPLOYMENTS_DIR, chainId), chainId);
 const { db, close } = connect(databaseUrl());
 const log = (m: string) => console.log(`[keeper ${chainId}] ${m}`);
-const sender = new Sender(
-  {
-    estimateGas: (a) => pub.estimateGas(a),
-    estimateFeesPerGas: () => pub.estimateFeesPerGas(),
-    getTransactionCount: (a) => pub.getTransactionCount(a),
-    sendTransaction: (tx) => wallet.sendTransaction({ ...tx, account, chain }),
-    waitForTransactionReceipt: (a) => pub.waitForTransactionReceipt({ ...a, timeout: 120_000 }),
-  },
-  account.address,
-);
+const sender = new Sender(viemSenderIO(pub, account, chainId), account.address, { pollMs: chainName === "local" ? 50 : 1_000 });
 // Read only (refresh-mock-feeds): the real Chainlink feeds the testnet mock feeds track. Created lazily by viem,
 // so a keeper on a non-mock deployment never contacts mainnet.
 const mainnet = createPublicClient({ transport: http(rpcUrlFor(config, "mainnet"), { retryCount: 3, retryDelay: 1_000, timeout: 30_000 }) }) as PublicClient;

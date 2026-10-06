@@ -18,7 +18,7 @@ import { runRoundups } from "@/keeper/jobs/roundups";
 import { runSpends } from "@/keeper/jobs/spends";
 import { runPass } from "@/keeper/keeper";
 import { Sealer } from "@/keeper/seal";
-import { Sender } from "@/keeper/sender";
+import { Sender, viemSenderIO } from "@/keeper/sender";
 import { plaidAad, sha256Hex, upsertSource } from "./";
 import { ANVIL_ADDR_1, ANVIL_KEY_0, ANVIL_KEY_1, ROOT, keeperTestDb, permit2Runtime, startAnvil } from "@/testing/keeper-helpers";
 
@@ -140,18 +140,8 @@ beforeAll(async () => {
   // In-process keeper (anvil key #1) with a Plaid client whose HTTP is mocked.
   const chain = defineChain({ id: 31337, name: "anvil", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [anvil.rpc] } } });
   const keeperAcct = privateKeyToAccount(ANVIL_KEY_1);
-  const kw = createWalletClient({ chain, account: keeperAcct, transport: http(anvil.rpc) });
   const kp = createPublicClient({ chain, transport: http(anvil.rpc), pollingInterval: 50 }) as PublicClient;
-  sender = new Sender(
-    {
-      estimateGas: (a) => kp.estimateGas(a),
-      estimateFeesPerGas: () => kp.estimateFeesPerGas(),
-      getTransactionCount: (a) => kp.getTransactionCount(a),
-      sendTransaction: (x) => kw.sendTransaction({ ...x, account: keeperAcct, chain }),
-      waitForTransactionReceipt: (a) => kp.waitForTransactionReceipt({ ...a, timeout: 30_000 }),
-    },
-    keeperAcct.address,
-  );
+  sender = new Sender(viemSenderIO(kp, keeperAcct, 31337), keeperAcct.address, { pollMs: 50 });
   const sealer = await Sealer.create(crypto.getRandomValues(new Uint8Array(32)));
   const plaid = new PlaidApi(new Configuration({ basePath: PlaidEnvironments.sandbox!, baseOptions: { headers: { "PLAID-CLIENT-ID": "c", "PLAID-SECRET": "s" } } }));
   ctx = { chainId: 31337, db: t.db, pub: kp, account: keeperAcct.address, sender, sealer, dep: keeperDeployment(dep as any, 31337), lookahead: 2, plaid, log: () => {} };

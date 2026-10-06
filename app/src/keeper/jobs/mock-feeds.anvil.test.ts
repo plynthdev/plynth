@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createPublicClient, createWalletClient, defineChain, http, parseAbi, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { keeperDeployment, mockFeedDeployment, type Ctx } from "@/keeper/context";
-import { Sender } from "@/keeper/sender";
+import { Sender, viemSenderIO } from "@/keeper/sender";
 import { spawnAnvil, type Anvil } from "@/testing/anvil";
 import { ANVIL_KEY_0, ANVIL_KEY_1, ROOT } from "@/testing/keeper-helpers";
 import { divergenceBps, mockAnswerFor, mockFeedAbi, priceAt, poolStateSlot, runRefreshMockFeeds, type MainnetFeedReader, type MockFeedOptions, type RealFeed } from "./mock-feeds";
@@ -60,18 +60,7 @@ const reader: MainnetFeedReader = {
 
 function ctxFor(key: Hex, deployment = dep, opts: Partial<MockFeedOptions> = {}): Ctx & { logs: string[] } {
   const account = privateKeyToAccount(key);
-  const chain = defineChain({ id: 46630, name: "anvil-46630", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [anvil!.rpc] } } });
-  const wallet = createWalletClient({ chain, account, transport: http(anvil!.rpc) });
-  const sender = new Sender(
-    {
-      estimateGas: (a) => pub.estimateGas(a),
-      estimateFeesPerGas: () => pub.estimateFeesPerGas(),
-      getTransactionCount: (a) => pub.getTransactionCount(a),
-      sendTransaction: (tx) => wallet.sendTransaction({ ...tx, account, chain }),
-      waitForTransactionReceipt: (a) => pub.waitForTransactionReceipt(a),
-    },
-    account.address,
-  );
+  const sender = new Sender(viemSenderIO(pub, account, 46630), account.address, { pollMs: 50 });
   const logs: string[] = [];
   return {
     chainId: 46630,
