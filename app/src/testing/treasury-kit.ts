@@ -4,7 +4,7 @@
 import { compileTemplate, loadTemplate, policyAbiParam, type Policy } from "@/treasury/policy-compiler";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { withGasHeadroom } from "@/lib/gas";
+import { estimateGasAhead, withGasHeadroom } from "@/lib/gas";
 import { createPublicClient, createWalletClient, decodeEventLog, defineChain, encodeAbiParameters, http, stringToHex, type Abi, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 
@@ -55,10 +55,10 @@ export class Kit {
     const { abi } = artifact(file, name);
     // Explicit gas (lib/gas.ts): PerpMarket.open estimated in the same second as the last accrual skips the
     // accrual; mined a second later (a loaded machine) it pays for it and a bare estimate runs out of gas.
-    const gas = withGasHeadroom(await this.pub.estimateContractGas({ address, abi, functionName: fn, args, account: from }));
+    const gas = withGasHeadroom(await estimateGasAhead(this.pub as never, { address, abi, functionName: fn, args, account: from }));
     const hash = await this.wallet(from).writeContract({ address, abi, functionName: fn, args, gas });
     const r = await this.pub.waitForTransactionReceipt({ hash });
-    if (r.status !== "success") throw new Error(`${name}.${fn} reverted`);
+    if (r.status !== "success") throw new Error(`${name}.${fn} reverted (gas used ${r.gasUsed} of ${gas})`);
     return r;
   }
 
