@@ -244,6 +244,24 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         return _equityMem(p, pr);
     }
 
+    /// What a full close would pay now at the oracle price (ignoring the hold spread): collateral plus the
+    /// net profit capped at size x maxProfitBps, minus the exit fee, floored at 0. Venues value positions with
+    /// this, so a valuation never counts profit the market will not pay.
+    function exitValueOf(address account) external view returns (uint256) {
+        Position memory p = _positions[account];
+        if (p.size == 0) return 0;
+        (int256 lIdx, int256 sIdx, uint256 bIdx) = _indicesNow();
+        _foldMem(p, p.isLong ? lIdx : sIdx, bIdx);
+        (uint256 pr,) = _quote();
+        Exit memory x;
+        x.pnl = _pnl(p.isLong, p.size, p.tokens, pr);
+        x.funding = p.accruedFunding;
+        x.borrow = p.accruedBorrow;
+        int256 out = p.collateral.toInt256() + _cappedNet(x, p.size)
+            - Math.mulDiv(p.size, feeBpsFor(account), BPS, Math.Rounding.Ceil).toInt256();
+        return out > 0 ? uint256(out) : 0;
+    }
+
     function isLiquidatable(address account) external view returns (bool) {
         Position memory p = _positions[account];
         if (p.size == 0) return false;

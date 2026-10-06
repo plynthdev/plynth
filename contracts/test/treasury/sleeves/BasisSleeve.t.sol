@@ -167,10 +167,10 @@ contract BasisSleeveTest is TreasuryFixture {
         assertEq(p.collateral, 50_000e6);
         assertEq(basis.pairedRaw(address(aapl)), 500e18);
         assertEq(basis.pairDelta(0), 0, "delta neutral at open");
-        // NAV drops only by the 10 bps open fee.
-        assertApproxEqAbs(_nav(), navBefore - 100e18, 1e12);
+        // NAV drops only by the 10 bps open fee and the 10 bps exit fee the venue valuation nets out.
+        assertApproxEqAbs(_nav(), navBefore - 200e18, 1e12);
         PolicyGuard.Snapshot memory s = guard.snapshot(address(account));
-        assertApproxEqAbs(s.basisUsd, 50_000e18 - 100e18, 1e12);
+        assertApproxEqAbs(s.basisUsd, 50_000e18 - 200e18, 1e12);
 
         // 8 hours of positive funding, price moves 10% up: the pair stays neutral, carry is positive.
         _warpAll(block.timestamp + 8 hours);
@@ -250,7 +250,7 @@ contract BasisSleeveTest is TreasuryFixture {
         usdg.mint(address(account), 300_000e6);
         // NAV $1.5M (cash 60%, equity 40%) -> cap 20% = $300k of pair notional at the venue.
         uint256 nav = _nav();
-        vm.expectRevert(abi.encodeWithSelector(BasisSleeve.VenueCapExceeded.selector, 0, 320_000e18, nav * 2000 / 10_000 - 320e18 * 2000 / 10_000));
+        vm.expectRevert(abi.encodeWithSelector(BasisSleeve.VenueCapExceeded.selector, 0, 320_000e18, nav * 2000 / 10_000 - 640e18 * 2000 / 10_000));
         _openPair(address(aapl), 320_000e6, 120_000e6);
         _openPair(address(aapl), 250_000e6, 100_000e6);
         (uint256 notional, uint256 navNow) = basis.venueNotional(0);

@@ -187,7 +187,7 @@ contract PerpSleeveTest is TreasuryFixture {
         PolicyGuard.Snapshot memory s = guard.snapshot(address(account));
         assertEq(s.perpDeltaUsd, -250_000e18);
         assertEq(s.venues[0].gross, 250_000e18);
-        assertEq(s.venues[0].equity, (100_000e6 - 250e6) * 1e12); // minus the 10 bps fee
+        assertEq(s.venues[0].equity, (100_000e6 - 500e6) * 1e12); // minus the 10 bps open fee and the exit fee
         assertEq(s.stockUsd, 400_000e18);
     }
 
@@ -225,8 +225,6 @@ contract PerpSleeveTest is TreasuryFixture {
         _withdraw(0, 20_000e6); // 2.5x
     }
 
-    /// Rule 7 (todo 29 fix): off-hours a pure perp reduction passes although its spread lifts the equity weight;
-    /// new perp size off-hours is still refused.
     /// Rule 7 lets a pure perp reduction through off-hours, but the in-house market charges the hold spread
     /// (the largest plausible gap) on a stale exit, a NAV loss the guard's op-loss bound refuses: the desk
     /// reduces at the next fresh price.
@@ -242,6 +240,35 @@ contract PerpSleeveTest is TreasuryFixture {
         _warp(block.timestamp);
         _hedge(_op(3, 0, abi.encode(address(aapl), uint256(50_000e6)), 0), new bytes32[](0));
         assertEq(guard.snapshot(address(account)).venues[0].gross > 0, true);
+    }
+
+    // ------------------------------------------------------------ S9: venue equity counts what a close pays
+
+    /// A long whose PnL ran past the market's profit cap (maxProfitBps of size) must still be closable: the
+    /// venue is valued at what the close actually pays, so the close is not a NAV loss the guard refuses.
+    function test_S9_profitableLongBeyondCapCanClose() public {
+        TreasuryPolicy.Policy memory p = _t2();
+        p.cash = TreasuryPolicy.Band(0, 8000);
+        p.equity = TreasuryPolicy.Band(2000, 9000);
+        p.netDeltaMaxBps = 9000;
+        vm.prank(board);
+        policy.propose(p);
+        _warp(block.timestamp + 48 hours);
+        policy.activate();
+
+        _depositTo(0, 100_000e6);
+        _hedge(_op(2, 0, abi.encode(address(aapl), true, uint256(20_000e6), uint256(10_000e6), uint256(100)), 0), _vp(address(inHouse)));
+        aaplFeed.set(500e8); // 2.5x: PnL +30k on 20k size, the market pays at most +20k
+        _warp(block.timestamp + 1);
+
+        (uint256 venueUsd,) = inHouse.equityOf();
+        uint256 idle = usdg.balanceOf(address(inHouse));
+        uint256 payout = 10_000e6 - 20e6 + 20_000e6 - 20e6; // collateral - open fee + capped PnL - close fee
+
+        _hedge(_op(3, 0, abi.encode(address(aapl), uint256(20_000e6)), 0), new bytes32[](0));
+        assertEq(market.position(address(inHouse)).size, 0);
+        assertEq(venueUsd, (idle + payout) * 1e12, "venue valued at the realizable payout");
+        assertEq(usdg.balanceOf(address(inHouse)), idle + payout);
     }
 
     // ------------------------------------------------------------ rule 6: allow-list, cap, staleness
@@ -404,14 +431,15 @@ contract PerpSleeveTest is TreasuryFixture {
         (uint256 shortUsd,) = valuer.value(address(aapl), tokens);
         assertEq(guard.snapshot(address(account)).perpDeltaUsd, -int256(shortUsd));
 
-        // Closing realizes exactly that equity minus the close fee.
+        // Closing realizes exactly that value (the close fee is already netted).
         _hedge(_op(3, 0, abi.encode(address(aapl), size), 0), new bytes32[](0));
         assertEq(market.position(address(inHouse)).size, 0);
-        assertEq(_nav(), expected - fee * 1e12);
-        assertEq(usdg.balanceOf(address(inHouse)), venueRaw - fee);
+        assertEq(_nav(), expected);
+        assertEq(usdg.balanceOf(address(inHouse)), venueRaw);
     }
 
-    /// deposit = size/2, collateral = size/4, 10 bps fee rounded up, no funding or borrow.
+    /// deposit = size/2, collateral = size/4, 10 bps fee rounded up (paid on open, netted for the exit), no
+    /// funding or borrow.
     function _model(uint256 size, uint256 tokens, uint256 p2)
         internal
         view
@@ -421,7 +449,7 @@ contract PerpSleeveTest is TreasuryFixture {
         uint256 coll = size / 4;
         fee = (size * 10 + 9_999) / 10_000;
         uint256 buyBack = (tokens * p2 + ONE - 1) / ONE;
-        venueRaw = (deposit - coll) + (coll - fee) + size - buyBack;
+        venueRaw = (deposit - coll) + (coll - fee) + size - buyBack - fee;
         (uint256 spot,) = valuer.value(address(aapl), SEED_AAPL);
         expected = (FUNDING - deposit) * 1e12 + spot + venueRaw * 1e12;
     }

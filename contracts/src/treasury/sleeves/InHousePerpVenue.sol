@@ -93,13 +93,14 @@ contract InHousePerpVenue is IPerpVenue {
         for (uint256 i; i < n; ++i) out[i] = tmp[i];
     }
 
-    /// Idle cash plus each position's equity (collateral + PnL - funding - borrow) floored at 0: a position
-    /// below zero is bad debt the pool absorbs, not a liability of the treasury.
+    /// Idle cash plus what closing each position would pay now (collateral + PnL - funding - borrow, the net
+    /// profit capped at the market's maxProfitBps, minus the exit fee), floored at 0: a position below zero is
+    /// bad debt the pool absorbs, not a liability of the treasury. Valuing at the realizable payout keeps NAV
+    /// free of profit the market will never pay, and lets the guard accept closing a winner past the cap.
     function equityOf() external view returns (uint256 usd, bool stale) {
         uint256 raw = cash.balanceOf(address(this));
         for (uint256 i; i < _markets.length; ++i) {
-            int256 e = _markets[i].equityOf(address(this));
-            if (e > 0) raw += uint256(e);
+            raw += _markets[i].exitValueOf(address(this));
         }
         return (AssetValuation.to1e18(raw, _cashDecimals), false);
     }
