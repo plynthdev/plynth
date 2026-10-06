@@ -218,7 +218,8 @@ export async function attempt(ctx: DeskContext, op: Op): Promise<Outcome> {
     return { ok: false, rejection: sim.rejection, sent: false };
   }
   const { desk } = deskOf(ctx, op.desk);
-  // Explicit gas: a bare estimate can miss accrual a sleeve's venue does once a second has passed (lib/gas.ts).
+  // Explicit gas: a bare estimate can miss accrual a sleeve's venue does once a second has passed; withEstimatedGas
+  // estimates a second ahead too and adds headroom (lib/gas.ts).
   const request = await withEstimatedGas(ctx.pub, sim.request as Record<string, unknown>);
   const hash = await desk.wallet.writeContract(request as Parameters<WalletClient["writeContract"]>[0]);
   const rcpt = await ctx.pub.waitForTransactionReceipt({ hash });

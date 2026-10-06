@@ -3,7 +3,7 @@
 // eth_call simulation. The default venue for tests and testnet.
 import { encodeAbiParameters, getAddress, type Address, type Chain, type Hex, type PrivateKeyAccount, type PublicClient, type WalletClient } from "viem";
 import { accountAbi } from "@/abi/treasury-desks";
-import { withGasHeadroom } from "@/lib/gas";
+import { estimateGasAhead, withGasHeadroom } from "@/lib/gas";
 import { decodeRejection, type Rejection } from "@/treasury/desks/errors";
 import { deskIdBytes, packProofs } from "@/treasury/desks/runner";
 import { basisSleeveAbi, inHouseVenueAbi, marketAbi, venueValuerAbi } from "@/abi/treasury-venues";
@@ -38,8 +38,9 @@ export class AccountExecutor {
     } catch (e) {
       return { ok: false, rejection: decodeRejection(e) };
     }
-    // Explicit gas: a bare estimate can miss accrual the venue does once a second has passed (lib/gas.ts).
-    const gas = withGasHeadroom(await this.pub.estimateContractGas({ address: this.account, abi: accountAbi, functionName: "execute", args, account: this.key }));
+    // Explicit gas: a bare estimate can miss accrual the venue does once a second has passed; estimate a second
+    // ahead too and add headroom (lib/gas.ts).
+    const gas = withGasHeadroom(await estimateGasAhead(this.pub, { address: this.account, abi: accountAbi, functionName: "execute", args, account: this.key }));
     const tx = await this.wallet.writeContract({ address: this.account, abi: accountAbi, functionName: "execute", args, account: this.key, chain: this.chain, gas });
     const r = await this.pub.waitForTransactionReceipt({ hash: tx });
     if (r.status !== "success") return { ok: false, rejection: { code: null, reason: "reverted on-chain" } };
