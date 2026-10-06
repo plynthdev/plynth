@@ -177,6 +177,12 @@ abstract contract CrowdBuyBase is Test {
         assertEq(beacon.executeAfter(key), at);
     }
 
+    /// Execution is keeper-only until windowEnd - GRACE.
+    function _executeAsKeeper(address asset) internal {
+        vm.prank(keeper);
+        crowd.execute(asset);
+    }
+
     function _freshFeeds() internal {
         feedA.set(int256(PRICE_A / 1e10));
         feedB.set(int256(PRICE_B / 1e10));

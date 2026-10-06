@@ -45,7 +45,7 @@ const crowdExecution: Handler = async (x, item) => {
       const why: string[] = [];
       for (const a of pendingAssets) {
         try {
-          await r.pub.simulateContract({ account: A.open.address, address: crowd, abi: C, functionName: "execute", args: [a] });
+          await r.pub.simulateContract({ account: x.addr("keeper"), address: crowd, abi: C, functionName: "execute", args: [a] });
           why.push(`${r.who(a)}: execute would succeed now (keeper late)`);
         } catch (e) {
           why.push(`${r.who(a)}: ${String((e as Error).message).split("\n")[0]}`);

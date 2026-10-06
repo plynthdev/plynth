@@ -207,7 +207,8 @@ export async function crowd(x: Ctx) {
       return { tx: e.transactionHash, assertion: `Committed(key(${r.who(a)}, ${wStart}))` };
     });
   }
-  await r.reverts("execute before the window's beacon time reverts", A.outsider, { address: crowd, abi: C, functionName: "execute", args: [TSLA] }, "TooEarly");
+  await r.reverts("execute before the window's beacon time reverts (keeper)", A.keeper, { address: crowd, abi: C, functionName: "execute", args: [TSLA] }, "TooEarly");
+  await r.reverts("an outsider cannot execute a book (keeper-only until windowEnd - GRACE)", A.outsider, { address: crowd, abi: C, functionName: "execute", args: [TSLA] }, "NotKeeper");
 
   // Revoked user: buys refused, exits still work.
   const fourth = A.fourth;

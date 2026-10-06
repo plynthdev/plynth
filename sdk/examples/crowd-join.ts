@@ -80,7 +80,7 @@ await runExample("crowd-join", async ({ dep, pub, accounts, now, warpTo, send, c
   const { executeAfter } = await nextExecution(pub, crowd, tsla);
   check(executeAfter === at && executeAfter < tomorrow + DAY, "execution time inside the window");
   await warpTo((executeAfter > (await now()) ? executeAfter : await now()) + 1n);
-  await send(anyone, executeTx(crowd, tsla));
+  await send(keeper, executeTx(crowd, tsla)); // keeper-only until windowEnd - GRACE
 
   // 5. Allocation proof: recompute from logs alone, compare with the contract, then claim openly.
   const r = await recomputeBook(pub, crowd, tsla, bookId, BigInt(dep.deployBlock));

@@ -97,7 +97,7 @@ contract EligibilityGateTest is CrowdBuyBase {
         uint64 at = _reveal(address(tokA), 0, SECRET);
         vm.warp(at);
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
 
         // u joins the next book while still eligible, then is revoked
         _accrue(u, 7 * U);

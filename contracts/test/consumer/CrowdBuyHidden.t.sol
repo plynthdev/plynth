@@ -56,7 +56,7 @@ contract CrowdBuyHiddenTest is CrowdBuyBase {
         vm.warp(GENESIS);
         vm.warp(_reveal(address(tokA), 0, SECRET));
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     // ---------------------------------------------------------------- vault: hidden keys

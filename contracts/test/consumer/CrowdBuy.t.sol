@@ -33,7 +33,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.warp(GENESIS + 1 days - 1);
         _freshFeeds();
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.CrowdTooSmall.selector, uint32(2), uint32(3)));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_executeRevertsBeforeBeaconTime() public {
@@ -41,10 +41,10 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.warp(at - 1);
         _freshFeeds();
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.TooEarly.selector, at));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.warp(at);
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_unrevealedBeaconFallsBackToWindowEndMinusGrace() public {
@@ -54,10 +54,10 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.warp(fallbackAt - 1);
         _freshFeeds();
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.TooEarly.selector, fallbackAt));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.warp(fallbackAt);
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_executeRevertsWithoutCommit() public {
@@ -65,28 +65,28 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.warp(GENESIS + 1 days - 1);
         _freshFeeds();
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.TooEarly.selector, type(uint64).max));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_executeRevertsWhenValuerOnHold() public {
         _readyBook();
         feedA.setUpdatedAt(block.timestamp - 2 hours - 1); // feed stale (off-hours)
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.MarketOnHold.selector, address(tokA)));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_executeRevertsBeforeGenesis() public {
         for (uint256 i; i < 3; ++i) _joinA(_user(i), 10 * U);
         vm.expectRevert(CrowdBuy.BeforeGenesis.selector);
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_atMostOneExecutionPerWindow() public {
         _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         for (uint256 i = 3; i < 6; ++i) _joinA(_user(i), 10 * U);
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.AlreadyExecutedThisWindow.selector, GENESIS));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
     }
 
     function test_R1_bookRollsIntoNextWindowWhenCrowdTooSmall() public {
@@ -97,7 +97,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.warp(GENESIS + 1 days - 1);
         _freshFeeds();
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.CrowdTooSmall.selector, uint32(2), uint32(3)));
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
 
         // Window 1: same book, third user arrives, executes at window 1's beacon time.
         vm.warp(_windowStart(1));
@@ -109,7 +109,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         uint64 at = _reveal(address(tokA), 1, SECRET);
         vm.warp(at);
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         assertTrue(crowd.book(address(tokA), 0).executed);
     }
 
@@ -153,7 +153,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         _readyBook();
         _setPool(address(tokA), PRICE_A * 105 / 100); // pool 5% worse than oracle, cap is 1%
         vm.expectPartialRevert(StockRouter.Slippage.selector);
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         (uint256 id, CrowdBuy.Book memory b) = crowd.openBook(address(tokA));
         assertEq(id, 0);
         assertFalse(b.executed);
@@ -164,7 +164,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R3_allocationIsFloorOfProRata() public {
         (address[] memory users,) = _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         CrowdBuy.Book memory b = crowd.book(address(tokA), 0);
         assertEq(b.usdgTotal, 60 * U);
         for (uint256 i; i < 3; ++i) {
@@ -183,7 +183,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         _commit(address(tokA), 0, SECRET);
         vm.warp(GENESIS + 1 days - 1 hours);
         _freshFeeds();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         CrowdBuy.Book memory b = crowd.book(address(tokA), 0);
 
         uint256 sum;
@@ -202,7 +202,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R3_dustOnlySettlesWhenLastAccountSettles() public {
         (address[] memory users,) = _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.prank(users[0]);
         crowd.claimOpen(address(tokA), 0);
         vm.prank(users[1]);
@@ -219,7 +219,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function testFuzz_R4_multiplierChangeAfterExecuteDoesNotChangeAllocation(uint256 m) public {
         (address[] memory users,) = _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         uint256 a0 = crowd.allocationOf(address(tokA), 0, users[0]);
         tokA.setMultiplier(bound(m, 1, 100e18));
         assertEq(crowd.allocationOf(address(tokA), 0, users[0]), a0);
@@ -271,7 +271,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.prank(_user(99));
         vm.expectRevert(CrowdBuy.NoOrder.selector);
         crowd.cancel(address(tokA), 0);
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.prank(users[0]);
         vm.expectRevert(CrowdBuy.AlreadyExecuted.selector);
         crowd.cancel(address(tokA), 0);
@@ -281,7 +281,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R6_claimOnlyOnce() public {
         (address[] memory users,) = _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.startPrank(users[0]);
         crowd.claimOpen(address(tokA), 0);
         vm.expectRevert(CrowdBuy.AlreadySettled.selector);
@@ -294,7 +294,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         vm.prank(users[0]);
         vm.expectRevert(CrowdBuy.NotExecuted.selector);
         crowd.claimOpen(address(tokA), 0);
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.prank(_user(99));
         vm.expectRevert(CrowdBuy.NoOrder.selector);
         crowd.claimOpen(address(tokA), 0);
@@ -302,7 +302,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R6_deliverIsKeeperOnlyAndRejectsUnknownRoutes() public {
         (address[] memory users,) = _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.expectRevert(CrowdBuy.NotKeeper.selector);
         crowd.deliver(address(tokA), 0, users[0], abi.encode(uint8(1)));
         vm.startPrank(keeper);
@@ -330,7 +330,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         vault.setSettings(SavingsVault.Settings(10, 1, uint64(500 * U), 0, 1)); // Quiet
         vm.prank(users[1]);
         vault.setSettings(SavingsVault.Settings(10, 1, uint64(500 * U), 0, 2)); // Hidden
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         vm.prank(owner);
         crowd.setKeeper(address(0)); // even with no keeper
         for (uint256 i; i < 2; ++i) {
@@ -346,7 +346,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R8_newBookOpensImmediatelyAfterExecution() public {
         _readyBook();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         (uint256 id, CrowdBuy.Book memory b) = crowd.openBook(address(tokA));
         assertEq(id, 1);
         assertEq(b.openedAt, block.timestamp);
@@ -363,7 +363,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         (address[] memory a, uint16[] memory w) = _one(address(tokA));
         _prepare(late, a, w, 9 * U);
         tokA.arm(crowd, late); // joins when the swap output reaches CrowdBuy
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         assertEq(tokA.hookUser(), address(0), "hook fired");
         assertEq(crowd.orderOf(address(tokA), 0, late), 0);
         assertEq(crowd.orderOf(address(tokA), 1, late), 9 * U);
@@ -414,7 +414,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         _freshFeeds();
         (uint80 roundId,,,,) = feedA.latestRoundData();
         vm.recordLogs();
-        crowd.execute(address(tokA));
+        _executeAsKeeper(address(tokA));
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
         for (uint256 i; i < logs.length; ++i) {
@@ -441,5 +441,44 @@ contract CrowdBuyTest is CrowdBuyBase {
         emit CrowdBuy.Cancelled(address(tokA), 1, c, 1 * U);
         vm.prank(c);
         crowd.cancel(address(tokA), 1);
+    }
+
+    // ---------------------------------------------------------------- S6 (security review 2026-10-06)
+
+    /// At the beacon time a stranger cannot be the one who executes: they would move the pool, execute the
+    /// whole book against it and move it back in one transaction.
+    function test_S6_strangerCannotExecuteAtTheBeaconTime() public {
+        _readyBook();
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(CrowdBuy.NotKeeper.selector);
+        crowd.execute(address(tokA));
+        vm.prank(keeper);
+        crowd.execute(address(tokA));
+        assertTrue(crowd.book(address(tokA), 0).executed);
+    }
+
+    /// A dead keeper never blocks a book: from windowEnd - GRACE anyone may execute, but only within half the
+    /// slippage band, so a sandwich around that public moment is worth half as much.
+    function test_S6_permissionlessFallbackAfterGraceWithTighterSlippage() public {
+        _readyBook();
+        address stranger = makeAddr("stranger");
+        uint64 fallbackAt = GENESIS + 1 days - 1 hours;
+        vm.warp(fallbackAt - 1);
+        _freshFeeds();
+        vm.prank(stranger);
+        vm.expectRevert(CrowdBuy.NotKeeper.selector);
+        crowd.execute(address(tokA));
+
+        vm.warp(fallbackAt);
+        _freshFeeds();
+        _setPool(address(tokA), PRICE_A * 10_070 / 10_000); // 0.7% worse: inside 1%, outside the fallback's 0.5%
+        vm.prank(stranger);
+        vm.expectPartialRevert(StockRouter.Slippage.selector);
+        crowd.execute(address(tokA));
+        _setPool(address(tokA), PRICE_A * 10_030 / 10_000); // 0.3%: inside both
+        vm.prank(stranger);
+        crowd.execute(address(tokA));
+        assertTrue(crowd.book(address(tokA), 0).executed);
     }
 }

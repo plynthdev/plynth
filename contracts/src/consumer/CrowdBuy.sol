@@ -27,6 +27,7 @@ interface IShieldedDeposit {
 
 interface IExecuteBeacon {
     function executeAfter(bytes32 key) external view returns (uint64);
+    function GRACE() external view returns (uint64);
 }
 
 /// Pools many small USDG buys of one Stock Token into one swap.
@@ -247,14 +248,24 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         return keccak256(abi.encode(asset, windowStart));
     }
 
-    /// Anyone. Requires: crowd >= MIN_CROWD, the window's beacon time has passed, not yet executed this window,
-    /// and the oracle is not on hold (stale/off-hours). The router enforces an oracle-based minOut.
+    /// The keeper. Requires: crowd >= MIN_CROWD, the window's beacon time has passed, not yet executed this
+    /// window, and the oracle is not on hold (stale/off-hours). The router enforces an oracle-based minOut.
+    /// Keeper-only because whoever executes picks the block: a stranger could move the pool, execute the whole
+    /// book against it up to the slippage band and move it back in one transaction. So a dead keeper never
+    /// blocks a book, anyone may execute from `windowEnd - beacon.GRACE()` on (the beacon's own fallback time),
+    /// with half the slippage band: that moment is public, so a sandwich around it is worth half as much, and
+    /// a pool too far off simply waits (savers can always cancel).
     function execute(address asset) external nonReentrant {
         uint256 bookId = currentBookId[asset];
         Book storage b = _books[asset][bookId];
         if (b.executed) revert AlreadyExecuted(); // unreachable: the current book is never executed
         if (b.accounts < MIN_CROWD) revert CrowdTooSmall(b.accounts, MIN_CROWD);
-        (uint64 start,) = windowOf(block.timestamp);
+        (uint64 start, uint64 end) = windowOf(block.timestamp);
+        uint16 slip = slippageBps;
+        if (msg.sender != keeper) {
+            if (block.timestamp < end - beacon.GRACE()) revert NotKeeper();
+            slip = slip / 2;
+        }
         if (lastExecutedWindow[asset] == start + 1) revert AlreadyExecutedThisWindow(start);
         uint64 after_ = beacon.executeAfter(beaconKey(asset, start));
         if (block.timestamp < after_) revert TooEarly(after_);
@@ -271,7 +282,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         IERC20 token = IERC20(asset);
         uint256 before = token.balanceOf(address(this));
         usdg.forceApprove(address(router), total);
-        router.buy(asset, total, slippageBps, address(this));
+        router.buy(asset, total, slip, address(this));
         uint256 rawOut = token.balanceOf(address(this)) - before;
         b.rawOut = rawOut;
         emit Executed(asset, bookId, total, rawOut, accounts, q.roundId);

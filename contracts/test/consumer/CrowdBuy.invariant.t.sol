@@ -87,6 +87,7 @@ contract CrowdHandler is Test {
     function execute(uint256 assetSeed) external {
         uint256 i = assetSeed % assets.length;
         feeds[i].set(feeds[i].latestAnswer());
+        vm.prank(keeper); // keeper-only until windowEnd - GRACE
         try crowd.execute(assets[i]) {
             executions++;
         } catch {}

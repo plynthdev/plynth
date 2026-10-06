@@ -56,7 +56,8 @@ export function setMixTx(vault: Address, mix: readonly MixEntry[]): UnsignedTx {
 export const joinTx = (crowd: Address, user: Address) => tx(crowd, crowdBuyAbi, "join", [user]);
 /** cancel(asset, bookId): sender's whole order in a not-yet-executed book goes back to their vault balance. */
 export const cancelTx = (crowd: Address, asset: Address, bookId: bigint) => tx(crowd, crowdBuyAbi, "cancel", [asset, bookId]);
-/** execute(asset): anyone, once the crowd is big enough and the window's beacon time has passed. */
+/** execute(asset): the keeper, once the crowd is big enough and the window's beacon time has passed; anyone from
+ *  windowEnd - GRACE on (a dead keeper never blocks a book), then with half the slippage band. */
 export const executeTx = (crowd: Address, asset: Address) => tx(crowd, crowdBuyAbi, "execute", [asset]);
 /** claimOpen(asset, bookId): the ungated exit, tokens to the sender's own address (public). */
 export const claimOpenTx = (crowd: Address, asset: Address, bookId: bigint) => tx(crowd, crowdBuyAbi, "claimOpen", [asset, bookId]);

@@ -332,7 +332,7 @@ export async function crowd(x: TCtx) {
       return { tx: e.transactionHash, assertion: `Committed(key(${r.who(a)}, ${next}))` };
     });
   }
-  await r.reverts("execute before the window's beacon time reverts", A.open, { address: crowd, abi: C, functionName: "execute", args: [assets[0]] }, "TooEarly");
+  await r.reverts("a saver cannot execute a book (keeper-only until windowEnd - GRACE)", A.open, { address: crowd, abi: C, functionName: "execute", args: [assets[0]] }, "NotKeeper");
   await r.check("API lists the open books", async () => {
     const res = await api("/v1/crowd/books");
     expect(res.status === 200, `HTTP ${res.status}`);
