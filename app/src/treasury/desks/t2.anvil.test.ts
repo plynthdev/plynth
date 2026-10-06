@@ -19,10 +19,9 @@ import { Webhooks } from "@/treasury/risk/webhooks";
 import { AccountExecutor, basisSleeveAbi, InHouseClient, venueValuerAbi } from "@/treasury/venues";
 import { compileTemplate, loadTemplate } from "@/treasury/policy-compiler";
 import { dirname } from "node:path";
+import { spawnAnvil, type Anvil } from "@/testing/anvil";
 import { Kit, ROOT } from "@/testing/treasury-kit";
 
-const PORT = 9550 + Math.floor(Math.random() * 50);
-const RPC = `http://127.0.0.1:${PORT}`;
 const E18 = 10n ** 18n;
 const E6 = 10n ** 6n;
 const KEYS = {
@@ -40,7 +39,7 @@ const policyAbi = parseAbi([
   "function activate()",
 ]);
 
-let anvil: ReturnType<typeof Bun.spawn> | undefined;
+let anvil: Anvil | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 let kit: Kit;
 let ready = false;
@@ -59,16 +58,10 @@ beforeAll(async () => {
     if (forge) Bun.spawnSync([forge, "build", "--root", join(ROOT, "contracts")], { stdout: "ignore", stderr: "ignore" });
   }
   if (!Bun.which("anvil") || !existsSync(join(ROOT, "contracts", "out", "BasisSleeve.sol"))) return;
-  anvil = Bun.spawn(["anvil", "--port", String(PORT), "--silent"], { stdout: "ignore", stderr: "ignore" });
-  kit = new Kit(RPC);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await kit.pub.getChainId();
-      break;
-    } catch {
-      await Bun.sleep(100);
-    }
-  }
+  // An OS-assigned port: a random one in a shared range could be another run's anvil (testing/anvil.ts).
+  anvil = await spawnAnvil();
+  kit = new Kit(anvil.rpc);
+  await kit.pub.getChainId();
   server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -130,8 +123,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   server?.stop(true);
-  anvil?.kill();
-  await anvil?.exited;
+  await anvil?.stop();
 });
 
 const ledger = new MemoryLedger();
@@ -213,7 +205,7 @@ describe("T2 desks on anvil", () => {
     expect(i.fundingRate < 0n).toBe(true);
     expect(decideBasis(i, {})).toEqual({ action: "close", reason: "funding_flip" });
     const closed = await desk.close(i.openPairId!);
-    expect(closed.ok).toBe(true);
+    expect(closed.ok, JSON.stringify(closed, (_k, v) => (typeof v === "bigint" ? v.toString() : v))).toBe(true);
     await ledger.record(31337, kit.a.account!, { venue: basisClient.name, underlying: a.tsla!, desk: "basis", tokens: pair0.perpTokens });
     const pair = (await desk.pairs())[0]!;
     expect(pair.closedAt > 0n).toBe(true);

@@ -5,6 +5,7 @@
 //   2. cash desk: keep idle USDG >= reserveBps of NAV, sweep the rest into the vault, redeem when short.
 // Every operation is first simulated with eth_call from the desk key; a revert is logged to desk_actions
 // with its reason code and nothing is sent.
+import { withEstimatedGas } from "@/lib/gas";
 import {
   encodeAbiParameters,
   getAddress,
@@ -217,7 +218,9 @@ export async function attempt(ctx: DeskContext, op: Op): Promise<Outcome> {
     return { ok: false, rejection: sim.rejection, sent: false };
   }
   const { desk } = deskOf(ctx, op.desk);
-  const hash = await desk.wallet.writeContract(sim.request as Parameters<WalletClient["writeContract"]>[0]);
+  // Explicit gas: a bare estimate can miss accrual a sleeve's venue does once a second has passed (lib/gas.ts).
+  const request = await withEstimatedGas(ctx.pub, sim.request as Record<string, unknown>);
+  const hash = await desk.wallet.writeContract(request as Parameters<WalletClient["writeContract"]>[0]);
   const rcpt = await ctx.pub.waitForTransactionReceipt({ hash });
   if (rcpt.status !== "success") {
     await ctx.log.record({ ...row, status: "reverted", reason: "reverted on-chain after a passing simulation", txHash: hash, blockNumber: rcpt.blockNumber });
