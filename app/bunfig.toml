@@ -1,2 +1,2 @@
 [test]
-pathIgnorePatterns = ["node_modules/**", "deployments/**", "data/**"]
+pathIgnorePatterns = ["node_modules/**", "deployments/**", "data/**", ".fork/**"]

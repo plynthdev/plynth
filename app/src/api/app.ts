@@ -101,6 +101,8 @@ export function createApp(deps: Deps, opts: { corsOrigins?: string[] | undefined
       } catch (e) {
         const err = e instanceof TRPCError ? e : new TRPCError({ code: "INTERNAL_SERVER_ERROR", cause: e });
         const status = getHTTPStatusCodeFromError(err);
+        // The client only sees "internal error"; the operator needs the cause.
+        if (status >= 500) console.error(`[api] ${p.method} ${p.path}: ${err.cause instanceof Error ? (err.cause.stack ?? err.cause.message) : err.message}`);
         const message = status >= 500 ? "internal error" : err.message;
         return c.json({ error: { code: err.code, message } }, status as 400);
       }

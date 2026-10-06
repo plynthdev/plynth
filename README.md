@@ -324,6 +324,20 @@ cd .. && .githooks/public-guard.sh   # also the pre-commit hook (`bun install` i
 
 The end-to-end runs use local anvil forks only (nothing is broadcast) and a throwaway `plynth_e2e_*` database.
 
+### Persistent mainnet fork
+
+```sh
+cd app
+bash scripts/fork/up.sh              # anvil fork of mainnet (chain id 31337), whole stack deployed, services running
+bun run scripts/fork/exercise.ts     # every transaction the stack supports, report in app/.fork/reports/
+bash scripts/fork/down.sh            # stop (state kept in app/.fork/state.json); reset.sh wipes it
+```
+
+`contracts/script/ForkMainnet.s.sol` deploys against the real mainnet USDG, Stock Tokens, Chainlink feeds, v4
+pools and steakUSDG (Valuer staleness 7 days on the fork only). The fork runs as chain id 31337 so nothing signed
+on it can be replayed on mainnet. A caching proxy (`scripts/fork/rpc-cache.ts`) sits between anvil and the public
+RPC, which keeps only recent state. RPC on 127.0.0.1:8545, API on :8789; import only anvil's public dev accounts.
+
 ## License
 
 [MIT](LICENSE)

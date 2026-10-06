@@ -53,6 +53,7 @@ coverage/
 app/deployments/*
 !app/deployments/README.md
 app/data/
+app/.fork/
 circuits/*/target/
 sdk/.test-dist-*/
 # PLAN* above also matches these source files on case-insensitive file systems (macOS).

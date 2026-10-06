@@ -6,7 +6,7 @@
 // Linking limits are written up in the SDK README.
 import { getAddress, isAddress, isHex, type AbiEvent, type Address, type Hex, type PublicClient } from "viem";
 import { nullifierSpentEvent } from "../vault/abi";
-import { MAX_RAW, P, TREE_DEPTH, commitmentOf, hashNode, toBytes32 } from "../vault/note";
+import { MAX_RAW, P, TREE_DEPTH, commitmentOf, hashNode, initVault, toBytes32 } from "../vault/note";
 import { NoteTree } from "../vault/tree";
 import { logsChunked, rootUpdatedEvent, type PoolHistory } from "./scan";
 import type { Period, StatementNote } from "./statement";
@@ -162,6 +162,8 @@ export async function verifyDisclosure(
 ): Promise<DisclosureVerdict> {
   const v: DisclosureVerdict = { ok: false, chainId: null, pool: null, period: null, root: null, rootBlock: null, notes: [], totals: [], errors: checkBundleShape(bundle) };
   if (v.errors.length) return v;
+  // Commitments and paths are Poseidon2: load it here, so a stateless verifier (the API) needs no setup call.
+  await initVault();
   const b = bundle as DisclosureBundle;
   const pool = getAddress(b.pool);
   Object.assign(v, { chainId: b.chainId, pool, period: b.period, root: b.root });
