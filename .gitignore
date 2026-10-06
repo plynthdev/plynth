@@ -52,8 +52,12 @@ coverage/
 # Project output and local data.
 app/deployments/*
 !app/deployments/README.md
+# Robinhood Chain testnet (46630) addresses are public: committed for anyone running the stack against them.
+!app/deployments/46630.json
+!app/deployments/46630-treasury.json
 app/data/
 app/.fork/
+app/.testnet/
 circuits/*/target/
 sdk/.test-dist-*/
 # PLAN* above also matches these source files on case-insensitive file systems (macOS).

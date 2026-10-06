@@ -74,7 +74,20 @@ No contract is upgradeable. OpenZeppelin v5.7.0 and forge-std v1.17.0 are vendor
 
 ### Deployment
 
-Not deployed to mainnet. The deploy scripts in `contracts/script` write every address to `app/deployments/<chainId>.json` (gitignored); see [Deployment file](#deployment-file).
+Not deployed to mainnet. Deployed to Robinhood Chain testnet (`46630`) with mock assets (mock USDG, three mock Stock Tokens priced from the real mainnet feeds, a mock ERC-4626 USDG vault) and the chain's real Uniswap v4 PoolManager, Permit2 and ERC-5564/6538 contracts. Every testnet address is in [`app/deployments/46630.json`](app/deployments/46630.json) (and `46630-treasury.json`); explorer: <https://explorer.testnet.chain.robinhood.com>.
+
+| Testnet contract | Address |
+| --- | --- |
+| `SavingsVault` | `0x6d7F16Ecc1E950db5C1768Be1c5a24af238Bf1eF` |
+| `CrowdBuy` | `0x4312bC9cA65743819F4e9079A30862218c4c7E3E` |
+| `StealthClaims` | `0x72772eCB69f6F07919883AaD8DbfdB19B6f4b295` |
+| `ShieldedPool` | `0x2F5c8705465aC966478E276E9B4252E2C2dCee3D` |
+| `TreasuryFactory` | `0xfe678Cc84D33B81A6169be1B092227847CaD9967` |
+| `PerpPool` | `0xC10edfC82aa0AC28Fe7526234d6da0C631ec4332` |
+| `PlinthStaking` | `0x1439769EA41F94B648041a6e0C9705Bdc9a36928` |
+| `MockUSDG` (mUSDG, 6 dp) | `0xd4D641DB556982C4E18aA94f7fA8d78f79D1600B` |
+
+The deploy scripts in `contracts/script` write every address to `app/deployments/<chainId>.json`; see [Deployment file](#deployment-file).
 
 ### Services (`app/src`)
 
@@ -115,13 +128,16 @@ forge test
 RHC_MAINNET_RPC_URL=https://rpc.mainnet.chain.robinhood.com forge test   # also runs the mainnet-fork tests
 ```
 
-Testnet deploy (mock assets, the core contracts, real Uniswap v4 pools, then the consumer contracts):
+Testnet deploy of the whole stack in one script (`TestnetStack.s.sol` refuses every chain but 46630). `app/scripts/testnet/setup.ts` runs it after a gas estimate (forge simulation plus the Orbit L1 data fee) and then funds the service wallets; see [Testnet stack](#testnet-stack):
 
 ```sh
 cd contracts
-forge script script/TestnetKit.s.sol:TestnetKit --account <keystore> --sender <address> --rpc-url https://rpc.testnet.chain.robinhood.com --broadcast --slow
-KEEPER_ADDRESS=<keeper> forge script script/TestnetConsumer.s.sol:TestnetConsumer --account <keystore> --sender <address> --rpc-url https://rpc.testnet.chain.robinhood.com --broadcast --slow
+TESTNET_KEEPER=<keeper> TESTNET_ATTESTER=<attester> TESTNET_COMMITTEE=<committee> \
+  forge script script/TestnetStack.s.sol:TestnetStack --keystore <keystore> --password-file <file> --sender <address> \
+  --rpc-url https://rpc.testnet.chain.robinhood.com --broadcast --slow
 ```
+
+`TestnetKit.s.sol` + `TestnetConsumer.s.sol` (+ `TestnetPerpKit`, `TestnetTokenKit`, `TreasuryFactory`) deploy the same pieces separately.
 
 ## Services
 
@@ -279,7 +295,7 @@ Never commit `.env` files or keys; they are ignored by `.gitignore`. Prefer Foun
 
 ### Deployment file
 
-The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored: local and fork runs write the same chain ids.
+The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored (local and fork runs write the same chain ids) except the testnet files `46630.json` and `46630-treasury.json`, written by `TestnetStack.s.sol` and `app/scripts/testnet/setup.ts`.
 
 ## API
 
@@ -323,6 +339,19 @@ cd .. && .githooks/public-guard.sh   # also the pre-commit hook (`bun install` i
 ```
 
 The end-to-end runs use local anvil forks only (nothing is broadcast) and a throwaway `plynth_e2e_*` database.
+
+### Testnet stack
+
+```sh
+cd app
+bash scripts/testnet/up.sh                      # chain id must be 46630; deploys + funds once, then starts every service
+bun run scripts/testnet/exercise.ts             # every transaction that does not wait on real time, through the services
+bun run scripts/testnet/exercise.ts --resume    # the time-bound steps that are due (crowd window, 48h timelocks, unbonding)
+bun run scripts/testnet/exercise.ts --report-only
+bash scripts/testnet/down.sh                    # stops the services
+```
+
+Sends real testnet transactions from Foundry keystores (`~/.foundry/keystores/plynth-*`, password files in `~/.plynth-testnet`). Every send first checks that the RPC answers chain id 46630 and refuses anything else (mainnet 4663 by name). State, logs and reports go to `app/.testnet/` (gitignored); the database is `plynth_testnet`. Tester wallets to fund (MetaMask accounts) come from `TESTNET_TESTERS` or `~/.plynth-testnet/testers`.
 
 ### Persistent mainnet fork
 

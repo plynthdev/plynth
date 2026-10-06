@@ -4,7 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BaseError, ContractFunctionRevertedError, decodeErrorResult, type Abi, type Address, type Hex, type PublicClient, type TransactionReceipt } from "viem";
-import type { HDAccount } from "viem/accounts";
+import type { LocalAccount } from "viem";
 import { estimateGasAhead, withGasHeadroom } from "@/lib/gas";
 import { clients, ROOT } from "../lib";
 import type { KnownBug } from "./known-bugs";
@@ -108,21 +108,22 @@ export class Recorder {
   area = "setup";
   readonly pub: PublicClient;
   private readonly wallets = new Map<string, ReturnType<ReturnType<typeof clients>["wallet"]>>();
-  readonly c = clients();
 
+  /** `c`: the chain's clients; the fork's by default (the testnet exercise passes its chain-id guarded ones). */
   constructor(
     readonly names: Map<string, string>,
     readonly known: KnownBug[],
+    readonly c: ReturnType<typeof clients> = clients(),
   ) {
     this.pub = this.c.pub;
   }
 
-  who(a: Address | HDAccount | string): string {
+  who(a: Address | LocalAccount | string): string {
     const addr = typeof a === "string" ? a : a.address;
     return this.names.get(addr.toLowerCase()) ?? `${addr.slice(0, 8)}…`;
   }
 
-  wallet(acct: HDAccount) {
+  wallet(acct: LocalAccount) {
     let w = this.wallets.get(acct.address);
     if (!w) {
       w = this.c.wallet(acct);
@@ -153,7 +154,7 @@ export class Recorder {
    * Sends a transaction (simulated first: a revert is recorded with its decoded reason) and runs `assert` on the
    * receipt. Returns the receipt, or undefined when the step failed.
    */
-  async send(step: string, from: HDAccount, call: Call, assert?: (r: TransactionReceipt) => Promise<string | void> | string | void): Promise<TransactionReceipt | undefined> {
+  async send(step: string, from: LocalAccount, call: Call, assert?: (r: TransactionReceipt) => Promise<string | void> | string | void): Promise<TransactionReceipt | undefined> {
     const t0 = Date.now();
     const actor = this.who(from);
     let hash: Hex | undefined;
@@ -176,7 +177,7 @@ export class Recorder {
   }
 
   /** A raw transaction (deploys, ETH transfers). */
-  async sendRaw(step: string, from: HDAccount, tx: { to?: Address; data?: Hex; value?: bigint }, assert?: (r: TransactionReceipt) => Promise<string | void> | string | void) {
+  async sendRaw(step: string, from: LocalAccount, tx: { to?: Address; data?: Hex; value?: bigint }, assert?: (r: TransactionReceipt) => Promise<string | void> | string | void) {
     const t0 = Date.now();
     let hash: Hex | undefined;
     let r: TransactionReceipt | undefined;
@@ -194,7 +195,7 @@ export class Recorder {
     }
   }
 
-  async deploy(step: string, from: HDAccount, name: string, args: unknown[] = []): Promise<Address | undefined> {
+  async deploy(step: string, from: LocalAccount, name: string, args: unknown[] = []): Promise<Address | undefined> {
     const t0 = Date.now();
     let hash: Hex | undefined;
     try {
@@ -211,7 +212,7 @@ export class Recorder {
   }
 
   /** Negative case: the call must revert with `expected` (an error name, optionally with its args). */
-  async reverts(step: string, from: HDAccount | Address, call: Call, expected: string, opts: { blockOverrides?: { time?: bigint } } = {}): Promise<boolean> {
+  async reverts(step: string, from: LocalAccount | Address, call: Call, expected: string, opts: { blockOverrides?: { time?: bigint } } = {}): Promise<boolean> {
     const t0 = Date.now();
     const account = typeof from === "string" ? from : from.address;
     let got = "did not revert";

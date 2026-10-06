@@ -2,7 +2,7 @@
 // local anvil fork only (chain id 31337); the real chain is read once, by anvil, through --fork-url.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createPublicClient, createWalletClient, defineChain, getAddress, http, type Address, type Hex, type PublicClient } from "viem";
+import { createPublicClient, createWalletClient, defineChain, getAddress, http, type Address, type Hex, type LocalAccount, type PublicClient } from "viem";
 import { mnemonicToAccount, type HDAccount } from "viem/accounts";
 
 export const APP = join(import.meta.dir, "..", "..");
@@ -82,7 +82,7 @@ export const forkChain = (rpc = RPC) =>
 export function clients(rpc = RPC) {
   const chain = forkChain(rpc);
   const pub = createPublicClient({ chain, transport: http(rpc, { timeout: 60_000 }), pollingInterval: 100 }) as PublicClient;
-  const wallet = (acct: HDAccount) => createWalletClient({ chain, transport: http(rpc, { timeout: 60_000 }), account: acct, pollingInterval: 100 });
+  const wallet = (acct: LocalAccount) => createWalletClient({ chain, transport: http(rpc, { timeout: 60_000 }), account: acct, pollingInterval: 100 });
   const rpcCall = <T = unknown>(method: string, params: unknown[] = []) => pub.request({ method: method as never, params: params as never }) as Promise<T>;
   return { chain, pub, wallet, rpc: rpcCall };
 }

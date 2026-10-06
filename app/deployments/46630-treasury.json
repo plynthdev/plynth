@@ -1,0 +1,8 @@
+{
+  "chainId": 46630,
+  "treasuryFactory": "0xfe678Cc84D33B81A6169be1B092227847CaD9967",
+  "treasuryFactoryBlock": 130077131,
+  "policyGuard": "0x7EdCe82627682e43eb2845cEE813d137aC6DB369",
+  "receipts": "0x962684ebe142F2E7f3CeC55Fe2F201e379B6574f",
+  "templateRegistry": "0x5cb47A7ECA08CB8EE04f4838e9244410fC4cB1f3"
+}
