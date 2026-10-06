@@ -6,9 +6,10 @@
 //   Stock Tokens bought through Plynth's StockRouter on the real v4 pools (accounts 0-9), like any user would.
 //
 // `bun scripts/fork/fund.ts` funds again (top-up); setup.ts calls `prefundDeployer` before the deploy and `fund`
-// after it. Anvil's dev keys are public test keys; nothing here works on a real network (impersonation is an
+// after it. `bun scripts/fork/fund.ts <address> [...]` funds only those addresses (10,000 ETH + 100,000 USDG each,
+// any EIP-7702 code stripped): for a MetaMask account imported into the fork for browser testing. Anvil's dev keys are public test keys; nothing here works on a real network (impersonation is an
 // anvil-only RPC).
-import { encodeFunctionData, getAddress, parseAbi, type Address } from "viem";
+import { encodeFunctionData, getAddress, isAddress, parseAbi, type Address } from "viem";
 import { allAccounts, clients, devAccount, log, readForkDeployment, ROLE } from "./lib";
 
 export const USDG = getAddress("0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168");
@@ -117,7 +118,31 @@ export async function fund(opts: { usdgEach?: bigint; stockUsd?: bigint } = {}) 
   log(`$${stockUsd / U} each of ${picks.join(", ")} bought through StockRouter for accounts 0-9`);
 }
 
+/** CLI arguments -> checksummed addresses to fund (empty = the dev accounts). Throws on anything else. */
+export function parseFundArgs(args: string[]): Address[] {
+  return args.map((a) => {
+    if (!isAddress(a, { strict: false })) throw new Error(`not an address: ${a}`);
+    if (BigInt(a) === 0n) throw new Error("refusing the zero address");
+    return getAddress(a);
+  });
+}
+
+/** ETH + USDG for arbitrary addresses on the fork (strips EIP-7702 code so signatures verify as EOA). */
+export async function fundAddresses(addrs: Address[], usdgEach = 100_000n * U) {
+  const { pub, rpc } = clients();
+  for (const a of addrs) {
+    const code = await pub.getCode({ address: a });
+    if (code && code !== "0x") await rpc("anvil_setCode", [a, "0x"]);
+    await rpc("anvil_setBalance", [a, "0x21e19e0c9bab2400000"]); // 10,000 ETH
+    const have = await pub.readContract({ address: USDG, abi: erc20, functionName: "balanceOf", args: [a] });
+    if (have < usdgEach) await giveUsdg(a, usdgEach - have);
+    log(`${a}: 10000 ETH, ${usdgEach / U} USDG`);
+  }
+}
+
 if (import.meta.main) {
-  await fund();
+  const addrs = parseFundArgs(process.argv.slice(2));
+  if (addrs.length) await fundAddresses(addrs);
+  else await fund();
   process.exit(0);
 }

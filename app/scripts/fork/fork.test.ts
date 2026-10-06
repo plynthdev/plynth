@@ -10,6 +10,7 @@ import { exitCode, renderHtml, renderMarkdown, summarize } from "./exercise/repo
 import type { Step } from "./exercise/core";
 import { KNOWN_BUGS } from "./exercise/known-bugs";
 import { roundUp } from "./exercise/consumer-flow";
+import { parseFundArgs } from "./fund";
 
 type Req = { method: string; params?: unknown[] };
 
@@ -150,5 +151,17 @@ describe("round-up arithmetic (mirrors SavingsVault.roundUp)", () => {
     expect(roundUp(7_250_000n, 1, 3)).toBe(2_250_000n);
     expect(roundUp(1_000_000n, 10, 3)).toBe(27_000_000n);
     expect(roundUp(10_000_000n, 10, 3)).toBe(0n);
+  });
+});
+
+describe("fund.ts arguments", () => {
+  test("addresses are checksummed; none means the dev accounts", () => {
+    expect(parseFundArgs([])).toEqual([]);
+    expect(parseFundArgs(["0x09db0a93b389bef724429898f539aeb7ac2dd55f"])).toEqual(["0x09DB0a93B389bEF724429898f539AEB7ac2Dd55f"]);
+  });
+  test("anything but an address is refused, and so is the zero address", () => {
+    expect(() => parseFundArgs(["0x123"])).toThrow(/not an address/);
+    expect(() => parseFundArgs(["--all"])).toThrow(/not an address/);
+    expect(() => parseFundArgs([`0x${"0".repeat(40)}`])).toThrow(/zero address/);
   });
 });
