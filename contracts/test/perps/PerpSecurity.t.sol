@@ -57,4 +57,46 @@ contract PerpSecurityTest is PerpFixture {
         vm.stopPrank();
         assertEq(pool.lastDepositAt(attacker), 0);
     }
+
+    // ------------------------------------------------------------ S4: funding over an idle interval
+
+    function _skewedBookIdle() internal {
+        _params(0, 0, 50, 0, 1e12, 10_000, 10_000, 5e6);
+        _open(alice, true, 200_000e6, 20_000e6);
+        _open(bob, false, 50_000e6, 5_000e6);
+        skip(64 hours); // e.g. a weekend nobody touches the market
+        _refresh();
+    }
+
+    /// An LP past cooldown shrinks the pool just before the first accrual: the whole 64h must still be
+    /// charged at the liquidity that was really there.
+    function test_S4_withdrawBeforeAccrualCannotRepriceThePast() public {
+        _skewedBookIdle();
+        uint256 snap = vm.snapshotState();
+        market.funding();
+        int256 honest = market.longFundingIndex();
+        assertGt(honest, 0);
+        vm.revertToState(snap);
+
+        vm.startPrank(lp);
+        pool.withdraw(pool.maxWithdraw(lp), lp, lp);
+        vm.stopPrank();
+        market.funding();
+        assertEq(market.longFundingIndex(), honest, "funding for the idle window follows the old liquidity");
+    }
+
+    /// Mirror: a heavy-side whale deposits a lot just before accrual to erase the funding it owes.
+    function test_S4_depositBeforeAccrualCannotErasePastFunding() public {
+        _skewedBookIdle();
+        uint256 snap = vm.snapshotState();
+        market.funding();
+        int256 honest = market.longFundingIndex();
+        vm.revertToState(snap);
+
+        _fund(alice, 10_000_000e6);
+        vm.prank(alice);
+        pool.deposit(10_000_000e6, alice);
+        market.funding();
+        assertEq(market.longFundingIndex(), honest);
+    }
 }

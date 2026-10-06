@@ -21,7 +21,9 @@ import {PerpPool} from "./PerpPool.sol";
 /// work at the last price, with `offHoursSpreadBps` against the trader on decrease/close. Never trap a trader.
 ///
 /// Funding: rate/s = fundingK x (longOI - shortOI) / poolLiquid, heavier side pays, lighter side receives
-/// pro rata (only while both sides are open). Borrow fee `borrowBpsPerHour` on size goes to LPs.
+/// pro rata (only while both sides are open). The pool accrues every market before its liquidity changes, so
+/// the rate applied to an interval always used that interval's liquidity (USDG donated straight to the pool
+/// is the one change it cannot see, and it only lowers the rate at the donor's cost). Borrow fee `borrowBpsPerHour` on size goes to LPs.
 /// A realization's net profit (PnL - funding - borrow) is capped at size x maxProfitBps, which is the
 /// reserve the pool holds for it.
 contract PerpMarket is Ownable2Step, ReentrancyGuard {
@@ -189,6 +191,11 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         _syncReserve();
         pool.settle(msg.sender, reward, coll);
         emit Liquidated(account, msg.sender, size, eq, reward, pr);
+    }
+
+    /// Accrue funding and borrow to now. The pool calls this on every market before its liquidity changes.
+    function accrue() external {
+        _accrue();
     }
 
     /// Accrue funding and borrow to now; returns the current funding rate (1e18 fraction per second, paid by

@@ -11,6 +11,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 interface IPerpMarketValuation {
     /// Signed unrealized PnL of all traders in the market (asset units): positive = traders are up.
     function traderPnl() external view returns (int256);
+    /// Accrue funding and borrow to now (no-op if already accrued this second).
+    function accrue() external;
 }
 
 /// LP vault (ERC-4626 over USDG) that is the counterparty to every PerpMarket it lists.
@@ -151,7 +153,16 @@ contract PerpPool is ERC4626, Ownable2Step {
         return super.mint(shares, receiver);
     }
 
+    /// Funding rates divide by `liquidAssets`, so every market is accrued at the old liquidity before any
+    /// change to it: a rate computed now is never applied to an interval that had different liquidity.
+    function _accrueMarkets() internal {
+        for (uint256 i; i < _markets.length; i++) {
+            IPerpMarketValuation(_markets[i]).accrue();
+        }
+    }
+
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
+        _accrueMarkets();
         lastDepositAt[receiver] = block.timestamp;
         super._deposit(caller, receiver, assets, shares);
     }
@@ -162,6 +173,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     {
         uint256 until = lastDepositAt[owner_] + REDEEM_COOLDOWN;
         if (block.timestamp < until) revert Cooldown(until);
+        _accrueMarkets();
         super._withdraw(caller, receiver, owner_, assets, shares);
         if (liquidAssets() < totalReserved) revert PoolCapacity(liquidAssets(), totalReserved);
     }
@@ -184,6 +196,7 @@ contract PerpPool is ERC4626, Ownable2Step {
 
     /// Pull `amountIn` from `from`; `kept` of it becomes trader collateral, the rest (fees) goes to LPs.
     function lockCollateral(address from, uint256 amountIn, uint256 kept) external onlyMarket {
+        _accrueMarkets();
         if (amountIn > 0) IERC20(asset()).safeTransferFrom(from, address(this), amountIn);
         traderCollateral += kept;
     }
@@ -192,6 +205,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     /// is the LPs' gain or loss).
     function settle(address to, uint256 payout, uint256 collateralOut) external onlyMarket {
         if (collateralOut > traderCollateral) revert CollateralUnderflow();
+        _accrueMarkets();
         traderCollateral -= collateralOut;
         if (payout > 0) IERC20(asset()).safeTransfer(to, payout);
         if (liquidAssets() < totalReserved) revert PoolCapacity(liquidAssets(), totalReserved);
