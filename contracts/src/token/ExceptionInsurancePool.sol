@@ -21,7 +21,9 @@ import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
 ///
 /// Money in: fees from the FeeRouter (`depositFees`, no shares, raises the share value) and optional LP
 /// deposits (`deposit`, shares). LPs bear the claims. Withdrawing is two steps with a 14-day delay; shares
-/// waiting to withdraw still bear claims, so an LP cannot see a claim coming and leave first. Share value
+/// waiting to withdraw still bear claims, so an LP cannot see a claim coming and leave first, and they stop
+/// earning: the withdrawal pays min(value at request, value at withdraw), so staying ready to leave costs
+/// the fees (they go to the LPs who stay) instead of being free. Share value
 /// counts only assets not owed to queued claims. Virtual shares (1e6) make the first-depositor inflation
 /// trick unprofitable. No owner; the committee can only approve or reject claims.
 contract ExceptionInsurancePool is ReentrancyGuard {
@@ -64,6 +66,8 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     mapping(address => uint256) public sharesOf;
     mapping(address => uint256) public withdrawingOf;
     mapping(address => uint64) public withdrawReadyAt;
+    /// Value of the withdrawing shares when they were requested: the most the withdrawal pays.
+    mapping(address => uint256) public withdrawingValueOf;
 
     event ClaimFiled(uint256 indexed id, address indexed treasury, address indexed board, uint256 amount, bytes32 evidenceHash);
     event ClaimApproved(uint256 indexed id);
@@ -172,10 +176,12 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         _process();
     }
 
-    /// Locks `shares` for WITHDRAW_DELAY (restarted by every new request). Locked shares still bear claims.
+    /// Locks `shares` for WITHDRAW_DELAY (restarted by every new request). Locked shares still bear claims
+    /// but stop earning: their value is snapshotted now and the withdrawal pays at most that.
     function requestWithdraw(uint256 shares) external {
         if (shares == 0) revert ZeroAmount();
         if (sharesOf[msg.sender] < shares) revert InsufficientShares();
+        withdrawingValueOf[msg.sender] += previewRedeem(shares);
         sharesOf[msg.sender] -= shares;
         withdrawingOf[msg.sender] += shares;
         uint64 readyAt = uint64(block.timestamp + WITHDRAW_DELAY);
@@ -189,7 +195,10 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         uint64 readyAt = withdrawReadyAt[msg.sender];
         if (block.timestamp < readyAt) revert NotReady(readyAt);
         assets = previewRedeem(shares);
+        uint256 cap = withdrawingValueOf[msg.sender];
+        if (assets > cap) assets = cap; // fees earned while waiting stay with the LPs who stay
         withdrawingOf[msg.sender] = 0;
+        withdrawingValueOf[msg.sender] = 0;
         totalShares -= shares;
         usdg.safeTransfer(msg.sender, assets);
         emit Withdrawn(msg.sender, shares, assets);

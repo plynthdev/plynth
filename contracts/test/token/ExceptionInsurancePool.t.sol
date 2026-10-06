@@ -271,4 +271,19 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         pool.deposit(1e6);
         vm.stopPrank();
     }
+
+    /// S12: shares waiting to withdraw stop earning: an LP cannot stay "armed" for free and still collect
+    /// every fee (they still bear claims).
+    function test_S12_withdrawingSharesStopEarning() public {
+        uint256 s = _lp(lp, 1_000e6);
+        vm.prank(lp);
+        pool.requestWithdraw(s); // armed right away
+        _lp(lp2, 1_000e6);
+        _fund(1_000e6); // fees arrive while lp waits
+        vm.warp(block.timestamp + 14 days);
+        vm.prank(lp);
+        uint256 out = pool.withdraw();
+        assertApproxEqAbs(out, 1_000e6, 1, "no fees for shares waiting to leave");
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp2)), 2_000e6, 2, "the staying LP keeps them");
+    }
 }
