@@ -1,0 +1,60 @@
+/* Local-fork controls: built from the preview's own tokens so the dashboard keeps its look. */
+.fork-input {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  padding: 10px;
+  min-width: 170px;
+  font: 14px var(--mono);
+}
+.fork-textarea {
+  width: 100%;
+  min-height: 96px;
+  margin-top: 12px;
+  resize: vertical;
+}
+.fork-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.fork-actions .solid-button,
+.cap-control .solid-button {
+  margin-top: 0;
+}
+.settings-panel > .solid-button {
+  margin-top: 22px;
+}
+.solid-button[disabled] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.fork-dev-badge {
+  background: var(--cyan-light);
+  margin-left: 0;
+}
+.fork-error {
+  background: var(--pink);
+}
+.fork-log {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  font-size: 14px;
+  display: grid;
+  gap: 8px;
+}
+.fork-log li {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+.fork-log li[data-state="error"] {
+  background: var(--pink-light);
+}
+.fork-log li[data-state="ok"] {
+  background: var(--cyan-light);
+}
+.fork-log code {
+  font: 12px var(--mono);
+}

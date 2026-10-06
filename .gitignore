@@ -30,3 +30,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local-fork e2e (Playwright) output
+test-results/
+playwright-report/

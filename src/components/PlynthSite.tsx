@@ -4,6 +4,9 @@ import '../site/fonts.css';
 import '../site/style.css';
 import '../site/updates.css';
 import '../site/motion.css';
+import '../fork/fork.css';
+import { forkConfig } from '../fork/config';
+import { liveDashboard } from '../fork/dashboard';
 
 type SiteRuntime = ReturnType<typeof mountSite>;
 
@@ -11,7 +14,8 @@ export default function PlynthSite({ pathname }: { pathname?: string }) {
   const runtime = useRef<SiteRuntime | null>(null);
   const previousPath = useRef(pathname);
   useEffect(() => {
-    runtime.current = mountSite();
+    // Local-fork branch: the dashboard reads the fork stack's API and signs with a real wallet (VITE_FORK=0: preview).
+    runtime.current = mountSite(forkConfig().enabled ? { dashboard: liveDashboard } : {});
     return () => {
       runtime.current?.dispose();
       runtime.current = null;

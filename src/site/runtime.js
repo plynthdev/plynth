@@ -2,7 +2,8 @@ import { projects, articles } from './content.js';
 
 // Complete editable site runtime, mounted into the React-owned scaffold.
 // No iframe or dependency on the original hosted site.
-export function mountSite() {
+// options.dashboard (local-fork branch): a live dashboard {html(path, kit), setup({rerender, signal})} replacing the preview.
+export function mountSite(options = {}) {
  const rootLifecycle = new AbortController();
  const listen = (target, type, handler, options = {}) => {
   const signal = options.signal || rootLifecycle.signal;
@@ -18,7 +19,7 @@ const social=()=>['telegram','x','github'].map(n=>`<button class="social-btn" da
 function header(){document.querySelector('#header').innerHTML=`<div class="site-header"><a class="nav-brand" data-route href="/" aria-label="plynth home">${logo()}</a><button class="mobile-menu" aria-label="Open menu" aria-expanded="false">MENU</button><nav class="nav-links" aria-label="Main navigation">${nav.map(([url,label,symbol])=>`<a class="nav-link ${location.pathname===url||(url!=='/'&&location.pathname.startsWith(url))?'active':''}" href="${url}" data-route>${icon(symbol)}<span>${label}</span></a>`).join('')}</nav><div class="nav-utils">${social()}<a class="nav-dashboard" href="/dashboard/" data-route>${icon('dashboard')} DASHBOARD</a></div><div class="ruler" aria-hidden="true">${Array.from({length:16},(_,i)=>`<span>${i*100}</span>`).join('')}</div></div>`;}
 function stagger(text){return text.split('').map((c,i)=>`<span style="--i:${i}">${c===' '?'&nbsp;':c}</span>`).join('');}
 function hero(){return `<section class="hero"><time class="hero-clock mono"></time><div class="float-avatar draggable">${logo()}</div><div class="float-avatar right draggable">${logo()}</div><div class="hero-center"><span class="hero-kicker hand">meet plynth</span><span class="hero-note left draggable">Built for Robinhood Chain</span><span class="hero-note right draggable">Private, by choice</span><div class="selection-box"><h1 class="pixel stagger">${stagger('PLYNTH')}</h1><i class="handle"></i></div><p class="hero-status mono"><span class="dot"></span> V3 IN DEVELOPMENT · PRIVACY BY CHOICE</p><p class="hero-tagline"><span class="hero-line">Your spare change</span> <img class="inline-pic" src="/assets/08-card-purchase.webp" alt="Everyday card purchase" loading="eager" fetchpriority="high"> <span class="hero-line">becomes</span><br><span class="hero-line">private stock holdings <span class="inline-icon pink">✣</span>.</span></p><a class="solid-button" href="/dashboard/" data-route><span class="button-icon">${icon('dashboard')}</span> EXPLORE DASHBOARD</a></div><div class="float-tag a draggable">SPARE CHANGE</div><div class="float-tag b draggable">REAL-WORLD ASSETS</div></section>`;}
-let routeContent=(path)=>{const p=path.replace(/\/+$/,'')||'/';if(p==='/')return home();if(p==='/about')return about();if(p==='/case-study')return caseList();if(p.startsWith('/case-study/'))return caseDetail(p.split('/')[2]);if(p==='/services')return services();if(p==='/blog'||p==='/journal')return journal();if(p.startsWith('/blog/'))return articleDetail(p.split('/')[2]);if(p==='/playground')return playground();if(p.startsWith('/dashboard'))return dashboard(p);return notFound();};
+let routeContent=(path)=>{const p=path.replace(/\/+$/,'')||'/';if(p==='/')return home();if(p==='/about')return about();if(p==='/case-study')return caseList();if(p.startsWith('/case-study/'))return caseDetail(p.split('/')[2]);if(p==='/services')return services();if(p==='/blog'||p==='/journal')return journal();if(p.startsWith('/blog/'))return articleDetail(p.split('/')[2]);if(p==='/playground')return playground();if(p.startsWith('/dashboard'))return options.dashboard?options.dashboard.html(p,{icon,logo,footer}):dashboard(p);return notFound();};
 function render(){header();main.innerHTML=routeContent(location.pathname);main.setAttribute('aria-label',location.pathname==='/dashboard/'?'Dashboard':'plynth');document.title='plynth — '+(location.pathname==='/'?'A private foundation':location.pathname.split('/').filter(Boolean).map(s=>s.replaceAll('-',' ')).join(' · '));setupPage();}
 let pageCleanup=()=>{};
 function setupPage(){
@@ -35,7 +36,7 @@ function setupPage(){
   lifecycle.signal.addEventListener('abort',()=>observer.disconnect());
   document.querySelectorAll('.reveal').forEach(el=>{if(el.querySelector('img'))el.classList.add('image-ready');observer.observe(el);});
   document.querySelectorAll('.draggable').forEach(el=>makeDraggable(el,lifecycle.signal));
-  setupDashboard();setupProcess(lifecycle.signal);setupWatermarks(lifecycle.signal);setupAboutRail(lifecycle.signal);setupFolderStack(lifecycle.signal);setupHeroEntrance(lifecycle.signal);
+  if(options.dashboard&&location.pathname.startsWith('/dashboard'))options.dashboard.setup({rerender:()=>{const pos=window.scrollY;render();window.scrollTo(0,pos);},signal:lifecycle.signal});else setupDashboard();setupProcess(lifecycle.signal);setupWatermarks(lifecycle.signal);setupAboutRail(lifecycle.signal);setupFolderStack(lifecycle.signal);setupHeroEntrance(lifecycle.signal);
 }
 function makeDraggable(el,signal){
   let moving=false,startX=0,startY=0,dx=0,dy=0,bx=0,by=0,dragged=false;
