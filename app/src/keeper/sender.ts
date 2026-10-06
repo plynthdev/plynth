@@ -72,14 +72,20 @@ export class Sender {
     return run;
   }
 
-  /** Sends one transaction and waits for its receipt. Throws TxReverted if it mined but reverted. */
-  send(to: Address, data: Hex, label = "tx"): Promise<TransactionReceipt> {
+  /**
+   * Sends one transaction and waits for its receipt. Throws TxReverted if it mined but reverted.
+   * `minGas`: a floor for the gas limit. Needed when the estimate can be wrong in a way that does not revert, such as
+   * a Multicall3 aggregate3 with allowFailure: eth_estimateGas finds the least gas at which the OUTER call succeeds,
+   * which is a gas limit at which every inner call runs out of gas and is silently skipped.
+   */
+  send(to: Address, data: Hex, label = "tx", opts: { minGas?: bigint } = {}): Promise<TransactionReceipt> {
     return this.exclusive(async () => {
       for (let attempt = 0; ; attempt++) {
         try {
           if (this.nonce === undefined) this.nonce = await this.io.getTransactionCount({ address: this.address, blockTag: "pending" });
           const est = await this.io.estimateGas({ account: this.address, to, data });
-          const gas = (est * this.gasBufferBps) / 10_000n;
+          const buffered = (est * this.gasBufferBps) / 10_000n;
+          const gas = opts.minGas !== undefined && opts.minGas > buffered ? opts.minGas : buffered;
           const fees = await this.io.estimateFeesPerGas();
           if (fees.maxFeePerGas === undefined || fees.maxPriorityFeePerGas === undefined) throw new Error("node returned no EIP-1559 fees");
           const hash = await this.io.sendTransaction({
@@ -109,8 +115,8 @@ export class Sender {
     });
   }
 
-  sendCall(to: Address, abi: Abi, functionName: string, args: readonly unknown[], label?: string): Promise<TransactionReceipt> {
-    return this.send(to, encodeFunctionData({ abi, functionName, args } as any), label ?? functionName);
+  sendCall(to: Address, abi: Abi, functionName: string, args: readonly unknown[], label?: string, opts: { minGas?: bigint } = {}): Promise<TransactionReceipt> {
+    return this.send(to, encodeFunctionData({ abi, functionName, args } as any), label ?? functionName, opts);
   }
 }
 

@@ -10,7 +10,8 @@ import { keeperDeployment } from "./context";
 import { beaconKey, commitmentOf, revealOpen, windowAt, windowsToCommit } from "./jobs/beacon";
 import { executeBlocker } from "./jobs/execute";
 import { classifySpend } from "./jobs/roundups";
-import { chunks } from "./jobs/sweep";
+import { chunks, MULTICALL_BASE_GAS, MULTICALL_PER_CALL_GAS, sweepGasFloor } from "./jobs/sweep";
+import { withGasHeadroom } from "@/lib/gas";
 import { MAX_UINT160, permit2Live, topUpDue, TOP_UP_SPACING } from "./jobs/topups";
 import { ROOT } from "@/testing/keeper-helpers";
 
@@ -147,5 +148,20 @@ describe("ABI matches the compiled contracts (skips if contracts/out is not buil
     check("JitterBeacon", beaconAbi);
     check("StealthClaims", stealthClaimsAbi);
     check("ShieldedPool", shieldedPoolAbi);
+  });
+});
+
+describe("sweep gas floor (aggregate3 with allowFailure under-estimates)", () => {
+  test("covers every join's own estimate with headroom, plus the multicall overhead", () => {
+    // The fork case: aggregate3 estimated at 58,786 while one join used 148,099.
+    const floor = sweepGasFloor([148_099n]);
+    expect(floor).toBe(MULTICALL_BASE_GAS + withGasHeadroom(148_099n) + MULTICALL_PER_CALL_GAS);
+    expect(floor).toBeGreaterThan(148_099n + 50_000n);
+    expect(sweepGasFloor([100_000n, 200_000n])).toBe(MULTICALL_BASE_GAS + withGasHeadroom(100_000n) + withGasHeadroom(200_000n) + 2n * MULTICALL_PER_CALL_GAS);
+  });
+  test("grows with the batch and is just the base for an empty batch", () => {
+    expect(sweepGasFloor([])).toBe(MULTICALL_BASE_GAS);
+    const one = sweepGasFloor([150_000n]);
+    expect(sweepGasFloor(Array(50).fill(150_000n))).toBe(MULTICALL_BASE_GAS + 50n * (one - MULTICALL_BASE_GAS));
   });
 });

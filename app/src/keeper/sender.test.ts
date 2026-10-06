@@ -51,6 +51,14 @@ describe("sender", () => {
     expect(f.sent[0]!.maxPriorityFeePerGas).toBe(2n);
   });
 
+  test("minGas is a floor: used when the buffered estimate is lower, ignored when higher", async () => {
+    const f = fakeIO(); // estimate 100k -> 120k buffered
+    const s = new Sender(f.io, ME, { sleep: noSleep });
+    await s.send(TO, "0x01", "aggregate3", { minGas: 300_000n });
+    await s.send(TO, "0x02", "aggregate3", { minGas: 50_000n });
+    expect(f.sent.map((x) => x.gas)).toEqual([300_000n, 120_000n]);
+  });
+
   test("nonce manager: concurrent sends are serialised with consecutive nonces", async () => {
     const f = fakeIO({ chainNonce: 7 });
     const s = new Sender(f.io, ME, { sleep: noSleep });
