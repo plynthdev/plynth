@@ -7,9 +7,18 @@
 //      crowd.deliverStealth(asset, stealth, raw, ephemeralPubKey, viewTag), shuffled across users.
 // Step 2 names the user, step 3 names only stealth addresses; they are always separate transactions.
 //
-// Double-credit guard: deliverStealth draws from a pool shared by all Quiet users, so a part is marked
-// "sending" (with the block it was sent from) before its transaction, and a retry first checks the chain for
-// a Credited log for that never-reused stealth address.
+// Double-credit guard: deliverStealth draws from a pool shared by all Quiet users and nothing on-chain stops a
+// second credit, so a part's transaction must never be sent twice. A part is marked "sending" (stage "signing",
+// with the block it was sent from) before signing; the signed transaction's hash, nonce and bytes are stored
+// (stage "signed") BEFORE it is broadcast. A later pass (after a crash, a TxUnconfirmed or a reverted send)
+// decides from that exact transaction, never from on-chain effects alone (a lagging node shows none):
+//   - credited (balance or Credited log), or its receipt succeeded: done;
+//   - its receipt reverted, or it was never signed: send again;
+//   - no receipt and the keeper's confirmed nonce is not past it: it may still mine: rebroadcast the same bytes
+//     (same nonce, so at most one can ever mine) and wait;
+//   - no receipt and the nonce was taken by another transaction: ours can never mine. Only after a grace period
+//     (and a later pass) and a re-check pinned to the block that showed the nonce taken is it sent again.
+// A "sending" row without a recorded transaction from an older keeper is held for a manual check.
 //
 // Privacy note: the plan row links user to stealth addresses; it is scrubbed to amounts once every part is out.
 import { computeStealthAddress } from "@plynth/sdk/stealth";
@@ -17,6 +26,7 @@ import { sql } from "drizzle-orm";
 import { encodeAbiParameters, getAddress, parseAbiItem, type Address, type Hex } from "viem";
 import { crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
+import type { SignedTx } from "@/keeper/sender";
 import { getJob, insertJobIfAbsent, setJob } from "@/keeper/jobstore";
 
 export const QUIET_ROUTE: Hex = encodeAbiParameters([{ type: "uint8" }], [1]);
@@ -136,50 +146,110 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
   }
 }
 
-async function alreadyCredited(ctx: Ctx, asset: Address, stealth: Address, fromBlock: bigint): Promise<boolean> {
-  const bal = (await ctx.pub.readContract({ address: ctx.dep.stealthClaims!, abi: stealthClaimsAbi, functionName: "balanceOf", args: [asset, stealth] })) as bigint;
+async function alreadyCredited(ctx: Ctx, asset: Address, stealth: Address, fromBlock: bigint, atBlock?: bigint): Promise<boolean> {
+  const bal = (await ctx.pub.readContract({ address: ctx.dep.stealthClaims!, abi: stealthClaimsAbi, functionName: "balanceOf", args: [asset, stealth], ...(atBlock === undefined ? {} : { blockNumber: atBlock }) })) as bigint;
   if (bal > 0n) return true;
-  const logs = await ctx.pub.getLogs({ address: ctx.dep.stealthClaims!, event: creditedEvent, args: { token: asset, stealth }, fromBlock, toBlock: "latest" });
+  const logs = await ctx.pub.getLogs({ address: ctx.dep.stealthClaims!, event: creditedEvent, args: { token: asset, stealth }, fromBlock, toBlock: atBlock ?? "latest" });
   return logs.length > 0;
 }
 
-async function releasePhase(ctx: Ctx, res: JobResult, execCount: number): Promise<void> {
+/** The quiet-part row while its transaction is out. */
+export type SendingPayload = {
+  fromBlock?: string;
+  /** "signing": nothing was broadcast yet; "signed": hash/nonce/raw were stored before the first broadcast. */
+  stage?: "signing" | "signed";
+  hash?: Hex;
+  nonce?: number;
+  raw?: Hex | null;
+  /** Wall-clock ms when the nonce was first seen taken while our transaction had no receipt. */
+  takenSeenAt?: number | null;
+};
+
+export type ReleaseOptions = {
+  now?: () => number;
+  /** How long a taken nonce with no receipt is watched before the part is sent again (lagging nodes catch up). */
+  takenGraceMs?: number;
+};
+export const TAKEN_GRACE_MS = 120_000;
+
+type SendingDecision = { kind: "done"; txHash?: string } | { kind: "wait"; note: string; payload?: Partial<SendingPayload> } | { kind: "resend" };
+
+/** What to do with a part whose earlier transaction may be out (see the header). */
+export async function decideSending(ctx: Ctx, asset: Address, stealth: Address, p: SendingPayload, opts: ReleaseOptions = {}): Promise<SendingDecision> {
+  const fromBlock = BigInt(p.fromBlock ?? "0");
+  if (await alreadyCredited(ctx, asset, stealth, fromBlock)) return { kind: "done", ...(p.hash ? { txHash: p.hash } : {}) };
+  if (p.stage === "signing") return { kind: "resend" }; // marked, but nothing was signed or broadcast
+  if (p.stage !== "signed" || !p.hash || p.nonce === undefined) {
+    return { kind: "wait", note: `stealth ${stealth}: "sending" without a recorded transaction (older keeper); check StealthClaims by hand, then mark it done or delete the row` };
+  }
+  const receipt = await ctx.sender.receiptOf(p.hash);
+  if (receipt) return receipt.status === "success" ? { kind: "done", txHash: p.hash } : { kind: "resend" };
+  const head = await ctx.pub.getBlockNumber();
+  const confirmed = await ctx.pub.getTransactionCount({ address: ctx.sender.address, blockNumber: head });
+  if (confirmed <= p.nonce) {
+    if (p.raw) await ctx.sender.rebroadcast(p.raw);
+    return { kind: "wait", note: `stealth ${stealth}: tx ${p.hash} (nonce ${p.nonce}) still pending`, ...(p.takenSeenAt ? { payload: { takenSeenAt: null } } : {}) };
+  }
+  // Our nonce is used and our hash has no receipt: another transaction took it, or a lagging node is hiding ours.
+  const now = (opts.now ?? Date.now)();
+  if (!p.takenSeenAt) return { kind: "wait", note: `stealth ${stealth}: nonce ${p.nonce} used, no receipt for ${p.hash} yet; re-checking later`, payload: { takenSeenAt: now } };
+  if (now - p.takenSeenAt < (opts.takenGraceMs ?? TAKEN_GRACE_MS)) return { kind: "wait", note: `stealth ${stealth}: nonce ${p.nonce} used, waiting out the grace period` };
+  // Pinned to `head`: a node that does not have that block errors instead of answering from the past.
+  if (await alreadyCredited(ctx, asset, stealth, fromBlock, head)) return { kind: "done", txHash: p.hash };
+  return { kind: "resend" };
+}
+
+export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, opts: ReleaseOptions = {}): Promise<void> {
   const plans = (await ctx.db.execute(sql`
     select job_key, payload from keeper_jobs where chain_id = ${ctx.chainId} and kind = 'quiet-plan' and status = 'delivered'`)) as unknown as { job_key: string; payload: Plan }[];
-  type Item = { key: string; plan: Plan; i: number };
+  type Item = { key: string; plan: Plan; i: number; fromBlock?: string | undefined };
   const due: Item[] = [];
   const doneByPlan = new Map<string, Set<number>>();
   for (const { job_key, payload: plan } of plans) {
     const done = new Set<number>();
+    const held = new Set<number>();
+    const resendFrom = new Map<number, string | undefined>();
     const rows = (await ctx.db.execute(sql`
       select job_key, status, payload from keeper_jobs
-      where chain_id = ${ctx.chainId} and kind = 'quiet-part' and job_key like ${`${job_key}:%`}`)) as unknown as { job_key: string; status: string; payload: { fromBlock?: string } | null }[];
+      where chain_id = ${ctx.chainId} and kind = 'quiet-part' and job_key like ${`${job_key}:%`}`)) as unknown as { job_key: string; status: string; payload: SendingPayload | null }[];
     for (const row of rows) {
       const i = Number(row.job_key.slice(job_key.length + 1));
       if (row.status === "done") done.add(i);
       else if (row.status === "sending") {
         const part = plan.parts[i]!;
-        if (await alreadyCredited(ctx, plan.asset, part.stealth, BigInt(row.payload?.fromBlock ?? "0"))) {
-          await setJob(ctx, "quiet-part", row.job_key, { status: "done" });
+        const p = row.payload ?? {};
+        const d = await decideSending(ctx, plan.asset, part.stealth, p, opts);
+        if (d.kind === "done") {
+          await setJob(ctx, "quiet-part", row.job_key, { status: "done", ...(d.txHash ? { txHash: d.txHash } : {}), payload: { raw: null } });
           done.add(i);
-        }
+        } else if (d.kind === "wait") {
+          held.add(i);
+          res.notes.push(`part ${i} of ${plan.asset}: ${d.note}`);
+          if (d.payload) await setJob(ctx, "quiet-part", row.job_key, { status: "sending", payload: d.payload });
+        } else resendFrom.set(i, p.fromBlock);
       }
     }
     doneByPlan.set(job_key, done);
-    for (const i of releasable(plan, execCount, done)) due.push({ key: job_key, plan, i });
+    const skip = new Set([...done, ...held]);
+    for (const i of releasable(plan, execCount, skip)) due.push({ key: job_key, plan, i, fromBlock: resendFrom.get(i) });
   }
-  for (const { key, plan, i } of shuffle(due)) {
+  for (const { key, plan, i, fromBlock: earlier } of shuffle(due)) {
     const p = plan.parts[i]!;
+    const partKey = `${key}:${i}`;
     const args = [plan.asset, p.stealth, BigInt(p.raw), p.ephemeralPublicKey, p.viewTag] as const;
     const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "deliverStealth", args);
     if (!sim.ok) {
       res.notes.push(`part ${i} of ${plan.asset}: deliverStealth reverts ${sim.errorName}`);
       continue;
     }
-    const fromBlock = await ctx.pub.getBlockNumber();
-    await setJob(ctx, "quiet-part", `${key}:${i}`, { status: "sending", payload: { fromBlock } });
-    const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliverStealth", args, "deliver-stealth");
-    await setJob(ctx, "quiet-part", `${key}:${i}`, { status: "done", txHash: r.transactionHash });
+    // Credited logs are searched from the earliest block any attempt for this part was sent from.
+    const fromBlock = earlier ?? (await ctx.pub.getBlockNumber()).toString();
+    await setJob(ctx, "quiet-part", partKey, { status: "sending", payload: { fromBlock, stage: "signing", hash: null, nonce: null, raw: null, takenSeenAt: null } });
+    const onSigned = async (tx: SignedTx) => {
+      await setJob(ctx, "quiet-part", partKey, { status: "sending", payload: { stage: "signed", hash: tx.hash, nonce: tx.nonce, raw: tx.raw, takenSeenAt: null } });
+    };
+    const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliverStealth", args, "deliver-stealth", { onSigned });
+    await setJob(ctx, "quiet-part", partKey, { status: "done", txHash: r.transactionHash, payload: { raw: null } });
     doneByPlan.get(key)!.add(i);
     res.actions++;
   }
@@ -191,7 +261,7 @@ async function releasePhase(ctx: Ctx, res: JobResult, execCount: number): Promis
   }
 }
 
-export async function runDeliverQuiet(ctx: Ctx): Promise<JobResult> {
+export async function runDeliverQuiet(ctx: Ctx, opts: ReleaseOptions = {}): Promise<JobResult> {
   const res: JobResult = { job: "deliver-quiet", ok: true, actions: 0, notes: [] };
   if (!ctx.dep.stealthClaims) {
     res.notes.push("Quiet delivery not configured (no stealthClaims in deployment)");
@@ -199,6 +269,6 @@ export async function runDeliverQuiet(ctx: Ctx): Promise<JobResult> {
   }
   const execCount = await executions(ctx);
   await deliverPhase(ctx, res, execCount);
-  await releasePhase(ctx, res, execCount);
+  await releasePhase(ctx, res, execCount, opts);
   return res;
 }

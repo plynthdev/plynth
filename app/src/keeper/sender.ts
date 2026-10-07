@@ -9,7 +9,13 @@
 // transaction, and a hash that never mines ends in TxUnconfirmed (the job's next pass decides, with its own
 // on-chain checks). The one re-sign is provably safe: a "nonce too low" on a broadcast that no earlier attempt of
 // these bytes can have reached (only 429s before it) means another transaction took the nonce, so ours never
-// left; the send starts over with a fresh nonce.
+// left; the send starts over with a fresh nonce. A transport failure with no HTTP answer (connection reset,
+// "fetch failed", a viem HttpRequestError without a status) is NOT a refusal: the node may have taken the bytes.
+//
+// `onSigned` hands the caller the hash, nonce and signed bytes before anything is broadcast, so a job whose
+// transaction must never be sent twice can persist them and, on a later pass (after a crash, a TxUnconfirmed
+// or a lagging node), check that exact transaction instead of guessing from on-chain effects; `rebroadcast`
+// resends those same bytes (same nonce: at most one of them can ever mine).
 import { backoffDelay, isBackoffError, sleep as realSleep } from "@/indexer";
 import { BaseError, ContractFunctionRevertedError, encodeFunctionData, keccak256, type Abi, type Address, type Hash, type Hex, type LocalAccount, type PublicClient, type TransactionReceipt } from "viem";
 
@@ -69,6 +75,15 @@ export class TxReverted extends Error {
 }
 
 /** Broadcast, but no receipt within the wait: it may still mine. The sender never sends a substitute. */
+/** What `onSigned` receives: known before the first broadcast. */
+export type SignedTx = { hash: Hash; nonce: number; raw: Hex };
+
+export type SendOptions = {
+  minGas?: bigint;
+  /** Awaited before the first broadcast of each signed transaction; if it throws, nothing is broadcast. */
+  onSigned?: (tx: SignedTx) => Promise<void>;
+};
+
 export class TxUnconfirmed extends Error {
   constructor(readonly hash: Hash, readonly nonce: number, readonly label: string) {
     super(`${label}: tx ${hash} (nonce ${nonce}) not mined within the wait; not resent`);
@@ -98,6 +113,21 @@ function isRateLimited(err: unknown): boolean {
   for (let i = 0; e && i < 8; i++, e = e.cause) {
     if (e.status === 429) return true;
     if (typeof e.code === "number" && (e.code === -32005 || e.code === -32029 || e.code === 429)) return true;
+  }
+  return false;
+}
+
+/**
+ * The request may have reached the node but no answer came back: a connection reset or refused mid-flight, a
+ * fetch that failed, a viem HttpRequestError / SocketClosedError without an HTTP status.
+ */
+export function isTransportError(err: unknown): boolean {
+  let e: any = err;
+  for (let i = 0; e && i < 8; i++, e = e.cause) {
+    if (typeof e.status === "number") return false; // the node answered: a real HTTP status decides
+    if (/^(HttpRequestError|SocketClosedError|WebSocketRequestError|TimeoutError|AbortError)$/.test(String(e.name ?? ""))) return true;
+    if (typeof e.code === "string" && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ECONNABORTED|ENETUNREACH|EHOSTUNREACH|UND_ERR_SOCKET|UND_ERR_CLOSED)$/.test(e.code)) return true;
+    if (/fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|other side closed|network ?error|connection (?:was )?(?:reset|closed|refused)/i.test(String(e.message ?? "") + " " + String(e.shortMessage ?? "") + " " + String(e.details ?? ""))) return true;
   }
   return false;
 }
@@ -150,10 +180,18 @@ export class Sender {
    * a Multicall3 aggregate3 with allowFailure: eth_estimateGas finds the least gas at which the OUTER call succeeds,
    * which is a gas limit at which every inner call runs out of gas and is silently skipped.
    */
-  send(to: Address, data: Hex, label = "tx", opts: { minGas?: bigint } = {}): Promise<TransactionReceipt> {
+  send(to: Address, data: Hex, label = "tx", opts: SendOptions = {}): Promise<TransactionReceipt> {
     return this.exclusive(async () => {
       for (let round = 0; ; round++) {
         const { signed, hash, nonce } = await this.sign(to, data, opts);
+        if (opts.onSigned) {
+          try {
+            await opts.onSigned({ hash, nonce, raw: signed });
+          } catch (err) {
+            this.nonce = undefined; // nothing left this process; resync next time
+            throw err;
+          }
+        }
         const r = await this.broadcastAndWait(signed, hash, nonce, label);
         if (r !== "nonce-taken") return r;
         // Our nonce was mined by another transaction and ours has no receipt: it can never mine. Start over.
@@ -202,8 +240,8 @@ export class Sender {
           if (!mayHaveReached && !/already known/i.test(chainText(err))) return "nonce-taken";
           break;
         }
-        if (isBackoffError(err)) {
-          if (!isRateLimited(err)) mayHaveReached = true; // a timeout or 5xx: the node may have taken it
+        if (isBackoffError(err) || isTransportError(err)) {
+          if (!isRateLimited(err)) mayHaveReached = true; // a timeout, 5xx or dropped connection: the node may have taken it
           if (attempt + 1 < this.maxAttempts) {
             await this.nap(backoffDelay(attempt, this.bo));
             continue;
@@ -242,13 +280,32 @@ export class Sender {
     try {
       return await this.io.getTransactionReceipt({ hash });
     } catch (err) {
-      if (isNotFound(err) || isBackoffError(err)) return null; // not mined yet, or a transport blip: poll again
+      if (isNotFound(err) || isBackoffError(err) || isTransportError(err)) return null; // not mined yet, or a transport blip: poll again
       throw err;
     }
   }
 
-  sendCall(to: Address, abi: Abi, functionName: string, args: readonly unknown[], label?: string, opts: { minGas?: bigint } = {}): Promise<TransactionReceipt> {
+  sendCall(to: Address, abi: Abi, functionName: string, args: readonly unknown[], label?: string, opts: SendOptions = {}): Promise<TransactionReceipt> {
     return this.send(to, encodeFunctionData({ abi, functionName, args } as any), label ?? functionName, opts);
+  }
+
+  /**
+   * Resends exactly these signed bytes (same nonce, same hash) to keep a pending transaction in the pool. Never
+   * signs anything. "already known" / "nonce too low" (it is in, or its nonce is used) and transport errors are
+   * not failures here.
+   */
+  async rebroadcast(raw: Hex): Promise<void> {
+    try {
+      await this.io.sendRawTransaction({ serializedTransaction: raw });
+    } catch (err) {
+      if (isNonceError(err) || isBackoffError(err) || isTransportError(err)) return;
+      throw err;
+    }
+  }
+
+  /** The receipt of `hash`, or null while unknown to the node (not mined, or a lagging node). */
+  receiptOf(hash: Hash): Promise<TransactionReceipt | null> {
+    return this.receipt(hash);
   }
 }
 

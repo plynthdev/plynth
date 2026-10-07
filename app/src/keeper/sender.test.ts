@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BaseError, hexToString, keccak256, toHex, type Address, type Hex, type TransactionReceipt } from "viem";
-import { isNonceError, Sender, TxReverted, TxUnconfirmed, type SenderIO } from "./sender";
+import { isNonceError, isTransportError, Sender, TxReverted, TxUnconfirmed, type SenderIO, type SignedTx } from "./sender";
 
 const ME = "0x00000000000000000000000000000000000000aa" as Address;
 const TO = "0x00000000000000000000000000000000000000bb" as Address;
@@ -159,5 +159,63 @@ describe("sender", () => {
     const s = new Sender(f.io, ME, { sleep: noSleep, pollMs: 1, waitMs: 40 });
     await expect(s.send(TO, "0x01", "deliverStealth")).rejects.toBeInstanceOf(TxUnconfirmed);
     expect(f.sent.map((x) => x.nonce)).toEqual([7]);
+  });
+
+  // ------------------------------------------------------------ D4 (delta review 2026-10-07)
+
+  test("D4: a connection reset after the node took the bytes is not a rejection: no re-sign, the same hash is awaited", async () => {
+    const reset = () => Object.assign(new Error("fetch failed"), { name: "HttpRequestError", cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+    const f = fakeIO({ chainNonce: 7, acceptThenFail: (n) => (n === 0 ? reset() : undefined) });
+    const s = new Sender(f.io, ME, { sleep: noSleep });
+    const r = await s.send(TO, "0x01", "deliverStealth");
+    expect(f.sent.map((x) => x.nonce)).toEqual([7]);
+    expect(s.sent).toBe(1);
+    expect(r.status).toBe("success");
+  });
+
+  test("D4: a transport error with no answer is never treated as a definite rejection", async () => {
+    const f = fakeIO({ chainNonce: 7, acceptThenFail: (n) => (n === 0 ? new Error("socket hang up") : undefined), neverMine: true });
+    const s = new Sender(f.io, ME, { sleep: noSleep, pollMs: 1, waitMs: 5 });
+    await expect(s.send(TO, "0x01", "deliverStealth")).rejects.toBeInstanceOf(TxUnconfirmed); // waits, never re-signs
+    expect(f.sent.map((x) => x.nonce)).toEqual([7]);
+  });
+
+  test("D4: isTransportError: no-status transport failures yes, HTTP answers no", () => {
+    expect(isTransportError(Object.assign(new Error("HTTP request failed."), { name: "HttpRequestError" }))).toBe(true);
+    expect(isTransportError(new BaseError("x", { cause: Object.assign(new Error("connect"), { code: "ECONNRESET" }) }))).toBe(true);
+    expect(isTransportError(new Error("fetch failed"))).toBe(true);
+    expect(isTransportError(Object.assign(new Error("HTTP request failed."), { name: "HttpRequestError", status: 400 }))).toBe(false);
+    expect(isTransportError(new Error("insufficient funds for gas"))).toBe(false);
+  });
+
+  test("D4: onSigned gets hash, nonce and the signed bytes before the first broadcast; if it fails nothing is sent", async () => {
+    const f = fakeIO({ chainNonce: 7 });
+    const s = new Sender(f.io, ME, { sleep: noSleep });
+    const seen: SignedTx[] = [];
+    const r = await s.send(TO, "0x01", "deliverStealth", {
+      onSigned: async (tx) => {
+        expect(f.stats().sendCalls).toBe(0); // nothing broadcast yet
+        seen.push(tx);
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.nonce).toBe(7);
+    expect(seen[0]!.hash).toBe(r.transactionHash);
+    expect(keccak256(seen[0]!.raw)).toBe(seen[0]!.hash);
+
+    await expect(s.send(TO, "0x02", "deliverStealth", { onSigned: async () => { throw new Error("db down"); } })).rejects.toThrow(/db down/);
+    expect(f.stats().sendCalls).toBe(1);
+    await s.send(TO, "0x03");
+    expect(f.sent.map((x) => x.nonce)).toEqual([7, 8]); // the failed one used no nonce
+  });
+
+  test("D4: rebroadcast resends exactly the stored bytes and never signs", async () => {
+    const f = fakeIO({ chainNonce: 7 });
+    const s = new Sender(f.io, ME, { sleep: noSleep });
+    let raw: Hex | undefined;
+    await s.send(TO, "0x01", "x", { onSigned: async (tx) => void (raw = tx.raw) });
+    await s.rebroadcast(raw!); // "already known" / nonce used: not an error
+    expect(f.sent).toHaveLength(1);
+    expect(f.stats().sendCalls).toBe(2);
   });
 });
