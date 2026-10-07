@@ -99,7 +99,8 @@ export function myNotes(state: PoolState, keys: VaultKeys): OwnedNote[] {
     } else if (commitmentOf(BigInt(p.asset), p.raw, keys.ownerPk, p.blinding) !== commitment) continue;
     seen.add(commitment);
     const idx = state.leafOf.get(commitment);
-    const nullifier = idx === undefined ? null : nullifierOf(commitment, keys.spendingSecret, BigInt(idx));
+    // The circuits' index is the note's position in its own tree (leaf indexes are global).
+    const nullifier = idx === undefined ? null : nullifierOf(commitment, keys.spendingSecret, BigInt(state.tree.position(idx)));
     out.push({
       asset: p.asset,
       raw,

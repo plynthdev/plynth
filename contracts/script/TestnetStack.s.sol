@@ -324,6 +324,7 @@ contract TestnetStack is Script {
         parkAdapter = new ERC4626Park(IERC4626(address(cashVault)), address(usdg));
         shieldedTrade.proposeAdapter(IParkAdapter(address(parkAdapter)));
         shieldedPool.proposeCap(address(usdg), HIDDEN_USDG_CAP);
+        shieldedPool.setMinDeposit(address(usdg), 1e6); // 1 USDG: no dust notes to fill the tree with
         shieldedPool.proposeCap(address(cashVault), HIDDEN_PARK_CAP);
         for (uint256 i; i < stocks.length; ++i) {
             shieldedPool.proposeCap(address(stocks[i].token), HIDDEN_STOCK_CAP);

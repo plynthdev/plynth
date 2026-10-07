@@ -311,6 +311,7 @@ contract ForkMainnet is Script {
         parkAdapter = new ERC4626Park(IERC4626(STEAK_USDG), USDG);
         shieldedTrade.proposeAdapter(IParkAdapter(address(parkAdapter)));
         shieldedPool.proposeCap(USDG, HIDDEN_USDG_CAP);
+        shieldedPool.setMinDeposit(USDG, 1e6); // 1 USDG: no dust notes to fill the tree with
         shieldedPool.proposeCap(STEAK_USDG, HIDDEN_PARK_CAP);
         Stock[] memory s = stocks();
         for (uint256 i; i < s.length; ++i) {

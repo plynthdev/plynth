@@ -87,7 +87,7 @@ if (import.meta.main) {
   const withdrawInputs = {
     root: s(tree.root),
     nullifier_hash: s(nullifiers[1]!),
-    change_commitment: s(commitment(AAPL, 0n, pk, changeBlinding)),
+    change_commitment: s(0n), // a full unshield: zero change is commitment 0, no leaf
     asset_id: s(AAPL),
     amount: s(200n * E18),
     recipient: s(ACCOUNT),

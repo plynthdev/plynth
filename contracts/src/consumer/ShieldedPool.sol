@@ -18,7 +18,14 @@ interface IHonkVerifier {
 ///
 /// A note is the Poseidon2 commitment of (asset, raw, ownerPk, blinding) (circuits/hidden). Deposits are
 /// computed on-chain from those four values and wait in a pending queue for at least MIN_PENDING_DELAY; anyone
-/// may then batch them into the depth-20 commitment tree (`insertPending`). Until a pending deposit is inserted
+/// may then batch them into the depth-20 commitment tree (`insertPending`).
+///
+/// Tree capacity never gates an exit. A spend's zero-value new note (full withdraw, zero change, zero transfer
+/// output) has commitment 0 and inserts no leaf. When a tree's 2^20 leaves are used, the next leaf starts a new
+/// tree (`LeafInserted.leafIndex` is global: tree = index / MAX_LEAVES, position = index % MAX_LEAVES) and the
+/// full tree's final root stays a known root forever (`archivedRoot`), so its notes stay spendable. Transfers need
+/// a real input (circuit), and direct deposits can carry a per-asset minimum (`minDeposit`), so filling trees
+/// costs real notes. Until a pending deposit is inserted
 /// its origin can take it back (`refundPending`). Spending a note needs a Noir proof: `transfer` (2 in, 2 out,
 /// same asset) or `withdraw` (1 in, public amount out to a recipient, change note back in). A proof may use
 /// any of the last ROOT_HISTORY roots, and every nullifier can be used once.
@@ -106,6 +113,10 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     mapping(bytes32 root => uint256 seq) public rootSeq;
 
     mapping(bytes32 nullifier => bool) public nullifierSpent;
+    /// Final roots of full trees: known forever, so their notes can always be spent.
+    mapping(bytes32 root => bool) public archivedRoot;
+    /// Smallest direct `deposit` per asset (0 = none). CrowdBuy deliveries (`depositFor`) are exempt.
+    mapping(address asset => uint256) public minDeposit;
 
     Pending[] private _pending;
     uint256 public nextPending; // FIFO cursor for insertPending
@@ -129,6 +140,8 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     event RootUpdated(bytes32 root, uint256 nextLeaf);
     event NoteEncrypted(bytes32 indexed commitment, bytes encryptedNote);
     event NullifierSpent(bytes32 indexed nullifier);
+    event TreeArchived(uint256 indexed treeId, bytes32 finalRoot);
+    event MinDepositSet(address indexed asset, uint256 minRaw);
     event Withdrawn(
         address indexed asset, address indexed recipient, uint256 amount, uint256 relayerFee, address relayer
     );
@@ -147,7 +160,6 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     error NotPending(uint256 pendingId);
     error NotOrigin(uint256 pendingId);
     error NothingToInsert();
-    error TreeFull();
     error UnknownRoot(bytes32 root);
     error NullifierAlreadySpent(bytes32 nullifier);
     error InvalidProof();
@@ -203,6 +215,13 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         emit DepositsPaused(paused);
     }
 
+    /// Smallest direct deposit of `asset` (raw units), against filling the tree with dust notes. Deposits only.
+    function setMinDeposit(address asset, uint256 minRaw) external onlyOwner {
+        if (asset == address(0)) revert ZeroAddress();
+        minDeposit[asset] = minRaw;
+        emit MinDepositSet(asset, minRaw);
+    }
+
     /// Lowering (or keeping) a cap applies now; raising it applies after CAP_DELAY via `applyCap`.
     function proposeCap(address asset, uint256 newCap) external onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
@@ -236,6 +255,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         depositsOpen
         returns (uint256 pendingId)
     {
+        if (raw < minDeposit[asset]) revert BadAmount();
         return _deposit(asset, raw, ownerPk, blinding, encryptedNote, msg.sender);
     }
 
@@ -318,11 +338,15 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         inputs[6] = extHashOf(abi.encode(encryptedNotes[0], encryptedNotes[1]));
         _verify(transferVerifier, proof, inputs);
 
-        _insert(pub.outCommitments[0]);
-        emit NoteEncrypted(pub.outCommitments[0], encryptedNotes[0]);
-        (, bytes32 root) = _insert(pub.outCommitments[1]);
-        emit NoteEncrypted(pub.outCommitments[1], encryptedNotes[1]);
-        _publishRoot(root);
+        // A zero-value output has commitment 0 (circuit): no leaf. The circuit's conservation and real-input
+        // rules make at least one output non-zero.
+        bytes32 root;
+        for (uint256 i; i < 2; ++i) {
+            if (pub.outCommitments[i] == 0) continue;
+            (, root) = _insert(pub.outCommitments[i]);
+            emit NoteEncrypted(pub.outCommitments[i], encryptedNotes[i]);
+        }
+        if (root != 0) _publishRoot(root);
     }
 
     /// Spends one note: `amount` leaves the pool (amount - relayerFee to recipient, relayerFee to msg.sender)
@@ -348,9 +372,12 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         inputs[7] = extHashOf(pub.encryptedChange);
         _verify(withdrawVerifier, proof, inputs);
 
-        (, bytes32 root) = _insert(pub.changeCommitment);
-        emit NoteEncrypted(pub.changeCommitment, pub.encryptedChange);
-        _publishRoot(root);
+        if (pub.changeCommitment != 0) {
+            // Zero change (commitment 0, circuit): no leaf, so a full exit never needs tree space.
+            (, bytes32 root) = _insert(pub.changeCommitment);
+            emit NoteEncrypted(pub.changeCommitment, pub.encryptedChange);
+            _publishRoot(root);
+        }
 
         shielded[pub.asset] -= pub.amount;
         emit Withdrawn(pub.asset, pub.recipient, pub.amount, pub.relayerFee, msg.sender);
@@ -387,7 +414,8 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         if (received != amount) revert TransferAmountMismatch(received, amount);
     }
 
-    /// Inserts `leaves` (with their encrypted notes) and publishes one new root.
+    /// Inserts `leaves` (with their encrypted notes) and publishes one new root. A 0 leaf (a zero-value note) is
+    /// skipped.
     function tradeInsert(bytes32[] calldata leaves, bytes[] calldata notes) external nonReentrant onlyTrade {
         uint256 n = leaves.length;
         if (n == 0 || notes.length != n) revert BadAmount();
@@ -395,18 +423,25 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         for (uint256 i; i < n; ++i) {
             if (notes[i].length > MAX_NOTE_BYTES) revert NoteTooLarge();
             _field(leaves[i]);
+            if (leaves[i] == 0) continue;
             (, root) = _insert(leaves[i]);
             emit NoteEncrypted(leaves[i], notes[i]);
         }
-        _publishRoot(root);
+        if (root != 0) _publishRoot(root);
     }
 
     // ---------------------------------------------------------------- views
 
-    /// True for the current root and the ROOT_HISTORY - 1 roots before it.
+    /// True for the current root, the ROOT_HISTORY - 1 roots before it, and every full tree's final root.
     function isKnownRoot(bytes32 root) public view returns (bool) {
+        if (archivedRoot[root]) return true;
         uint256 seq = rootSeq[root];
         return seq != 0 && rootCount - seq < ROOT_HISTORY;
+    }
+
+    /// The tree a global leaf index is in, and its position there (the circuits' `index`).
+    function treeOf(uint256 leafIndex) public pure returns (uint256 treeId, uint256 position) {
+        return (leafIndex / MAX_LEAVES, leafIndex % MAX_LEAVES);
     }
 
     /// keccak256(data) mod p: the public input binding a spend's encrypted notes to its proof.
@@ -487,11 +522,12 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         if (received != raw) revert TransferAmountMismatch(received, raw);
     }
 
+    /// Appends at global index `nextLeaf`. Position 0 of a tree overwrites every `_filled` level, so a new tree
+    /// never reads the previous tree's nodes; the last position archives the full tree's root.
     function _insert(bytes32 leaf) private returns (uint256 index, bytes32 root) {
         index = nextLeaf;
-        if (index >= MAX_LEAVES) revert TreeFull();
         uint256 node = uint256(leaf);
-        uint256 pos = index;
+        uint256 pos = index % MAX_LEAVES;
         for (uint256 level; level < TREE_DEPTH; ++level) {
             if (pos & 1 == 0) {
                 _filled[level] = node;
@@ -504,6 +540,10 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         nextLeaf = index + 1;
         root = bytes32(node);
         emit LeafInserted(index, leaf);
+        if (index % MAX_LEAVES == MAX_LEAVES - 1) {
+            archivedRoot[root] = true;
+            emit TreeArchived(index / MAX_LEAVES, root);
+        }
     }
 
     function _publishRoot(bytes32 root) private {

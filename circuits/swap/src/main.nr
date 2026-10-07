@@ -16,7 +16,7 @@
 // the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
 // ext_hash = keccak256(abi.encode(encryptedChange, encryptedOut)) mod p.
 
-use hidden::{commitment, commitment_any, merkle_root, nullifier, owner_pk, partial_commitment, TREE_DEPTH};
+use hidden::{commitment, commitment_any, commitment_or_zero, merkle_root, nullifier, owner_pk, partial_commitment, TREE_DEPTH};
 
 fn main(
     root: pub Field,
@@ -56,7 +56,8 @@ fn main(
     assert(merkle_root(c, in_index, in_path) == root, "input note not in tree");
     assert(nullifier(c, in_secret, in_index) == nullifier_hash, "bad nullifier");
 
-    let change = commitment(asset_in, change_amount, change_owner_pk, change_blinding);
+    // Zero change: change_commitment is 0 and no leaf is inserted for it.
+    let change = commitment_or_zero(asset_in, change_amount, change_owner_pk, change_blinding);
     assert(change == change_commitment, "bad change commitment");
 
     // All terms < 2^128, so no field wrap.
@@ -106,7 +107,7 @@ fn case_v(is_v2: bool, in_amount: Field, amount_in: Field, change_amount: Field,
     Case {
         root,
         nullifier_hash: nullifier(mine, SECRET, 1),
-        change_commitment: commitment(STOCK, change_amount, owner_pk(SECRET), 8),
+        change_commitment: hidden::commitment_or_zero(STOCK, change_amount, owner_pk(SECRET), 8),
         asset_in: STOCK,
         amount_in,
         relayer_fee,

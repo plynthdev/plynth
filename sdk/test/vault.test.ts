@@ -165,6 +165,27 @@ describe("local tree", () => {
   });
 });
 
+describe("local tree rollover (S8: a full tree starts the next one; leaf indexes stay global)", () => {
+  test("each tree has its own root and positions; paths open to their own tree's root", () => {
+    const t = new NoteTree(4); // the pool's capacity is 2^20; 4 makes rollover testable
+    const ref = new NoteTree();
+    const leaves = Array.from({ length: 6 }, () => randomField());
+    for (const l of leaves) t.insert(l);
+    for (const l of leaves.slice(0, 4)) ref.insert(l);
+    expect(t.size).toBe(6);
+    expect(t.rootOf(3)).toBe(ref.root()); // tree 0, full: its final root
+    expect(t.treeOf(5)).toBe(1);
+    expect(t.position(5)).toBe(1);
+    const second = new NoteTree();
+    second.insert(leaves[4]!);
+    second.insert(leaves[5]!);
+    expect(t.root()).toBe(second.root()); // new leaves go into tree 1
+    expect(t.rootOf(5)).toBe(second.root());
+    expect(t.path(5)).toEqual(second.path(1));
+    expect(t.leaf(5)).toBe(leaves[5]);
+  });
+});
+
 /** A synced pool state built by hand: what syncPool produces from events. */
 function stateWith(entries: { commitment: bigint; data: Hex; inserted: boolean }[], spent: bigint[] = []): PoolState {
   const s = emptyState();
@@ -255,6 +276,8 @@ describe("proofs (noir_js + bb.js) and tx builders", () => {
     const t = await proveTransfer({ keys: alice(), tree, inputs: notes, to: bob(), raw: 400n });
     expect(t.outputs.map((o) => o.raw)).toEqual([400n, 0n]);
     expect(t.pub.nullifiers[0]).not.toBe(t.pub.nullifiers[1]);
+    expect(BigInt(t.pub.outCommitments[1])).toBe(0n); // S8: the zero change takes no leaf
+    expect(t.encryptedNotes[1]).toBe("0x");
     await expect(proveTransfer({ keys: alice(), tree, inputs: notes, to: bob(), raw: 401n })).rejects.toThrow(/cannot send/);
     await expect(proveTransfer({ keys: alice(), tree, inputs: [{ ...notes[0]!, spent: true }], to: bob(), raw: 1n })).rejects.toThrow(/spent/);
     await expect(proveTransfer({ keys: alice(), tree, inputs: [{ ...notes[0]!, leafIndex: null }], to: bob(), raw: 1n })).rejects.toThrow(/pending/);

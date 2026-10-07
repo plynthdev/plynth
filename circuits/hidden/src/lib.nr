@@ -47,6 +47,16 @@ pub fn commitment(asset_id: Field, raw_amount: Field, owner_pk: Field, blinding:
     hash([asset_id, raw_amount, owner_pk, blinding])
 }
 
+/// A new note's public commitment, or 0 for a zero-value note: the pool inserts no leaf for 0, so an exit that
+/// leaves nothing behind (full withdraw, zero change, zero output) needs no tree space.
+pub fn commitment_or_zero(asset_id: Field, raw_amount: Field, owner_pk: Field, blinding: Field) -> Field {
+    if raw_amount == 0 {
+        0
+    } else {
+        commitment(asset_id, raw_amount, owner_pk, blinding)
+    }
+}
+
 pub fn partial_commitment(asset_id: Field, owner_pk: Field, blinding: Field) -> Field {
     hash([asset_id, owner_pk, blinding])
 }

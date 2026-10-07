@@ -133,7 +133,8 @@ describe("swap and settle proofs", () => {
     const b = await proveSwap({ keys: alice(), tree, note, amountIn: note.raw, assetOut: STOCK, minOut: 1n, deadline: 1_800_000_000n, to: bob() });
     expect(BigInt(b.pub.outPartial)).toBe(partialCommitmentOf(BigInt(STOCK), bob().ownerPk, b.out.blinding));
     expect(decryptNoteAny(b.encryptedOut, bob().viewingSecret)).toMatchObject({ asset: STOCK, version: 2 });
-    expect(decryptNote(b.encryptedChange, alice().viewingSecret)).toMatchObject({ raw: 0n });
+    expect(b.encryptedChange).toBe("0x"); // S8: zero change is commitment 0, no leaf and no ciphertext
+    expect(BigInt(b.pub.changeCommitment)).toBe(0n);
 
     const st = await proveSettle({ keys: alice(), tree, note });
     expect(BigInt(st.outCommitment)).toBe(commitmentOf(BigInt(USDG), note.raw, alice().ownerPk, st.out.blinding));

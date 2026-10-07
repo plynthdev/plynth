@@ -4,14 +4,16 @@
 // Proves: each non-dummy input note is in the tree under `root` and is owned by the prover,
 // each nullifier is that note's nullifier, the two nullifiers differ, every amount < 2^128,
 // asset_id < 2^160, and sum(in) == sum(out). An input with amount 0 is a dummy: membership is
-// skipped (so 1-in transfers work) but its nullifier is still bound, so the pool spends it.
+// skipped (so 1-in transfers work) but its nullifier is still bound, so the pool spends it. At least one input
+// must be real (sum(in) != 0): two dummies would let anyone append leaves without owning a note. A zero-value
+// output's commitment is 0 and the pool inserts no leaf for it.
 //
 // ext_hash (public) = keccak256 of the encrypted note(s) this spend publishes, mod p (the pool recomputes it from
 // calldata). It is not used in any constraint: being a public input binds it to the proof, so whoever submits
 // the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
 // ext_hash = keccak256(abi.encode(encryptedNotes[0], encryptedNotes[1])) mod p.
 
-use hidden::{commitment, merkle_root, nullifier, owner_pk, TREE_DEPTH};
+use hidden::{commitment, commitment_or_zero, merkle_root, nullifier, owner_pk, TREE_DEPTH};
 
 pub struct InputNote {
     amount: Field,
@@ -51,12 +53,14 @@ fn main(
         total_in += note.amount;
     }
     assert(nullifiers[0] != nullifiers[1], "input notes must differ");
+    // Both amounts < 2^128: the sum cannot wrap to 0.
+    assert(total_in != 0, "no real input");
 
     let mut total_out: Field = 0;
     for i in 0..2 {
         let note = outputs[i];
         note.amount.assert_max_bit_size::<128>();
-        let c = commitment(asset_id, note.amount, note.owner_pk, note.blinding);
+        let c = commitment_or_zero(asset_id, note.amount, note.owner_pk, note.blinding);
         assert(c == out_commitments[i], "bad output commitment");
         total_out += note.amount;
     }
@@ -98,8 +102,8 @@ fn case(in_amounts: [Field; 2], out_amounts: [Field; 2]) -> Case {
         root,
         nullifiers: [nullifier(leaves[0], secrets[0], 0), nullifier(leaves[1], secrets[1], 1)],
         out_commitments: [
-            commitment(ASSET, out_amounts[0], outputs[0].owner_pk, 9),
-            commitment(ASSET, out_amounts[1], outputs[1].owner_pk, 10),
+            hidden::commitment_or_zero(ASSET, out_amounts[0], outputs[0].owner_pk, 9),
+            hidden::commitment_or_zero(ASSET, out_amounts[1], outputs[1].owner_pk, 10),
         ],
         inputs,
         outputs,
@@ -120,6 +124,23 @@ fn valid_one_in_with_dummy() {
     // Second input is a dummy (amount 0) whose path is garbage: membership is skipped.
     let mut c = case([1000, 0], [1000, 0]);
     c.inputs[1].path = [0; TREE_DEPTH];
+    run(c);
+}
+
+#[test(should_fail_with = "no real input")]
+fn two_dummy_inputs_rejected() {
+    // Anyone could otherwise append leaves for free: two zero-value dummies with garbage paths.
+    let mut c = case([0, 0], [0, 0]);
+    c.inputs[0].path = [0; TREE_DEPTH];
+    c.inputs[1].path = [0; TREE_DEPTH];
+    run(c);
+}
+
+#[test(should_fail_with = "bad output commitment")]
+fn zero_output_must_use_the_zero_sentinel() {
+    let mut c = case([1000, 0], [1000, 0]);
+    c.inputs[1].path = [0; TREE_DEPTH];
+    c.out_commitments[1] = commitment(ASSET, 0, c.outputs[1].owner_pk, 10);
     run(c);
 }
 

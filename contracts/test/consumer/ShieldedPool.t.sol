@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {stdStorage, StdStorage} from "forge-std/StdStorage.sol";
 import {ShieldedPool} from "../../src/consumer/ShieldedPool.sol";
 import {Poseidon2} from "../../src/consumer/verifiers/Poseidon2.sol";
 import {HiddenConstants} from "../../src/consumer/verifiers/HiddenConstants.sol";
@@ -10,6 +11,8 @@ import {ShieldedPoolBase, ExpectVerifier} from "./ShieldedPoolBase.sol";
 
 /// ShieldedPool rules with stand-in verifiers (real proofs: ShieldedPoolProofs.t.sol).
 contract ShieldedPoolTest is ShieldedPoolBase {
+    using stdStorage for StdStorage;
+
     // ---------------------------------------------------------------- constants and wiring
 
     function test_treeConstantsMatchCircuits() public view {
@@ -583,6 +586,66 @@ contract ShieldedPoolTest is ShieldedPoolBase {
     }
 
     /// Reference root: full binary tree of depth 20 with HiddenConstants zero subtrees.
+    // ------------------------------------------------------------ S8 (security review 2026-10-06)
+
+    function _setNextLeaf(uint256 n) internal {
+        stdstore.target(address(pool)).sig("nextLeaf()").checked_write(n);
+    }
+
+    /// The tree is full (2^20 leaves). A full withdraw (zero change, commitment 0) still pays out: it needs no leaf.
+    function test_S8_fullWithdrawAtAFullTreeNeedsNoLeaf() public {
+        _deposit(alice, address(usdg), 1_000 * U, 1);
+        _insertAll();
+        _setNextLeaf(pool.MAX_LEAVES());
+        ShieldedPool.PublicWithdraw memory w = _pubW(bytes32(uint256(11)), address(usdg), 1_000 * U, bob, 0);
+        w.changeCommitment = 0;
+        uint256 b = usdg.balanceOf(bob);
+        pool.withdraw("", w);
+        assertEq(usdg.balanceOf(bob) - b, 1_000 * U);
+        assertEq(pool.nextLeaf(), pool.MAX_LEAVES(), "no leaf used");
+    }
+
+    /// A partial exit at a full tree starts the next tree; the full tree's final root stays known forever, so
+    /// notes in it remain spendable once its roots leave the history.
+    function test_S8_fullTreeRollsOverAndItsRootStaysKnown() public {
+        _deposit(alice, address(usdg), 1_000 * U, 1);
+        _insertAll();
+        uint256 max = pool.MAX_LEAVES();
+        _setNextLeaf(max - 1);
+        vm.recordLogs();
+        pool.withdraw("", _pubW(bytes32(uint256(21)), address(usdg), 100 * U, bob, 0)); // fills position max - 1
+        bytes32 finalRoot = pool.currentRoot();
+        assertTrue(pool.archivedRoot(finalRoot), "full tree's root archived");
+        pool.withdraw("", _pubW(bytes32(uint256(22)), address(usdg), 100 * U, bob, 0)); // tree 1, position 0
+        assertEq(pool.nextLeaf(), max + 1);
+        (uint256 treeId, uint256 pos) = pool.treeOf(max);
+        assertEq(treeId, 1);
+        assertEq(pos, 0);
+
+        // Far more roots than the history keeps: the archived root is still known, an ordinary old one is not.
+        bytes32 oldRoot = finalRoot;
+        stdstore.target(address(pool)).sig("rootCount()").checked_write(pool.rootCount() + 10 * pool.ROOT_HISTORY());
+        assertTrue(pool.isKnownRoot(oldRoot));
+        ShieldedPool.PublicWithdraw memory w = _pubW(bytes32(uint256(23)), address(usdg), 100 * U, bob, 0);
+        w.root = oldRoot;
+        pool.withdraw("", w);
+    }
+
+    /// Direct deposits can carry a minimum (dust notes cost real money); CrowdBuy deliveries are exempt.
+    function test_S8_minDepositAppliesToDirectDeposits() public {
+        vm.prank(owner);
+        pool.setMinDeposit(address(usdg), 1 * U);
+        vm.prank(alice);
+        vm.expectRevert(ShieldedPool.BadAmount.selector);
+        pool.deposit(address(usdg), 1 * U - 1, bytes32(uint256(1)), bytes32(uint256(2)), "");
+        _deposit(alice, address(usdg), 1 * U, 3);
+        vm.prank(crowdAddr);
+        pool.depositFor(address(usdg), 1, bytes32(uint256(4)), bytes32(uint256(5)), "", alice);
+        vm.prank(alice);
+        vm.expectRevert();
+        pool.setMinDeposit(address(usdg), 0);
+    }
+
     function _root(uint256[] memory leaves) internal pure returns (uint256) {
         uint256[] memory level = leaves;
         for (uint256 d; d < 20; ++d) {

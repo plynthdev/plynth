@@ -10,7 +10,7 @@
 // the proof (a relayer) cannot swap the ciphertext that carries the only copy of a new note's blinding.
 // ext_hash = keccak256(encryptedChange) mod p.
 
-use hidden::{commitment, merkle_root, nullifier, owner_pk, TREE_DEPTH};
+use hidden::{commitment, commitment_or_zero, merkle_root, nullifier, owner_pk, TREE_DEPTH};
 
 fn main(
     root: pub Field,
@@ -41,7 +41,8 @@ fn main(
     assert(merkle_root(c, in_index, in_path) == root, "input note not in tree");
     assert(nullifier(c, in_secret, in_index) == nullifier_hash, "bad nullifier");
 
-    let change = commitment(asset_id, change_amount, change_owner_pk, change_blinding);
+    // Zero change: change_commitment is 0 and the pool inserts no leaf (a full exit needs no tree space).
+    let change = commitment_or_zero(asset_id, change_amount, change_owner_pk, change_blinding);
     assert(change == change_commitment, "bad change commitment");
 
     // All terms < 2^128, so no field wrap.
@@ -79,7 +80,7 @@ fn case(in_amount: Field, amount: Field, change_amount: Field, relayer_fee: Fiel
     Case {
         root,
         nullifier_hash: nullifier(mine, SECRET, 1),
-        change_commitment: commitment(ASSET, change_amount, owner_pk(SECRET), 8),
+        change_commitment: hidden::commitment_or_zero(ASSET, change_amount, owner_pk(SECRET), 8),
         amount,
         recipient: RECIPIENT,
         relayer_fee,
@@ -120,6 +121,20 @@ fn valid_partial_withdraw() {
 #[test]
 fn valid_full_withdraw_zero_change() {
     run(case(1000, 1000, 0, 0));
+}
+
+#[test(should_fail_with = "bad change commitment")]
+fn zero_change_must_use_the_zero_sentinel() {
+    let mut c = case(1000, 1000, 0, 0);
+    c.change_commitment = commitment(ASSET, 0, owner_pk(SECRET), 8);
+    run(c);
+}
+
+#[test(should_fail_with = "bad change commitment")]
+fn nonzero_change_cannot_skip_its_leaf() {
+    let mut c = case(1000, 600, 400, 0);
+    c.change_commitment = 0;
+    run(c);
 }
 
 #[test]

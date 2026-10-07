@@ -87,9 +87,12 @@ export async function proveTransfer(p: {
   const total = p.inputs.reduce((a, n) => a + n.raw, 0n);
   if (p.raw < 0n || p.raw > total) throw new Error(`cannot send ${p.raw} from ${total}`);
   const assetId = BigInt(asset);
-  const root = tree.root();
+  // One proof proves membership under one root: the inputs' tree (the pool archives full trees' roots).
+  const treeId = tree.treeOf(p.inputs[0]!.leafIndex!);
+  if (p.inputs.some((n) => tree.treeOf(n.leafIndex!) !== treeId)) throw new Error("inputs are in different trees: transfer them separately");
+  const root = tree.rootOf(p.inputs[0]!.leafIndex!);
 
-  const ins = p.inputs.map((n) => ({ amount: n.raw, secret: keys.spendingSecret, blinding: n.blinding, index: BigInt(n.leafIndex!), path: tree.path(n.leafIndex!) }));
+  const ins = p.inputs.map((n) => ({ amount: n.raw, secret: keys.spendingSecret, blinding: n.blinding, index: BigInt(tree.position(n.leafIndex!)), path: tree.path(n.leafIndex!) }));
   if (ins.length === 1) ins.push({ amount: 0n, secret: keys.spendingSecret, blinding: randomField(), index: 0n, path: Array(TREE_DEPTH).fill(0n) });
   const nullifiers = ins.map((i) => nullifierOf(commitmentOf(assetId, i.amount, keys.ownerPk, i.blinding), i.secret, i.index));
 
@@ -97,9 +100,11 @@ export async function proveTransfer(p: {
     { raw: p.raw, ownerPk: p.to.ownerPk, blinding: randomField(), viewingPub: p.to.viewingPub },
     { raw: total - p.raw, ownerPk: keys.ownerPk, blinding: randomField(), viewingPub: keys.viewingPub },
   ];
-  const outCommitments = outs.map((o) => commitmentOf(assetId, o.raw, o.ownerPk, o.blinding));
+  // A zero-value output is commitment 0 (no leaf, no ciphertext): the pool skips it.
+  const outCommitments = outs.map((o) => (o.raw === 0n ? 0n : commitmentOf(assetId, o.raw, o.ownerPk, o.blinding)));
   // Encrypted before proving: the proof binds them (ext_hash), so they cannot be swapped on the way to the chain.
-  const encryptedNotes = [encryptNote({ asset, raw: outs[0]!.raw, blinding: outs[0]!.blinding }, outs[0]!.viewingPub), encryptNote({ asset, raw: outs[1]!.raw, blinding: outs[1]!.blinding }, outs[1]!.viewingPub)] as const;
+  const enc = (o: (typeof outs)[number]): Hex => (o.raw === 0n ? "0x" : encryptNote({ asset, raw: o.raw, blinding: o.blinding }, o.viewingPub));
+  const encryptedNotes = [enc(outs[0]!), enc(outs[1]!)] as const;
 
   const { proof } = await proveCircuit(transferArtifact, {
     root: f(root),
@@ -135,12 +140,14 @@ export async function proveWithdraw(p: {
   const asset = getAddress(note.asset);
   const assetId = BigInt(asset);
   const recipient = getAddress(p.recipient);
-  const root = tree.root();
-  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, BigInt(note.leafIndex));
+  const root = tree.rootOf(note.leafIndex);
+  const position = BigInt(tree.position(note.leafIndex));
+  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, position);
   const change = note.raw - p.amount;
   const changeBlinding = randomField();
-  const changeCommitment = commitmentOf(assetId, change, keys.ownerPk, changeBlinding);
-  const encryptedChange = encryptNote({ asset, raw: change, blinding: changeBlinding }, keys.viewingPub);
+  // Zero change: commitment 0 and no ciphertext; the pool inserts no leaf (a full exit needs no tree space).
+  const changeCommitment = change === 0n ? 0n : commitmentOf(assetId, change, keys.ownerPk, changeBlinding);
+  const encryptedChange: Hex = change === 0n ? "0x" : encryptNote({ asset, raw: change, blinding: changeBlinding }, keys.viewingPub);
   const { proof } = await proveCircuit(withdrawArtifact, {
     root: f(root),
     nullifier_hash: f(nullifier),
@@ -153,7 +160,7 @@ export async function proveWithdraw(p: {
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
     in_blinding: f(note.blinding),
-    in_index: f(BigInt(note.leafIndex)),
+    in_index: f(position),
     in_path: tree.path(note.leafIndex).map(f),
     change_amount: f(change),
     change_owner_pk: f(keys.ownerPk),

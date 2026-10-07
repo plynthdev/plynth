@@ -40,7 +40,6 @@ export const shieldedPoolAbi = parseAbi([
   "error NotPending(uint256 pendingId)",
   "error NotOrigin(uint256 pendingId)",
   "error NothingToInsert()",
-  "error TreeFull()",
   "error UnknownRoot(bytes32 root)",
   "error NullifierAlreadySpent(bytes32 nullifier)",
   "error InvalidProof()",

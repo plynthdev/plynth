@@ -359,8 +359,8 @@ contract ThresholdVerifierTest is Test {
         _history();
         assertEq(tv.depositCount(), 4);
         assertEq(tv.nextPendingSynced(), 5, "refunded pending id 2 stepped over");
-        _withdrawNote3(); // inserts a change leaf into the pool tree
-        assertEq(pool.nextLeaf(), 5);
+        _withdrawNote3(); // a full withdraw: zero change inserts no leaf (S8)
+        assertEq(pool.nextLeaf(), 4);
         vm.expectRevert(ThresholdVerifier.NothingToSync.selector);
         tv.syncDeposits(100);
         assertEq(tv.depositCount(), 4);

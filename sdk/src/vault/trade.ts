@@ -63,15 +63,17 @@ export async function proveSwap(p: {
   const assetOut = getAddress(p.assetOut);
   if (assetIn === assetOut) throw new Error("same asset");
   const to = p.to ?? keys;
-  const root = tree.root();
-  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, BigInt(note.leafIndex));
+  const root = tree.rootOf(note.leafIndex);
+  const position = BigInt(tree.position(note.leafIndex));
+  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, position);
   const change = note.raw - p.amountIn;
   const changeBlinding = randomField();
-  const changeCommitment = commitmentOf(BigInt(assetIn), change, keys.ownerPk, changeBlinding);
+  // Zero change: commitment 0 and no ciphertext; no leaf is inserted for it.
+  const changeCommitment = change === 0n ? 0n : commitmentOf(BigInt(assetIn), change, keys.ownerPk, changeBlinding);
   const outBlinding = randomField();
   const partial = partialCommitmentOf(BigInt(assetOut), to.ownerPk, outBlinding);
   // Encrypted before proving: the proof binds both (ext_hash), so a relayer cannot replace them.
-  const encryptedChange = encryptNote({ asset: assetIn, raw: change, blinding: changeBlinding }, keys.viewingPub);
+  const encryptedChange: Hex = change === 0n ? "0x" : encryptNote({ asset: assetIn, raw: change, blinding: changeBlinding }, keys.viewingPub);
   const encryptedOut = encryptNote({ asset: assetOut, raw: p.minOut, blinding: outBlinding }, to.viewingPub, NOTE_VERSION_PARTIAL);
   const { proof } = await proveCircuit(swapArtifact, {
     root: f(root),
@@ -89,7 +91,7 @@ export async function proveSwap(p: {
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
     in_blinding: f(note.blinding),
-    in_index: f(BigInt(note.leafIndex)),
+    in_index: f(position),
     in_path: tree.path(note.leafIndex).map(f),
     change_amount: f(change),
     change_owner_pk: f(keys.ownerPk),
@@ -112,8 +114,9 @@ export async function proveSettle(p: { keys: VaultKeys; tree: NoteTree; note: Ow
   if (note.version !== 2) throw new Error("only v2 notes (swap outputs) need settling");
   spendable(note, tree, true);
   const asset = getAddress(note.asset);
-  const root = tree.root();
-  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, BigInt(note.leafIndex));
+  const root = tree.rootOf(note.leafIndex);
+  const position = BigInt(tree.position(note.leafIndex));
+  const nullifier = nullifierOf(note.commitment, keys.spendingSecret, position);
   const blinding = randomField();
   const outCommitment = commitmentOf(BigInt(asset), note.raw, keys.ownerPk, blinding);
   const encryptedOut = encryptNote({ asset, raw: note.raw, blinding }, keys.viewingPub);
@@ -126,7 +129,7 @@ export async function proveSettle(p: { keys: VaultKeys; tree: NoteTree; note: Ow
     amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
     in_blinding: f(note.blinding),
-    in_index: f(BigInt(note.leafIndex)),
+    in_index: f(position),
     in_path: tree.path(note.leafIndex).map(f),
     out_owner_pk: f(keys.ownerPk),
     out_blinding: f(blinding),
