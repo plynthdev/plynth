@@ -295,19 +295,13 @@ export async function crowd(x: Ctx) {
   };
 
   const slippage = async () => {
-    await r.check("the keeper's MSFT execution reverts on the oracle slippage guard (book stays open)", async () => {
-      const id = x.state.books[MSFT];
+    await r.check("the keeper's MSFT execution did not happen against the pushed pool (book stays open)", async () => {
       await Bun.sleep(8_000); // a few keeper passes
-      const b = await r.read<{ executed: boolean }>(crowd, C, "book", [MSFT, id]);
+      const b = await r.read<{ executed: boolean }>(crowd, C, "book", [MSFT, x.state.books[MSFT]]);
       expect(!b.executed, "MSFT book executed against the pushed pool");
-      try {
-        await r.pub.simulateContract({ account: A.keeper.address, address: crowd, abi: C, functionName: "execute", args: [MSFT] });
-        throw new Error("execute did not revert");
-      } catch (e) {
-        expect(/Slippage/.test(String((e as Error).message)), `reverted with ${(e as Error).message.split("\n")[0]}`);
-      }
-      return "execute (as the keeper) reverts Slippage; book not executed";
+      return "book not executed";
     });
+    await r.reverts("MSFT execution (as the keeper) reverts on the oracle slippage guard", A.keeper, { address: crowd, abi: C, functionName: "execute", args: [MSFT] }, "Slippage");
     for (const s of ["slipA", "slipB", "slipC"] as const) {
       const id = x.state.books[MSFT];
       await r.send(`${s} cancels the unexecuted MSFT order`, A[s], { address: crowd, abi: C, functionName: "cancel", args: [MSFT, id] }, async () => {

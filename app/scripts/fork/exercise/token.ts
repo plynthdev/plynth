@@ -32,11 +32,14 @@ export async function token(x: Ctx) {
   const feeBal = await usdgOf(x, fr);
   const authorOwed = await r.read<bigint>(fr, FR, "authorOwed", [A.staker.address]);
   const insBefore = await usdgOf(x, ins);
-  if (feeBal > authorOwed) {
+  const lastPush0 = await r.read<bigint>(fr, FR, "lastPush");
+  if (feeBal > authorOwed || lastPush0 !== 0n) {
     // push and observe are keeper-only: one contract can no longer move the PLTH pool and push in the same tx.
     await r.reverts("an outsider cannot push the FeeRouter (keeper-only)", A.outsider, { address: fr, abi: FR, functionName: "push", args: [0n] }, "NotKeeper");
     await r.reverts("an outsider cannot record the buy's reference price", A.outsider, { address: fr, abi: FR, functionName: "observe" }, "NotKeeper");
-    const from = await x.r.pub.getBlockNumber();
+    // The running keeper's fee-push job may already have pushed the close fees (it observes at its first pass and
+    // pushes hourly): any Pushed since the deployment counts.
+    const from = BigInt(x.dep.deployBlock);
     await r.external("keeper observes the PLTH pool, then pushes the FeeRouter >= 10 min later: buyback checked against that observation, split to stakers and insurance", "keeper", async () => {
       // The running keeper's fee-push job observes first; chain time only moves when we warp, so warp past the
       // 10-minute observation age until its push lands.
@@ -44,15 +47,17 @@ export async function token(x: Ctx) {
       for (let i = 0; i < 4 && !pushed; i++) {
         await r.until("FeeRouter observation", async () => ((await r.read<bigint>(fr, FR, "obsAt")) !== 0n ? true : undefined), 120_000);
         await r.warp(11n * 60n);
-        pushed = await r.until("Pushed", async () => (await events(x, fr, "FeeRouter", "Pushed", from))[0], 60_000).catch(() => undefined);
+        pushed = await r.until("Pushed", async () => (await events(x, fr, "FeeRouter", "Pushed", from)).find((e) => BigInt(e.args.fees) > 0n), 60_000).catch(() => undefined);
       }
       expect(pushed !== undefined, "the keeper never pushed");
       const insGot = (await usdgOf(x, ins)) - insBefore;
       const a = pushed!.args as { usdgSpent: bigint; plthBought: bigint; toInsurance: bigint; usdgToStakers: bigint };
-      expect(insGot > 0n || a.usdgToStakers > 0n || a.plthBought > 0n, "nothing reached staking or insurance");
+      expect(a.toInsurance > 0n || a.usdgToStakers > 0n || a.plthBought > 0n || insGot > 0n, "nothing reached staking or insurance");
       return { tx: pushed!.transactionHash, assertion: `Pushed: insurance +${Number(insGot) / 1e6} USDG, stakers +${Number(a.usdgToStakers) / 1e6} USDG, ${Number(a.usdgSpent) / 1e6} USDG bought ${Number(a.plthBought) / 1e18} PLTH` };
     });
-    await r.reverts("a second push inside the hour reverts", A.keeper, { address: fr, abi: FR, functionName: "push", args: [0n] }, "TooSoon");
+    if ((await r.now()) < (await r.read<bigint>(fr, FR, "lastPush")) + HOUR) {
+      await r.reverts("a second push inside the hour reverts", A.keeper, { address: fr, abi: FR, functionName: "push", args: [0n] }, "TooSoon");
+    }
   } else {
     await r.check("FeeRouter holds close fees to push", () => {
       throw new Error(`FeeRouter USDG ${feeBal} (author set-aside ${authorOwed}): no closes reached it`);

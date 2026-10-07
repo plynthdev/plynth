@@ -54,7 +54,9 @@ export async function runFeePush(ctx: Ctx): Promise<JobResult> {
   }
   const usdg = await read<`0x${string}`>("usdg");
   const bal = (await ctx.pub.readContract({ address: usdg, abi: erc20Abi, functionName: "balanceOf", args: [fr] })) as bigint;
-  const spend = buySpend(bal, await read<bigint>("buyCarry"), await read<bigint>("authorReserved"), await read<bigint>("perPushCap"));
+  const authorReserved = await read<bigint>("authorReserved");
+  if (bal <= authorReserved) return res; // nothing to split or buy: no empty push
+  const spend = buySpend(bal, await read<bigint>("buyCarry"), authorReserved, await read<bigint>("perPushCap"));
   // The keeper's own bound: the pool as it reads it now. The router also checks the spot at inclusion and the
   // earlier observation, and takes the highest.
   const minOut = spend === 0n ? 0n : await read<bigint>("quoteMinOut", [spend]);
