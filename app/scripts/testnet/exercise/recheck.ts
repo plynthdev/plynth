@@ -30,6 +30,19 @@ const retried = (x: TCtx, s: Step): string => {
 };
 
 export const RECHECKS: [prefix: string, fn: Recheck][] = [
+  [
+    "open claims the ",
+    async (x, s) => {
+      const sym = s.step.replace("open claims the ", "").replace(" allocation", "");
+      const token = x.token(sym);
+      const books = (x.data.books ?? {}) as Record<string, string>;
+      const id = BigInt(books[token] ?? books[token.toLowerCase()] ?? Object.entries(books).find(([k]) => getAddress(k) === token)?.[1] ?? "0");
+      const ev = (await logsOf(x, s.tx!, "CrowdBuy", x.addr("crowdBuy"))).find((e) => e.eventName === "Claimed");
+      const alloc = await x.r.read<bigint>(x.addr("crowdBuy"), x.abi("CrowdBuy"), "allocationOf", [token, id, x.A.open.address]);
+      if (!ev || getAddress(ev.args.user as string) !== x.A.open.address || BigInt(ev.args.raw as bigint) !== alloc || alloc === 0n) throw new Error("no Claimed(open, allocationOf) in the receipt");
+      return `receipt has Claimed(open, ${alloc} raw ${sym}) = allocationOf(book ${id})`;
+    },
+  ],
   ["hidden deposits 100 mUSDG into the Hidden Vault (queued as pending)", async (x, s) => retried(x, s)],
   [
     "quiet: depositWithPermit2",

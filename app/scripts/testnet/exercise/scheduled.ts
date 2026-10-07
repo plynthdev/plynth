@@ -69,7 +69,12 @@ const crowdExecution: Handler = async (x, item) => {
     const alloc = await r.read<bigint>(crowd, C, "allocationOf", [a, BigInt(id), A.open.address]);
     const b0 = await r.read<bigint>(a, erc20Abi, "balanceOf", [A.open.address]);
     await r.send(`open claims the ${r.who(a)} allocation`, A.open, { address: crowd, abi: C, functionName: "claimOpen", args: [a, BigInt(id)] }, async () => {
-      expect((await r.read<bigint>(a, erc20Abi, "balanceOf", [A.open.address])) - b0 === alloc && alloc > 0n, "wrong amount");
+      // Retry: a lagging public RPC node can still answer with the balance before the claim (seen 2026-10-07).
+      const got = await r.until("the claimed balance", async () => {
+        const d = (await r.read<bigint>(a, erc20Abi, "balanceOf", [A.open.address])) - b0;
+        return d === alloc ? d : undefined;
+      }, 30_000, 2000).catch(() => -1n);
+      expect(got === alloc && alloc > 0n, "wrong amount");
       return `${alloc} raw ${r.who(a)} received`;
     });
     await r.reverts(`open cannot claim ${r.who(a)} twice`, A.open, { address: crowd, abi: C, functionName: "claimOpen", args: [a, BigInt(id)] }, "AlreadySettled");
