@@ -269,7 +269,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         usdg.mint(lp2, 1e6);
         vm.startPrank(lp2);
         usdg.approve(address(pool), 1e6);
-        vm.expectRevert(ExceptionInsurancePool.ClaimsOwed.selector);
+        vm.expectRevert(ExceptionInsurancePool.SharesUnderwater.selector);
         pool.deposit(1e6);
         vm.stopPrank();
     }
@@ -401,6 +401,91 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         assertEq(usdg.balanceOf(address(account)), FUNDING + 300e6);
         assertEq(usdg.balanceOf(address(this)) - before, 300e6, "the 300 above the debt back to the router");
         assertEq(usdg.balanceOf(address(pool)), 0);
+    }
+
+    // ------------------------------------------------------------ delta review 2026-10-07 (D1)
+
+    function _tryDeposit(address who, uint256 amount) internal returns (bool ok) {
+        usdg.mint(who, amount);
+        vm.startPrank(who);
+        usdg.approve(address(pool), amount);
+        try pool.deposit(amount) returns (uint256) {
+            ok = true;
+        } catch {}
+        vm.stopPrank();
+    }
+
+    /// D1: a claim drained the pool (balance 0, queue clear). A 1-wei depositFees by anyone used to make
+    /// freeAssets 1 and reopen deposits at ~0 price: 1,000 USDG then bought 99.99% of the shares and the next
+    /// 5,000 of router fees. Now depositFees is router-only and a donation cannot lift the price to the floor.
+    function test_D1_oneWeiDonationCannotReopenDeposits() public {
+        _lp(lp, 10_000e6);
+        uint256 id = _file((10_000e6 + 1) * 1e12);
+        _approveBoth(id); // pays 10,000, owes 1 raw
+        _fund(1); // router fee pays the last unit
+        assertEq(pool.queuedOwed(), 0);
+        assertEq(usdg.balanceOf(address(pool)), 0);
+
+        address attacker = makeAddr("attacker");
+        usdg.mint(attacker, 1);
+        vm.startPrank(attacker);
+        usdg.approve(address(pool), 1);
+        vm.expectRevert(ExceptionInsurancePool.NotFeeRouter.selector);
+        pool.depositFees(1);
+        usdg.transfer(address(pool), 1); // a plain donation instead
+        vm.stopPrank();
+        assertFalse(_tryDeposit(attacker, 1_000e6), "deposit at a ~0 share price");
+        assertEq(pool.sharesOf(attacker), 0);
+
+        _fund(5_000e6); // the next router push restores the LPs who carried the claim
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 5_000e6, 2);
+        assertTrue(_tryDeposit(attacker, 1_000e6), "reopened once the price is back at the floor");
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(attacker)), 1_000e6, 1, "at a fair price");
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 5_000e6, 2, "the old LP keeps its value");
+    }
+
+    /// D1: a paid claim that leaves a few wei is no different from one that leaves nothing.
+    function test_D1_claimDustCannotReopenDeposits() public {
+        _lp(lp, 10_000e6);
+        _approveBoth(_file((10_000e6 - 5) * 1e12)); // leaves 5 raw units
+        assertEq(pool.freeAssets(), 5);
+        address attacker = makeAddr("attacker");
+        usdg.mint(attacker, 1_000e6);
+        vm.startPrank(attacker);
+        usdg.approve(address(pool), 1_000e6);
+        vm.expectRevert(ExceptionInsurancePool.SharesUnderwater.selector);
+        pool.deposit(1_000e6);
+        vm.stopPrank();
+    }
+
+    /// The floor: deposits are open iff the active share price is at least MIN_PRICE_BPS of the entry price.
+    function testFuzz_D1_depositFloor(uint256 lossBps) public {
+        lossBps = bound(lossBps, 0, 9_999);
+        _lp(lp, 10_000e6);
+        if (lossBps != 0) _approveBoth(_file(10_000e6 * lossBps / 10_000 * 1e12));
+        bool open = _tryDeposit(lp2, 1_000e6);
+        uint256 left = 10_000e6 - 10_000e6 * lossBps / 10_000;
+        if (left * 2 >= 10_000e6) assertTrue(open, "at or above half the entry price");
+        else if (left * 2 + 2 < 10_000e6) assertFalse(open, "under half the entry price");
+    }
+
+    function test_depositFeesRouterOnlyAndBoundOnce() public {
+        usdg.mint(stranger, 1e6);
+        vm.startPrank(stranger);
+        usdg.approve(address(pool), 1e6);
+        vm.expectRevert(ExceptionInsurancePool.NotFeeRouter.selector);
+        pool.depositFees(1e6);
+        vm.expectRevert(ExceptionInsurancePool.NotDeployer.selector);
+        pool.bindFeeRouter(stranger);
+        vm.stopPrank();
+        vm.expectRevert(ExceptionInsurancePool.AlreadyDone.selector);
+        pool.bindFeeRouter(stranger);
+
+        ExceptionInsurancePool fresh = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
+        vm.expectRevert(ExceptionInsurancePool.ZeroAddress.selector);
+        fresh.bindFeeRouter(address(0));
+        vm.expectRevert(ExceptionInsurancePool.NotFeeRouter.selector);
+        fresh.depositFees(1); // unbound: nobody
     }
 
     /// Shares a claim made worthless can still leave (nothing is paid); otherwise they could never exit and

@@ -30,7 +30,9 @@ import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
 ///     withdraw): the request value less any later claim losses.
 /// So a deposit is priced on what the active shares own, never on fees meant for someone else, and a
 /// withdrawer's exit cannot move the active share price. Deposits are refused while a claim is owed or while
-/// the active shares are worth nothing.
+/// the active share price is under MIN_PRICE_BPS of the entry price (1 raw unit per 1e6 shares): a near-zero
+/// price would let a newcomer buy almost every share, and with it the old LPs' claim on the fees that should
+/// restore them. Only router fees (or claims ending) lift the price back.
 /// When no active share is left, whatever the active side still holds (fees that arrived meanwhile, rounding
 /// dust, a donation) has no owner: it goes back to the FeeRouter (stakers / buyback), never to the virtual
 /// shares. Virtual shares (1e6) make the first-depositor inflation trick unprofitable. No owner; the deployer
@@ -72,12 +74,15 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     uint256 public immutable WITHDRAW_DELAY;
     uint256 public constant MAX_PROCESS = 16;
     uint256 private constant VIRTUAL_SHARES = 1e6;
+    /// Deposits need active shares worth at least this share of the entry price (1 raw unit per 1e6 shares).
+    uint256 public constant MIN_PRICE_BPS = 5_000;
+    uint256 private constant BPS = 10_000;
 
     IERC20 public immutable usdg;
     uint8 public immutable usdgDecimals;
     address public immutable committee;
     address public immutable deployer;
-    /// Where an ownerless active surplus goes. Bound once by the deployer.
+    /// The only caller of `depositFees` and where an ownerless active surplus goes. Bound once by the deployer.
     address public feeRouter;
 
     Claim[] private _claims;
@@ -112,11 +117,13 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     error NotCommittee();
     error NotController();
     error NotDeployer();
+    error NotFeeRouter();
     error BadStatus(Status status);
     error AlreadyDone();
     error InsufficientShares();
     error NotReady(uint64 readyAt);
     error ClaimsOwed();
+    error SharesUnderwater();
     error DelayTooShort();
 
     constructor(IERC20Metadata usdg_, address committee_, uint256 withdrawDelay_) {
@@ -195,9 +202,11 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     // ---------------------------------------------------------------- money in / LPs
 
+    /// Router-only: a public entry let anyone lift a near-zero share price by 1 wei and reopen deposits.
     /// Fees pay owed claims first; the rest raises the active share price (or, with no active share, goes
     /// straight back to the router).
     function depositFees(uint256 amount) external nonReentrant {
+        if (msg.sender != feeRouter) revert NotFeeRouter();
         if (amount == 0) revert ZeroAmount();
         usdg.safeTransferFrom(msg.sender, address(this), amount);
         emit FeesDeposited(msg.sender, amount);
@@ -205,14 +214,15 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         _returnIdle();
     }
 
-    /// Refused while a queued claim is unpaid, or while active shares are worth nothing.
+    /// Refused while a queued claim is unpaid, or while active shares are worth under MIN_PRICE_BPS of the
+    /// entry price (see the contract notes).
     function deposit(uint256 assets) external nonReentrant returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         if (queuedOwed != 0) revert ClaimsOwed();
         _returnIdle(); // with no active share, whatever the active side holds is not the newcomer's
         uint256 a = activeAssets();
         uint256 s = activeShares;
-        if (s != 0 && a == 0) revert ClaimsOwed();
+        if (s != 0 && (a + 1) * VIRTUAL_SHARES * BPS < (s + VIRTUAL_SHARES) * MIN_PRICE_BPS) revert SharesUnderwater();
         shares = Math.mulDiv(assets, s + VIRTUAL_SHARES, a + 1);
         if (shares == 0) revert ZeroAmount();
         usdg.safeTransferFrom(msg.sender, address(this), assets);

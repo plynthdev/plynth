@@ -106,6 +106,16 @@ export async function token(x: Ctx) {
       expect(c.paid === 0n, "paid");
       return `status ${c.status} (rejected), nothing paid`;
     });
+    // Fees come only from the FeeRouter: a 1-wei "fee" from anyone used to lift a drained pool's share price
+    // off zero and reopen deposits at ~0 price.
+    await r.reverts("an outsider cannot pay fees into the insurance pool (router-only)", A.outsider, { address: ins, abi: IP, functionName: "depositFees", args: [1n] }, "NotFeeRouter");
+    const lpShares = await r.read<bigint>(ins, IP, "sharesOf", [A.lp.address]);
+    await r.send("LP requests to withdraw: shares burnt for their value now, a fixed liability that earns nothing", A.lp, { address: ins, abi: IP, functionName: "requestWithdraw", args: [lpShares] }, async () => {
+      const [requested, value] = await r.read<[bigint, bigint, bigint]>(ins, IP, "pendingOf", [A.lp.address]);
+      const active = await r.read<bigint>(ins, IP, "activeShares");
+      expect(requested === value && value > 8_999n * U && active === 0n, `requested ${requested} value ${value} activeShares ${active}`);
+      return `pending ${Number(value) / 1e6} USDG (after the 1,000 claim); no active shares left, so fees go to stakers`;
+    });
   }
 
   // ---- desk limit by tier: a tier-0 board (maxDesks 2) registering a third desk
