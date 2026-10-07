@@ -295,4 +295,20 @@ describe("deliver-quiet: one transaction per part, whatever happens to it", () =
     expect(res.notes.join(" ")).toContain("by hand");
     expect(chain.signed.size).toBe(0);
   });
+
+  test("a node refusing the kept-alive bytes (fee under the base fee) does not stop other parts going out", async () => {
+    await pass(); // TxUnconfirmed: part 0 pending at nonce 0
+    const io = chain.io();
+    const send = io.sendRawTransaction;
+    let refused = 0;
+    (ctx as { sender: Sender }).sender = new Sender(
+      { ...io, sendRawTransaction: async (a) => (a.serializedTransaction === ((await part()).payload as { raw: Hex }).raw ? (refused++, Promise.reject(new Error("max fee per gas less than block base fee"))) : send(a)) },
+      KEEPER,
+      { sleep: async () => {}, pollMs: 1, waitMs: 3 },
+    );
+    const { error, res } = await pass();
+    expect(error).toBeUndefined();
+    expect(refused).toBe(1);
+    expect(res.notes.join(" ")).toContain("still pending");
+  });
 });

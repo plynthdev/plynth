@@ -291,15 +291,17 @@ export class Sender {
 
   /**
    * Resends exactly these signed bytes (same nonce, same hash) to keep a pending transaction in the pool. Never
-   * signs anything. "already known" / "nonce too low" (it is in, or its nonce is used) and transport errors are
-   * not failures here.
+   * signs anything and never throws: it is a best-effort keep-alive. Whatever the node answers ("already known",
+   * "nonce too low", a fee now under the base fee, a transport error), the caller decides from the receipt and
+   * the nonce on its next pass, and a failure here must not stop the caller's other work (another send taking
+   * this nonce is what lets a stuck part be resent safely).
    */
-  async rebroadcast(raw: Hex): Promise<void> {
+  async rebroadcast(raw: Hex): Promise<boolean> {
     try {
       await this.io.sendRawTransaction({ serializedTransaction: raw });
-    } catch (err) {
-      if (isNonceError(err) || isBackoffError(err) || isTransportError(err)) return;
-      throw err;
+      return true;
+    } catch {
+      return false;
     }
   }
 
