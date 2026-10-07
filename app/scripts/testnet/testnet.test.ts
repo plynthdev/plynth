@@ -284,3 +284,19 @@ describe("exercise rules", () => {
     expect(tokens).not.toContain((fake as { token: (s: string) => string }).token("mSPY"));
   });
 });
+
+describe("public-RPC hiccups (2026-10-07)", () => {
+  test("transient RPC errors are retried, reverts never", async () => {
+    const { transientRpcError, retryTransient } = await import("../fork/exercise/core");
+    expect(transientRpcError(new Error("Missing or invalid parameters.\nDouble check you have provided the correct parameters."))).toBe(true);
+    expect(transientRpcError(new Error("HTTP request failed. Status: 503"))).toBe(true);
+    expect(transientRpcError(new Error("execution reverted: NotKeeper()"))).toBe(false);
+    expect(transientRpcError(new Error("The contract function \"execute\" reverted."))).toBe(false);
+    let n = 0;
+    expect(await retryTransient(async () => (++n < 2 ? Promise.reject(new Error("Missing or invalid parameters.")) : 7))).toBe(7);
+    expect(n).toBe(2);
+    n = 0;
+    await expect(retryTransient(async () => { n++; throw new Error("execution reverted"); })).rejects.toThrow("reverted");
+    expect(n).toBe(1);
+  });
+});
