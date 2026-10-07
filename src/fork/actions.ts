@@ -18,6 +18,7 @@ import {
   parseUsdg,
   roundupMessage,
   selfAttestationTypedData,
+  settingsMatch,
   sha256Hex,
 } from "./logic";
 import {
@@ -70,8 +71,8 @@ async function send(
   tx: ApiTx | { to: Address; data: Hex },
   p?: Progress,
 ): Promise<SentTx> {
-  p?.(`${label}: waiting for the wallet…`);
-  const r = await sendAndWait(tx, (h) => p?.(`${label}: sent, waiting for the receipt…`, h));
+  p?.(`${label}: simulating, then waiting for the wallet…`);
+  const r = await sendAndWait(tx, (h) => p?.(`${label}: sent, waiting for the receipt…`, h), label);
   p?.(`${label}: confirmed in block ${r.receipt.blockNumber}`, r.hash);
   return r;
 }
@@ -179,7 +180,36 @@ export type SettingsForm = {
 };
 
 export async function saveSettings(s: SettingsForm, p?: Progress): Promise<SentTx> {
-  return send("Save settings", await api.post<ApiTx>("/v1/tx/setSettings", s), p);
+  const sent = await send("Save settings", await api.post<ApiTx>("/v1/tx/setSettings", s), p);
+  await settingsReadBack(s, p);
+  return sent;
+}
+
+/**
+ * After the receipt, waits (up to ~20 s) until the API reads the saved settings back: a load-balanced public RPC
+ * can still answer from a node a block behind, which showed the old weekly cap ($0.00) until a refresh.
+ */
+export async function settingsReadBack(s: SettingsForm, p?: Progress, tries = 20): Promise<Settings | undefined> {
+  const user = me();
+  let last: Settings | undefined;
+  for (let i = 0; i < tries; i++) {
+    last = await api.get<Settings>(`/v1/account/${user}/settings`).catch(() => undefined);
+    if (settingsMatch(s, last)) return last;
+    if (i === 0) p?.("Save settings: confirmed, waiting for the API to read the new settings…");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return last;
+}
+
+/** USDG in the connected wallet (what Deposit can move into the vault). */
+export async function walletUsdg(user: Address): Promise<bigint> {
+  const d = await deployment();
+  return publicClient().readContract({
+    address: d.usdg,
+    abi: erc20,
+    functionName: "balanceOf",
+    args: [user],
+  });
 }
 
 export async function saveMix(

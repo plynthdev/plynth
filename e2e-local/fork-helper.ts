@@ -21,8 +21,8 @@ import {
 } from "viem";
 import { mnemonicToAccount, type HDAccount } from "viem/accounts";
 
-export const RPC = process.env.VITE_RPC_URL || "http://127.0.0.1:8545";
-export const API = process.env.VITE_API_URL || "http://127.0.0.1:8789";
+export const RPC = process.env.FORK_HELPER_RPC_URL || process.env.VITE_RPC_URL || "http://127.0.0.1:8545";
+export const API = process.env.FORK_HELPER_API_URL || process.env.VITE_API_URL || "http://127.0.0.1:8789";
 const CHAIN_ID = 31337;
 const MNEMONIC = "test test test test test test test test test test test junk"; // test-key (anvil default mnemonic)
 export const U = 1_000_000n;
@@ -54,7 +54,11 @@ export type Dep = {
 };
 export const dep: Dep = JSON.parse(
   readFileSync(
-    resolve(process.env.FORK_DEPLOYMENT_JSON || "../backend/app/deployments/fork.json"),
+    resolve(
+      process.env.FORK_HELPER_DEPLOYMENT ||
+        process.env.FORK_DEPLOYMENT_JSON ||
+        "../backend/app/deployments/fork.json",
+    ),
     "utf8",
   ),
 );
@@ -82,6 +86,7 @@ export const crowdAbi = parseAbi([
 ]);
 const beaconAbi = parseAbi([
   "function beacon(bytes32 key) view returns ((uint64 windowStart, uint64 windowEnd, uint64 executeAt, bytes32 commitment))",
+  "function GRACE() view returns (uint64)",
 ]);
 const poolAbi = parseAbi([
   "function insertPending(uint256 maxCount)",
@@ -306,7 +311,12 @@ export async function executeRound(asset: Address, log: (s: string) => void = ()
   );
   log(`beacon committed for window ${next}`);
   await warpTo(next + 60n);
-  const executeAt = await until("keeper reveals the beacon", async () => {
+  // Since the beacon fix (backend todo 39, S5) the keeper can only reveal AT the jittered time, which only it knows:
+  // step chain time through the window (staying before windowEnd - GRACE, the reveal deadline) until it reveals.
+  const grace = await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "GRACE" });
+  const deadline = next + window - grace - 120n;
+  const step = (window - grace) / 24n || 60n;
+  const revealed = async () => {
     const x = await pub.readContract({
       address: dep.jitterBeacon,
       abi: beaconAbi,
@@ -314,7 +324,23 @@ export async function executeRound(asset: Address, log: (s: string) => void = ()
       args: [key],
     });
     return x.executeAt !== 0n ? x.executeAt : undefined;
-  });
+  };
+  const executeAt = await until(
+    "keeper reveals the beacon",
+    async () => {
+      for (let i = 0; i < 6; i++) {
+        const at = await revealed();
+        if (at) return at;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const t = await now();
+      if (t + step < deadline) await warp(step);
+      else if (t < deadline) await warpTo(deadline);
+      return undefined;
+    },
+    600_000,
+    100,
+  );
   log(`revealed: executes at window + ${Number(executeAt - next) / 3600} h`);
   if ((await now()) < executeAt) await warpTo(executeAt + 1n);
   await until(

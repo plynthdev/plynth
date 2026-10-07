@@ -15,8 +15,18 @@ import {
 } from "./api";
 import { forkConfig, TESTNET_CHAIN_ID } from "./config";
 import {
+  allocationSegments,
+  bookTimingText,
   chartPoints,
   esc,
+  joinGate,
+  mixGate,
+  networkText,
+  recordProgress,
+  renderTxLog,
+  settingsMatch,
+  type Gate,
+  type LogEntry,
   trimDecimals,
   windowText,
   formatRaw,
@@ -36,14 +46,6 @@ import {
   restoreConnection,
 } from "./wallet";
 
-type LogEntry = {
-  id: number;
-  label: string;
-  state: "running" | "ok" | "error";
-  msg: string;
-  hash?: Hex;
-  pending?: Hex | undefined;
-};
 type Data = {
   overview?: Overview;
   habit?: Habit;
@@ -53,6 +55,7 @@ type Data = {
   books?: CrowdBooks;
   eligible?: boolean;
   balances?: { available: bigint; pending: bigint };
+  walletUsdg?: bigint;
   metaAddress?: boolean;
   hiddenKeys?: boolean;
   claimables?: A.Claimable[];
@@ -71,6 +74,8 @@ const S = {
   seq: 0,
   rerender: () => {},
   watching: false,
+  /** Settings just confirmed on-chain: shown until the API reads them back (lagging public RPC node). */
+  expect: undefined as { form: A.SettingsForm; until: number } | undefined,
 };
 
 const RANGE = { "1W": "1W", "1M": "1M", "3M": "3M" } as const;
@@ -104,6 +109,7 @@ async function load(force = false) {
       hiddenKeys,
       claimables,
       statements,
+      walletUsdg,
     ] = await Promise.all([
       api.get<Overview>(`/v1/account/${a}/overview`),
       api.get<Habit>(`/v1/account/${a}/habit?range=${RANGE[S.period]}`),
@@ -116,6 +122,7 @@ async function load(force = false) {
       A.hasHiddenKeys(a),
       A.claimables(a),
       A.statementsOf(a).catch(() => null),
+      A.walletUsdg(a),
     ]);
     S.data = {
       ...S.data,
@@ -130,7 +137,9 @@ async function load(force = false) {
       hiddenKeys,
       claimables,
       statements,
+      walletUsdg,
     };
+    applyExpectedSettings();
   } catch (e) {
     S.error = (e as Error).message;
   } finally {
@@ -143,27 +152,25 @@ async function load(force = false) {
 /** Runs one action: busy flag on <body> (Playwright waits on it), a log entry with the tx hash, then a reload. */
 async function run(label: string, f: (p: A.Progress) => Promise<unknown>) {
   if (S.busy) return;
-  const entry: LogEntry = { id: ++S.seq, label, state: "running", msg: "starting…" };
+  const entry: LogEntry = { id: ++S.seq, label, state: "running", msg: "starting…", txs: [] };
   S.log.unshift(entry);
   S.log = S.log.slice(0, 30);
   S.busy = true;
   document.body.dataset.forkBusy = "1";
   S.rerender();
+  // Each confirmed transaction is listed once, nested under its action's line (todo 41: it was listed twice).
   const progress: A.Progress = (msg, hash) => {
-    entry.msg = msg;
-    entry.pending = hash;
-    // Every confirmed transaction gets its own line carrying its hash (newest first, under the action's line).
-    if (hash && /confirmed/.test(msg)) {
-      entry.pending = undefined;
-      S.log.splice(S.log.indexOf(entry) + 1, 0, { id: ++S.seq, label, state: "ok", msg, hash });
-    }
+    recordProgress(entry, msg, hash);
     S.rerender();
   };
   try {
     await f(progress);
     entry.state = "ok";
     entry.pending = undefined;
-    if (entry.msg === "starting…") entry.msg = "done";
+    if (entry.msg === "starting…" || /waiting for the API/.test(entry.msg))
+      entry.msg = entry.txs.length
+        ? `${entry.txs.length} transaction${entry.txs.length === 1 ? "" : "s"} confirmed`
+        : "done";
   } catch (e) {
     entry.state = "error";
     entry.msg = (e as { shortMessage?: string }).shortMessage ?? (e as Error).message;
@@ -182,20 +189,44 @@ const val = (id: string) =>
 const n = (s: string | undefined) => Number(s ?? 0);
 const disabled = () => (S.busy ? "disabled" : "");
 
+const net = () => networkText(forkConfig().chainId);
+
 function txLog(): string {
-  if (!S.log.length)
-    return `<p class="settings-status mono" id="fork-status" aria-live="polite">LOCAL FORK · NO TRANSACTIONS YET</p>`;
-  return `<ol class="fork-log" id="fork-log" aria-live="polite">${S.log
-    .map(
-      (l) =>
-        `<li data-state="${l.state}" data-label="${esc(l.label)}"${l.hash ? ` data-tx-hash="${l.hash}"` : ""}><span class="mono">${l.state === "running" ? "…" : l.state === "ok" ? "OK" : "ERROR"}</span> <b>${esc(l.label)}</b> ${esc(l.msg)}${
-          (l.hash ?? l.pending)
-            ? ` <code title="${l.hash ?? l.pending}">${shortHash((l.hash ?? l.pending)!)}</code>`
-            : ""
-        }</li>`,
-    )
-    .join("")}</ol>`;
+  return renderTxLog(S.log, `${net().short} · NO TRANSACTIONS YET`);
 }
+
+/** Settings confirmed on-chain win over an API answer from a node that has not seen that block yet. */
+function applyExpectedSettings() {
+  const e = S.expect;
+  if (!e) return;
+  if (Date.now() > e.until || settingsMatch(e.form, S.data.settings)) {
+    S.expect = undefined;
+    return;
+  }
+  if (S.data.settings)
+    S.data.settings = {
+      ...S.data.settings,
+      configured: true,
+      roundTo: e.form.roundTo,
+      multiplier: e.form.multiplier,
+      weeklyCap: e.form.weeklyCap,
+      fixedTopUp: e.form.fixedTopUp,
+      mode: e.form.mode,
+    };
+  if (S.data.overview) S.data.overview = { ...S.data.overview, weeklyCap: e.form.weeklyCap, mode: e.form.mode };
+}
+
+/** A disabled button with its one-line reason and a link to where it gets fixed: [button, reason]. */
+function gatedParts(action: string, label: string, gate: Gate, link?: { href: string; text: string; route?: boolean }): [string, string] {
+  if (gate.ok) return [btn(action, label), ""];
+  return [
+    `<button class="solid-button" data-action="${action}" disabled aria-describedby="why-${action}">${label}</button>`,
+    `<p class="fork-why" id="why-${action}" data-why="${action}">${esc(gate.reason)}${
+      link ? ` <a class="text-link" href="${link.href}"${link.route ? " data-route" : ""}>${esc(link.text)}</a>` : ""
+    }</p>`,
+  ];
+}
+const gated = (...a: Parameters<typeof gatedParts>) => gatedParts(...a).join("");
 
 function chart(): string {
   const pts = S.data.habit?.points ?? [];
@@ -239,22 +270,59 @@ function modePicker(current: ModeKey): string {
 function field(id: string, label: string, help: string, input: string): string {
   return `<div class="setting-row"><div><label for="${id}">${label}</label><p>${help}</p></div>${input}</div>`;
 }
-const input = (id: string, value = "", placeholder = "", type = "text") =>
-  `<input class="fork-input" id="${id}" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">`;
+/** A text input; what the person already typed survives a re-render (a background reload used to wipe it). */
+const input = (id: string, value = "", placeholder = "", type = "text") => {
+  const typed = (document.getElementById(id) as HTMLInputElement | null)?.value;
+  return `<input class="fork-input" id="${id}" type="${type}" value="${esc(typed ?? value)}" placeholder="${esc(placeholder)}" autocomplete="off">`;
+};
 const btn = (action: string, label: string, extra = "") =>
   `<button class="solid-button" data-action="${action}" ${disabled()} ${extra}>${label}</button>`;
 
 // ---------------------------------------------------------------- tabs
 
+function allocationPanel(o: Overview | undefined): string {
+  const segs = allocationSegments(o?.allocation);
+  const bar = segs.length
+    ? `<div class="allocation-bar fork-allocation" data-field="allocation-bar">${segs
+        .map(
+          (x) =>
+            `<i class="alloc-${x.key}" data-segment="${x.key}" style="width:${x.pct}%" title="${esc(x.label)} ${money(x.usd)}"></i>`,
+        )
+        .join("")}</div>`
+    : `<div class="allocation-bar fork-allocation fork-allocation-empty" data-field="allocation-bar" data-empty="1"><span class="mono">NOTHING ALLOCATED YET · DEPOSIT USDG TO START</span></div>`;
+  const row = (key: string, label: string, v: string | undefined, field?: string) =>
+    `<p><span><i class="alloc-dot alloc-${key}" aria-hidden="true"></i>${label}</span><b${field ? ` data-field="${field}"` : ""}>${money(v ?? 0)}</b></p>`;
+  return `<section class="dash-panel"><h2>Your allocation</h2>${bar}<div class="allocation-rows">${row("stocks", "Stock tokens", o?.allocation.stockTokensUsd, "stocks")}${row("park", "Private park", o?.allocation.parkUsd)}${row("usdg", "Available USDG", o?.allocation.availableUsdg, "available")}</div>${
+    o?.holdings.length
+      ? `<div class="allocation-rows">${o.holdings.map((h) => `<p><span>${esc(h.symbol)}${n(h.claimableRaw) > 0 ? " (claimable)" : ""}</span><b>${formatRaw(h.raw)} · ${money(h.usd)}</b></p>`).join("")}</div>`
+      : ""
+  }</section>`;
+}
+
+function crowdPanel(): string {
+  const all = S.data.books?.books ?? [];
+  const books = all.filter((x) => x.open.accounts > 0);
+  const pending = S.data.balances?.pending;
+  const w = S.data.books?.window;
+  const gate = joinGate(S.data.eligible, pending);
+  const link = !S.data.eligible
+    ? { href: "/dashboard/settings/", text: "Go to eligibility", route: true }
+    : { href: "/dashboard/settings/", text: "Import a statement", route: true };
+  const join = gatedParts("join", "JOIN CROWD NOW", gate, link);
+  return `<section class="dash-panel" data-field="crowd"><div class="panel-heading"><h2>Crowd Buy</h2><span class="mono">MIN CROWD ${esc(all[0]?.open.minCrowd ?? "")}</span></div>
+<p class="panel-intro">Your round-ups buy Stock Tokens together with other savers. <b>Join only uses pending round-ups</b>: you have <b data-field="crowd-pending">${formatUsdg(pending ?? 0n)}</b> USDG pending. <b>The keeper joins you automatically</b> every few seconds, so you rarely need the button. A book executes once it has the minimum crowd, at a jittered time inside the window. <span class="mono" data-field="crowd-window">${esc(windowText(w))}</span></p>
+<p class="panel-intro fork-howto">How to get round-ups: <a class="text-link" href="/dashboard/settings/" data-route>import a bank statement</a> (CSV) in Settings; each spend rounds up to your “round to” increment and the keeper accrues it as pending.</p>${
+    books.length
+      ? `<div class="allocation-rows" data-field="crowd-books">${books.map((x) => `<p><span>${esc(x.symbol)} · book ${esc(x.open.bookId)} · <small data-field="next-execution">${esc(bookTimingText({ symbol: x.symbol, accounts: x.open.accounts, minCrowd: x.open.minCrowd, executeAfter: x.open.executeAfter, executedThisWindow: x.open.executedThisWindow }, w))}</small></span><b>${x.open.accounts}/${x.open.minCrowd} accounts · ${esc(x.open.usdgTotal)} USDG</b></p>`).join("")}</div>`
+      : `<p class="panel-intro">No open orders right now.</p>`
+  }<div class="fork-actions">${join[0]}${btn("claim-open", `CLAIM ${S.data.claimables?.length ?? 0} ALLOCATION(S)`)}</div>${join[1]}</section>`;
+}
+
 function overviewTab(): string {
   const o = S.data.overview;
-  const total =
-    n(o?.allocation.stockTokensUsd) + n(o?.allocation.parkUsd) + n(o?.allocation.availableUsdg);
-  const pct = (x: string | undefined) =>
-    total > 0 ? Math.max(0, Math.round((n(x) / total) * 1000) / 10) : 0;
   const b = S.data.balances;
-  const books = (S.data.books?.books ?? []).filter((x) => x.open.accounts > 0);
-  return `<div class="dashboard-stats"><article class="stat-folder"><span class="mono">TOTAL HOLDINGS</span><strong data-field="total">${money(o?.totalHoldingsUsd ?? 0)}</strong><p>Stock Tokens, parked shares and USDG</p></article><article class="stat-folder pink"><span class="mono">THIS WEEK’S ROUND-UPS</span><strong data-field="week">${money(o?.weekRoundups ?? 0)}</strong><p>Weekly cap · ${money(o?.weeklyCap ?? 0)}</p></article><article class="stat-folder cyan"><span class="mono">PRIVACY MODE</span><strong data-field="mode">${MODE_NAMES[o?.mode ?? "open"]}</strong><p>Set on-chain in your vault settings</p></article></div>
+  const wal = S.data.walletUsdg;
+  return `<div class="dashboard-stats"><article class="stat-folder"><span class="mono">TOTAL HOLDINGS</span><strong data-field="total">${money(o?.totalHoldingsUsd ?? 0)}</strong><p>Stock Tokens, parked shares and USDG</p></article><article class="stat-folder pink"><span class="mono">THIS WEEK’S ROUND-UPS</span><strong data-field="week">${money(o?.weekRoundups ?? 0)}</strong><p>Weekly cap · <span data-field="weekly-cap">${money(o?.weeklyCap ?? 0)}</span></p></article><article class="stat-folder cyan"><span class="mono">PRIVACY MODE</span><strong data-field="mode">${MODE_NAMES[o?.mode ?? "open"]}</strong><p>Set on-chain in your vault settings</p></article></div>
 <div class="dashboard-middle"><section class="dash-panel savings-panel"><div class="panel-heading"><h2>Your saving habit</h2><div class="periods">${(
     ["1W", "1M", "3M"] as const
   )
@@ -264,20 +332,12 @@ function overviewTab(): string {
     )
     .join(
       "",
-    )}</div></div><div class="chart-wrap">${chart()}</div><p class="mono chart-note">SAVED USDG · LOCAL FORK DATA</p></section><section class="dash-panel"><h2>Your allocation</h2><div class="allocation-bar"><i style="width:${pct(o?.allocation.stockTokensUsd)}%"></i><i style="width:${pct(o?.allocation.parkUsd)}%"></i><i style="width:${pct(o?.allocation.availableUsdg)}%"></i></div><div class="allocation-rows"><p><span>Stock tokens</span><b data-field="stocks">${money(o?.allocation.stockTokensUsd ?? 0)}</b></p><p><span>Private park</span><b>${money(o?.allocation.parkUsd ?? 0)}</b></p><p><span>Available USDG</span><b data-field="available">${money(o?.allocation.availableUsdg ?? 0)}</b></p></div>${
-    o?.holdings.length
-      ? `<div class="allocation-rows">${o.holdings.map((h) => `<p><span>${esc(h.symbol)}${n(h.claimableRaw) > 0 ? " (claimable)" : ""}</span><b>${formatRaw(h.raw)} · ${money(h.usd)}</b></p>`).join("")}</div>`
-      : ""
-  }</section></div>
+    )}</div></div><div class="chart-wrap">${chart()}</div><p class="mono chart-note">SAVED USDG · ${esc(net().short)} DATA</p></section>${allocationPanel(o)}</div>
 <section class="dash-panel settings-panel"><p class="mono">SAVINGS VAULT · USDG</p><h2>Deposit and withdraw</h2><p class="panel-intro">In the vault: <b data-field="vault-available">${formatUsdg(b?.available ?? 0n)}</b> USDG available, <b data-field="vault-pending">${formatUsdg(b?.pending ?? 0n)}</b> USDG pending round-ups. Withdrawals are never gated.</p>
-${field("deposit-amount", "Deposit", "USDG from your wallet into the savings vault (approves first if needed).", `<div class="cap-control">${input("deposit-amount", "", "100")}${btn("deposit", "DEPOSIT")}</div>`)}
+${field("deposit-amount", "Deposit", `USDG from your wallet into the savings vault (approves first if needed). In your wallet: <b data-field="wallet-usdg">${formatUsdg(wal ?? 0n)}</b> USDG.`, `<div class="cap-control">${input("deposit-amount", "", "100")}<button class="solid-button fork-max" data-action="deposit-max" ${S.busy || !wal ? "disabled" : ""}>MAX</button>${btn("deposit", "DEPOSIT")}</div>`)}
 ${field("withdraw-amount", "Withdraw", "From available first, then pending. Leave the address empty to withdraw to yourself.", `<div class="cap-control">${input("withdraw-amount", "", "25")}${input("withdraw-to", "", "0x… (optional)")}${btn("withdraw", "WITHDRAW")}${btn("withdraw-all", "WITHDRAW ALL")}</div>`)}
 </section>
-<section class="dash-panel"><div class="panel-heading"><h2>Crowd Buy</h2><span class="mono">MIN CROWD ${esc(S.data.books?.books[0]?.open.minCrowd ?? "")}</span></div><p class="panel-intro">Pending round-ups join the open books (the keeper joins them too). A book executes once its crowd is big enough and the window’s jittered time has passed. <span class="mono">${esc(windowText(S.data.books?.window))}</span></p>${
-    books.length
-      ? `<div class="allocation-rows">${books.map((x) => `<p><span>${esc(x.symbol)} · book ${esc(x.open.bookId)}</span><b>${x.open.accounts}/${x.open.minCrowd} accounts · ${esc(x.open.usdgTotal)} USDG</b></p>`).join("")}</div>`
-      : `<p class="panel-intro">No open orders right now.</p>`
-  }<div class="fork-actions">${btn("join", "JOIN CROWD NOW")}${btn("claim-open", `CLAIM ${S.data.claimables?.length ?? 0} ALLOCATION(S)`)}</div></section>
+${crowdPanel()}
 <section class="dash-panel"><div class="panel-heading"><h2>Privacy, by choice</h2><a href="/dashboard/privacy/" data-route class="text-link mono">EXPLORE MODES</a></div>${modePicker(o?.mode ?? "open")}</section>
 <section class="dash-panel"><div class="panel-heading"><h2>Recent activity</h2><a href="/dashboard/activity/" data-route class="text-link mono">VIEW ALL</a></div>${activityTable()}</section>`;
 }
@@ -324,7 +384,7 @@ function settingsTab(): string {
   );
   const mixPct = new Map((s?.mix ?? []).map((m) => [m.token.toLowerCase(), m.weightBps / 100]));
   const today = new Date().toISOString().slice(0, 10);
-  return `<section class="dash-panel settings-panel"><p class="mono">ELIGIBILITY</p><h2>Self-attestation</h2><p class="panel-intro">Buying Stock Tokens needs an on-chain attestation: sign the statement, the screening service checks it (sanctions list, IP country) and you submit its attestation. Status: <b data-field="eligible">${S.data.eligible ? "eligible" : "not attested"}</b>.</p>${btn("attest", "SIGN AND ATTEST")}</section>
+  return `<section class="dash-panel settings-panel" id="eligibility"><p class="mono">ELIGIBILITY</p><h2>Self-attestation</h2><p class="panel-intro">Buying Stock Tokens needs an on-chain attestation: sign the statement, the screening service checks it (sanctions list, IP country) and you submit its attestation. Status: <b data-field="eligible">${S.data.eligible ? "eligible" : "not attested"}</b>.</p>${btn("attest", "SIGN AND ATTEST")}</section>
 <section class="dash-panel settings-panel"><p class="mono">SAVING PREFERENCES</p><h2>Set your own limits</h2><p class="panel-intro">Saved on-chain in the savings vault (one transaction).</p>
 ${field(
   "round-to",
@@ -380,15 +440,15 @@ ${btn("save-settings", "SAVE SETTINGS")}</section>
         `<div class="cap-control"><input class="fork-input" id="mix-${esc(sym)}" data-mix-token="${token}" type="number" min="0" max="100" step="1" value="${mixPct.get(token.toLowerCase()) ?? ""}" placeholder="0"></div>`,
       ),
     )
-    .join("")}${btn("save-mix", "SAVE MIX")}</section>
-<section class="dash-panel settings-panel"><p class="mono">ROUND-UP SOURCES</p><h2>Import a bank statement</h2><p class="panel-intro">CSV with Date, Description, Amount (spends negative). Signed by your wallet; the keeper accrues each spend’s round-up.</p><textarea class="fork-input fork-textarea" id="statement-csv" rows="4">Date,Description,Amount
+    .join("")}${gated("save-mix", "SAVE MIX", mixGate(S.data.eligible), { href: "#eligibility", text: "Go to eligibility" })}</section>
+<section class="dash-panel settings-panel" id="round-ups"><p class="mono">ROUND-UP SOURCES</p><h2>Import a bank statement</h2><p class="panel-intro">CSV with Date, Description, Amount (spends negative). Signed by your wallet; the keeper accrues each spend’s round-up.</p><textarea class="fork-input fork-textarea" id="statement-csv" rows="4">Date,Description,Amount
 ${today},Coffee roasters,-12.30</textarea>${btn("import-statement", "IMPORT STATEMENT")}</section>`;
 }
 
 function tabHtml(tab: string): string {
   if (tab === "overview") return overviewTab();
   if (tab === "activity")
-    return `<section class="dash-panel"><p class="mono">LOCAL FORK ACCOUNT</p><h2>Activity</h2><p class="panel-intro">Round-ups, top-ups, Crowd Buy orders and deliveries, from the indexer.</p>${activityTable()}</section>`;
+    return `<section class="dash-panel"><p class="mono">${esc(net().short)} ACCOUNT</p><h2>Activity</h2><p class="panel-intro">Round-ups, top-ups, Crowd Buy orders and deliveries, from the indexer.</p>${activityTable()}</section>`;
   if (tab === "privacy") return privacyTab();
   if (tab === "settings") return settingsTab();
   return `<section class="dash-panel"><h2>Page not found</h2><a href="/dashboard/" data-route>Return to overview</a></section>`;
@@ -405,15 +465,17 @@ function html(path: string, kit: DashboardKit): string {
   const acct = currentAccount();
   const dev = devWalletEnabled();
   const cfg = forkConfig();
+  const nt = networkText(cfg.chainId);
   const wallet = acct
     ? `<button class="solid-button" data-action="disconnect" title="${acct.address}">${shortHash(acct.address)} · DISCONNECT</button>`
     : `<button class="solid-button" data-action="connect">CONNECT WALLET</button>${dev ? `<button class="solid-button" data-action="connect-dev">DEV WALLET</button>` : ""}`;
   const body = !acct
-    ? `<section class="dash-panel"><p class="mono">${cfg.chainId === TESTNET_CHAIN_ID ? "TESTNET" : "LOCAL FORK"} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${cfg.chainId === TESTNET_CHAIN_ID ? "a testnet-only account (mock USDG, testnet ETH)" : `an imported anvil dev account${dev ? ", or the dev wallet" : ""}`}. Never import a real wallet.</p></section>`
-    : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE LOCAL FORK…</p>` : ""}${tabHtml(tab)}`;
-  return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono">LOCAL FORK · ${cfg.chainId}</span>${
-    dev
-      ? `<span class="preview-badge mono fork-dev-badge" data-dev-wallet-badge>DEV WALLET — local fork</span>`
+    ? `<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${cfg.chainId === TESTNET_CHAIN_ID ? "a testnet-only account (mock USDG, testnet ETH)" : `an imported anvil dev account${dev ? ", or the dev wallet" : ""}`}. Never import a real wallet.</p></section>`
+    : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE ${esc(nt.short)}…</p>` : ""}${tabHtml(tab)}`;
+  return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono" data-network-badge="${nt.kind}">${esc(nt.badge)}</span>${
+    // Only when the dev wallet is the connected connector (todo 41), never just because it could be offered.
+    acct?.kind === "dev"
+      ? `<span class="preview-badge mono fork-dev-badge" data-dev-wallet-badge>DEV WALLET — LOCAL FORK</span>`
       : ""
   }${wallet}</div><div class="dashboard-layout"><aside class="dashboard-nav" aria-label="Dashboard sections">${tabs
     .map(
@@ -422,7 +484,7 @@ function html(path: string, kit: DashboardKit): string {
     )
     .join(
       "",
-    )}<div class="account-note">${kit.logo()}<b>plynth</b><span class="mono">${acct ? esc(shortHash(acct.address)) : "NOT CONNECTED"}</span></div></aside><div class="dashboard-content">${body}<section class="dash-panel"><h2>Transactions</h2>${txLog()}</section><p class="dashboard-footnote">Local fork of Robinhood Chain (chain id ${cfg.chainId}). Nothing here touches a real network.</p></div></div></section>${kit.footer(false)}`;
+    )}<div class="account-note">${kit.logo()}<b>plynth</b><span class="mono">${acct ? esc(shortHash(acct.address)) : "NOT CONNECTED"}</span></div></aside><div class="dashboard-content">${body}<section class="dash-panel"><h2>Transactions</h2>${txLog()}</section><p class="dashboard-footnote" data-field="footnote">${esc(nt.footnote)}</p></div></div></section>${kit.footer(false)}`;
 }
 
 // ---------------------------------------------------------------- events
@@ -434,6 +496,10 @@ const handlers: Record<string, () => void> = {
   disconnect: () =>
     void disconnectWallet().then(() => ((S.data = {}), (S.loadedFor = ""), S.rerender())),
   attest: () => void run("Eligibility", (p) => A.attestEligibility(p)),
+  "deposit-max": () => {
+    const el = document.getElementById("deposit-amount") as HTMLInputElement | null;
+    if (el && S.data.walletUsdg) el.value = formatUsdg(S.data.walletUsdg);
+  },
   deposit: () => {
     const amt = val("deposit-amount");
     void run("Deposit", (p) => A.deposit(amt, p));
@@ -455,7 +521,10 @@ const handlers: Record<string, () => void> = {
       fixedTopUp: val("topup"),
       mode: (S.data.settings?.mode ?? "open") as A.SettingsForm["mode"],
     };
-    void run("Save settings", (p) => A.saveSettings(s, p));
+    void run("Save settings", async (p) => {
+      await A.saveSettings(s, p);
+      S.expect = { form: s, until: Date.now() + 60_000 };
+    });
   },
   "save-mix": () => {
     const rows = [...document.querySelectorAll<HTMLInputElement>("[data-mix-token]")].map((i) => ({
@@ -574,5 +643,6 @@ export function _resetForTests() {
     log: [],
     seq: 0,
     watching: false,
+    expect: undefined,
   });
 }

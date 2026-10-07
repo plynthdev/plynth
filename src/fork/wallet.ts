@@ -26,6 +26,7 @@ import {
 } from "viem";
 import { devWalletAllowed, forkConfig, type ForkConfig } from "./config";
 import { devWallet } from "./dev-wallet";
+import { simulateTx, type SimClient } from "./simulate";
 
 export function plynthForkChain(cfg: Pick<ForkConfig, "chainId" | "rpcUrl"> & { chainName?: string }) {
   return defineChain({
@@ -110,25 +111,40 @@ function need(): Address {
   return a.address;
 }
 
-/** Signs and sends an unsigned tx (as the API returns it), then waits for its receipt. Reverts throw. */
-export async function sendAndWait(tx: UnsignedTx, onHash?: (h: Hex) => void): Promise<SentTx> {
+let lastReceiptBlock: bigint | undefined;
+
+/**
+ * Simulates, then signs and sends an unsigned tx (as the API returns it), then waits for its receipt. A call that
+ * would revert never reaches the wallet: it throws a SimulationRevert with the decoded reason (todo 41).
+ */
+export async function sendAndWait(
+  tx: UnsignedTx,
+  onHash?: (h: Hex) => void,
+  label = "Transaction",
+): Promise<SentTx> {
   const c = wagmiConfig();
   const chainId = forkConfig().chainId;
   if (tx.chainId !== undefined && tx.chainId !== chainId)
     throw new Error(`transaction is for chain ${tx.chainId}, the wallet is on ${chainId}`);
-  const hash = await sendTransaction(c, {
-    account: need(),
-    to: tx.to,
-    data: tx.data,
-    value: tx.value ? BigInt(tx.value) : 0n,
-    chainId,
-  });
+  const account = need();
+  const value = tx.value ? BigInt(tx.value) : 0n;
+  const gas = await simulateTx(
+    publicClient() as unknown as SimClient,
+    { account, to: tx.to, data: tx.data, value },
+    label,
+    lastReceiptBlock !== undefined ? { minBlock: lastReceiptBlock } : {},
+  );
+  const hash = await sendTransaction(c, { account, to: tx.to, data: tx.data, value, gas, chainId });
   onHash?.(hash);
   const receipt = await waitForTransactionReceipt(c, { hash, chainId });
+  lastReceiptBlock = receipt.blockNumber;
   if (receipt.status !== "success")
     throw Object.assign(new Error(`transaction ${hash} reverted`), { hash });
   return { hash, receipt };
 }
+
+/** The block of the last receipt this page saw (reads after an action wait for a node that has it). */
+export const lastSeenBlock = () => lastReceiptBlock;
 
 export function signText(message: string): Promise<Hex> {
   return signMessage(wagmiConfig(), { account: need(), message });

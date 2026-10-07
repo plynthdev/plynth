@@ -164,3 +164,203 @@ export function windowText(w: { start: string; end: string; next: string } | nul
   const at = secs >= 86_400 ? `${next.slice(0, 10)} ${next.slice(11, 16)} UTC` : `${next.slice(11, 16)} UTC`;
   return `Window ${len} · next opens ${at}`;
 }
+
+// ---------------------------------------------------------------- network (todo 41: footer and badges never wrong)
+
+export type NetworkKind = "fork" | "testnet" | "mainnet" | "other";
+export type NetworkText = {
+  kind: NetworkKind;
+  /** Header badge, e.g. "LOCAL FORK · 31337". */
+  badge: string;
+  /** Short label for status lines, e.g. "LOCAL FORK". */
+  short: string;
+  /** The dashboard footnote. */
+  footnote: string;
+};
+
+/** Every label that names the network comes from the configured chain id, so a testnet page never says "fork". */
+export function networkText(chainId: number): NetworkText {
+  if (chainId === 31337)
+    return {
+      kind: "fork",
+      badge: "LOCAL FORK · 31337",
+      short: "LOCAL FORK",
+      footnote:
+        "Local fork of Robinhood Chain (chain id 31337) on this computer. Nothing here touches a real network.",
+    };
+  if (chainId === 46630)
+    return {
+      kind: "testnet",
+      badge: "ROBINHOOD CHAIN TESTNET · 46630",
+      short: "TESTNET",
+      footnote:
+        "Robinhood Chain testnet (chain id 46630): test tokens only (mock USDG and mock Stock Tokens with no value), testnet ETH for gas.",
+    };
+  if (chainId === 4663)
+    return {
+      kind: "mainnet",
+      badge: "ROBINHOOD CHAIN · 4663",
+      short: "MAINNET",
+      footnote: "Robinhood Chain mainnet (chain id 4663): real funds.",
+    };
+  return {
+    kind: "other",
+    badge: `CHAIN ${chainId}`,
+    short: `CHAIN ${chainId}`,
+    footnote: `Unknown network (chain id ${chainId}).`,
+  };
+}
+
+// ---------------------------------------------------------------- allocation bar
+
+export type AllocationSegment = {
+  key: "stocks" | "park" | "usdg";
+  label: string;
+  usd: number;
+  /** Width in percent (one decimal); every non-zero part is at least 1% wide so it stays visible. */
+  pct: number;
+};
+
+/** Overview allocation -> coloured bar segments (zero parts dropped). Empty list = nothing held yet. */
+export function allocationSegments(a: {
+  stockTokensUsd?: string;
+  parkUsd?: string;
+  availableUsdg?: string;
+} | undefined): AllocationSegment[] {
+  const parts: Omit<AllocationSegment, "pct">[] = [
+    { key: "stocks", label: "Stock tokens", usd: Number(a?.stockTokensUsd ?? 0) },
+    { key: "park", label: "Private park", usd: Number(a?.parkUsd ?? 0) },
+    { key: "usdg", label: "Available USDG", usd: Number(a?.availableUsdg ?? 0) },
+  ].filter((p) => Number.isFinite(p.usd) && p.usd > 0) as Omit<AllocationSegment, "pct">[];
+  const total = parts.reduce((s, p) => s + p.usd, 0);
+  if (total <= 0) return [];
+  return parts.map((p) => ({
+    ...p,
+    pct: Math.max(1, Math.round((p.usd / total) * 1000) / 10),
+  }));
+}
+
+// ---------------------------------------------------------------- action gates (todo 41 item 4)
+
+export type Gate = { ok: true } | { ok: false; reason: string };
+
+/** Save Mix needs eligibility (SavingsVault.setMix reverts NotEligible otherwise). */
+export function mixGate(eligible: boolean | undefined): Gate {
+  if (!eligible)
+    return {
+      ok: false,
+      reason: "Finish the eligibility self-attestation first: saving a buy mix reverts NotEligible without it.",
+    };
+  return { ok: true };
+}
+
+/** Join needs eligibility and pending round-ups (CrowdBuy.join reverts NotEligible / NothingPending). */
+export function joinGate(eligible: boolean | undefined, pending: bigint | undefined): Gate {
+  if (!eligible)
+    return {
+      ok: false,
+      reason: "Finish the eligibility self-attestation first: joining reverts NotEligible without it.",
+    };
+  if (!pending)
+    return {
+      ok: false,
+      reason: "No pending round-ups to join. Join only moves pending round-ups, never your available USDG.",
+    };
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------- crowd buy timing (todo 41 item 5)
+
+export type BookTiming = {
+  symbol: string;
+  accounts: number;
+  minCrowd: number;
+  executeAfter: string | null;
+  executedThisWindow?: boolean | undefined;
+};
+
+const hhmm = (iso: string) => {
+  const d = new Date(iso).toISOString();
+  return `${d.slice(0, 10)} ${d.slice(11, 16)} UTC`;
+};
+
+/**
+ * When a book is expected to execute: the revealed beacon time if there is one, otherwise the end of the current
+ * window (the keeper reveals a jittered time inside it once the book has its crowd), or how many accounts it needs.
+ */
+export function bookTimingText(
+  b: BookTiming,
+  window: { start: string; end: string; next: string } | null | undefined,
+): string {
+  if (b.executedThisWindow) return `executed this window; next book opens for ${window ? hhmm(window.end) : "the next window"}`;
+  if (b.accounts < b.minCrowd)
+    return `needs ${b.minCrowd - b.accounts} more account(s) to reach the minimum crowd of ${b.minCrowd}`;
+  if (b.executeAfter) return `executes after ${hhmm(b.executeAfter)} (the beacon's revealed time)`;
+  return window
+    ? `executes at a jittered time before ${hhmm(window.end)} (revealed by the keeper's beacon)`
+    : "executes once the first window opens";
+}
+
+// ---------------------------------------------------------------- transactions panel (todo 41 item 6)
+
+export type TxLine = { msg: string; hash: string };
+export type LogEntry = {
+  id: number;
+  label: string;
+  state: "running" | "ok" | "error";
+  msg: string;
+  /** The transaction currently waiting for its receipt (shown on the action's line only until it confirms). */
+  pending?: string | undefined;
+  /** Every confirmed transaction of this action, each listed exactly once. */
+  txs: TxLine[];
+};
+
+/** Records progress on an action's entry: a confirmed hash moves from `pending` to `txs` (once, even if repeated). */
+export function recordProgress(entry: LogEntry, msg: string, hash?: string): void {
+  if (hash && /confirmed/.test(msg)) {
+    entry.pending = undefined;
+    if (!entry.txs.some((t) => t.hash === hash)) entry.txs.push({ msg, hash });
+    entry.msg = `${entry.txs.length} transaction${entry.txs.length === 1 ? "" : "s"} confirmed`;
+    return;
+  }
+  entry.msg = msg;
+  entry.pending = hash;
+}
+
+/** The Transactions panel: one line per action, its confirmed transactions nested under it, each once. */
+export function renderTxLog(entries: LogEntry[], emptyText: string): string {
+  if (!entries.length)
+    return `<p class="settings-status mono" id="fork-status" aria-live="polite">${esc(emptyText)}</p>`;
+  return `<ol class="fork-log" id="fork-log" aria-live="polite">${entries
+    .map((l) => {
+      const st = l.state === "running" ? "…" : l.state === "ok" ? "OK" : "ERROR";
+      const pend = l.pending ? ` <code title="${esc(l.pending)}">${shortHash(l.pending)}</code>` : "";
+      const txs = l.txs.length
+        ? `<ul class="fork-txs">${l.txs
+            .map(
+              (t) =>
+                `<li data-tx-hash="${esc(t.hash)}">${esc(t.msg)} <code title="${esc(t.hash)}">${shortHash(t.hash)}</code></li>`,
+            )
+            .join("")}</ul>`
+        : "";
+      return `<li data-state="${l.state}" data-label="${esc(l.label)}"><span class="mono">${st}</span> <b>${esc(l.label)}</b> <span data-msg>${esc(l.msg)}</span>${pend}${txs}</li>`;
+    })
+    .join("")}</ol>`;
+}
+
+// ---------------------------------------------------------------- settings read-back (todo 41 item 8)
+
+/** True once the API reports the settings that were just saved (a lagging RPC node can serve the old block). */
+export function settingsMatch(
+  saved: { roundTo: number; multiplier: number; weeklyCap: string; fixedTopUp: string; mode: string },
+  read: { roundTo: number; multiplier: number; weeklyCap: string; fixedTopUp: string; mode: string } | undefined,
+): boolean {
+  if (!read) return false;
+  return (
+    read.roundTo === saved.roundTo &&
+    read.multiplier === saved.multiplier &&
+    Number(read.weeklyCap) === Number(saved.weeklyCap) &&
+    Number(read.fixedTopUp) === Number(saved.fixedTopUp) &&
+    read.mode === saved.mode
+  );
+}

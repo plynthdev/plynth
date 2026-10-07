@@ -128,6 +128,7 @@ export type CrowdBooks = {
       minCrowd: number;
       usdgTotal: string;
       executeAfter: string | null;
+      executedThisWindow?: boolean;
     };
   }[];
 };

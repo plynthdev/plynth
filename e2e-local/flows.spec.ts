@@ -1,7 +1,10 @@
 // The whole consumer flow through the dashboard on the local fork, with the dev wallet:
 // connect -> eligibility -> deposit -> settings -> mix -> (round-ups accrue, crowd executes: keeper + helper)
 // -> claim (Open) -> switch to Quiet -> second round -> relayer claim -> Hidden deposit/withdraw -> withdraw all.
-// Every step takes a screenshot into docs/reports/frontend-fork-<date>/ (FORK_REPORT_DIR overrides).
+// Every step takes a screenshot into docs/reports/frontend-fixes-<date>/fork/ (FORK_REPORT_DIR overrides).
+// Todo 41 checks ride along: wallet USDG + MAX, coloured allocation bar, dev badge only when connected, Save Mix /
+// Join gated until eligibility, a reverting call decoded instead of sent, Crowd Buy explained, every tx listed once,
+// network-aware labels, and the weekly cap showing the saved value right after Save Settings.
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -10,7 +13,7 @@ import { bytesToHex, type Address } from "viem";
 import * as F from "./fork-helper";
 
 const DATE = new Date().toISOString().slice(0, 10);
-const OUT = resolve(process.env.FORK_REPORT_DIR || `../docs/reports/frontend-fork-${DATE}`);
+const OUT = resolve(process.env.FORK_REPORT_DIR || `../docs/reports/frontend-fixes-${DATE}/fork`);
 mkdirSync(OUT, { recursive: true });
 
 const USER = F.devAccount(20).address; // the dashboard's dev wallet (src/fork/dev-wallet.ts DEV_WALLET_INDEX)
@@ -29,6 +32,11 @@ async function snap(page: Page, name: string) {
 }
 
 const log = (s: string) => console.log(`  [fork] ${s}`);
+/** 12_500_000n -> "12.5" (the dashboard's USDG format). */
+const fmt = (v: bigint) => {
+  const f = (v % F.U).toString().padStart(6, "0").replace(/0+$/, "");
+  return `${v / F.U}${f ? `.${f}` : ""}`;
+};
 
 /** Waits for the dashboard to settle (no action running, no reload in flight). */
 async function settled(page: Page) {
@@ -56,15 +64,13 @@ async function act(
     if (opts.allowError && opts.allowError.test(text)) return [];
     throw new Error(`${action} failed: ${text}`);
   }
-  const added = (await page.locator("#fork-log > li").count()) - before;
-  const hashes = await page.locator("#fork-log > li").evaluateAll(
-    (els, n) =>
-      els
-        .slice(0, n)
-        .map((e) => e.getAttribute("data-tx-hash"))
-        .filter((h): h is string => !!h),
-    added,
-  );
+  expect(await page.locator("#fork-log > li").count()).toBe(Math.min(before + 1, 30)); // the panel keeps 30
+  const hashes = await entry
+    .locator("[data-tx-hash]")
+    .evaluateAll((els) => els.map((e) => e.getAttribute("data-tx-hash")!));
+  // Todo 41: every transaction is listed exactly once in the whole panel.
+  for (const h of hashes) expect(await page.locator(`#fork-log [data-tx-hash="${h}"]`).count()).toBe(1);
+  expect(new Set(hashes).size).toBe(hashes.length);
   for (const h of hashes) expect(h).toMatch(/^0x[0-9a-f]{64}$/);
   log(`${action}: ${text.split("\n").join(" ")}${hashes.length ? ` [${hashes.length} tx]` : ""}`);
   return hashes;
@@ -79,11 +85,51 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
   page.on("pageerror", (e) => console.log("  [page error]", e.message));
   await page.goto("/dashboard/");
 
-  await test.step("connect the dev wallet", async () => {
-    await expect(page.locator("[data-dev-wallet-badge]")).toHaveText(/DEV WALLET — local fork/i);
+  await test.step("connect the dev wallet (badge only once it is the connected wallet)", async () => {
+    await expect(page.locator('[data-action="connect-dev"]')).toBeVisible();
+    await expect(page.locator("[data-dev-wallet-badge]")).toHaveCount(0);
+    await expect(page.locator("[data-network-badge]")).toHaveText("LOCAL FORK · 31337");
     await act(page, "connect-dev");
     await expect(page.locator("[data-fork-dashboard]")).toHaveAttribute("data-account", USER);
+    await expect(page.locator("[data-dev-wallet-badge]")).toHaveText("DEV WALLET — LOCAL FORK");
+    await expect(page.locator('[data-field="footnote"]')).toContainText(
+      "Nothing here touches a real network",
+    );
     await snap(page, "connected");
+  });
+
+  await test.step("before eligibility: wallet USDG + MAX, empty allocation, Join and Save Mix gated", async () => {
+    const wallet = await F.balanceOf(F.dep.usdg, USER);
+    expect(wallet).toBeGreaterThan(0n);
+    await expect(page.locator('[data-field="wallet-usdg"]')).toHaveText(fmt(wallet));
+    await page.locator('[data-action="deposit-max"]').click();
+    await expect(page.locator("#deposit-amount")).toHaveValue(fmt(wallet));
+    await page.fill("#deposit-amount", "");
+    await expect(page.locator('[data-field="allocation-bar"]')).toHaveAttribute("data-empty", "1");
+    await expect(page.locator('[data-action="join"]')).toBeDisabled();
+    await expect(page.locator('[data-why="join"]')).toContainText("eligibility");
+    await expect(page.locator('[data-field="crowd"]')).toContainText("Join only uses pending round-ups");
+    await expect(page.locator('[data-field="crowd"]')).toContainText("keeper joins you automatically");
+    await snap(page, "before-eligibility-overview");
+    await tab(page, "settings");
+    await expect(page.locator('[data-action="save-mix"]')).toBeDisabled();
+    await expect(page.locator('[data-why="save-mix"] a')).toHaveAttribute("href", "#eligibility");
+    await snap(page, "before-eligibility-settings");
+  });
+
+  await test.step("a call that would revert is decoded and never sent", async () => {
+    await tab(page, "");
+    const nonce = await F.pub.getTransactionCount({ address: USER });
+    await page.fill("#withdraw-amount", "999999");
+    await page.locator('[data-action="withdraw"]').click();
+    await settled(page);
+    const entry = page.locator("#fork-log > li").first();
+    await expect(entry).toHaveAttribute("data-state", "error");
+    await expect(entry).toContainText("would revert (InsufficientBalance)");
+    await expect(entry).toContainText("Nothing was sent");
+    expect(await F.pub.getTransactionCount({ address: USER })).toBe(nonce);
+    await page.fill("#withdraw-amount", "");
+    await snap(page, "revert-decoded");
   });
 
   await test.step("eligibility self-attestation", async () => {
@@ -100,6 +146,13 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
     const hashes = await act(page, "deposit");
     expect(hashes.length).toBeGreaterThanOrEqual(1);
     await expect(page.locator('[data-field="vault-available"]')).toHaveText("300");
+    // Only USDG held: one coloured USDG segment (it rendered solid black before).
+    await expect(page.locator('[data-field="allocation-bar"] i')).toHaveCount(1);
+    await expect(page.locator('[data-field="allocation-bar"] i.alloc-usdg')).toHaveCount(1);
+    const bg = await page
+      .locator('[data-field="allocation-bar"] i.alloc-usdg')
+      .evaluate((e) => getComputedStyle(e).backgroundColor);
+    expect(bg).not.toBe("rgb(17, 19, 20)");
     await snap(page, "deposit");
   });
 
@@ -111,10 +164,16 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
     await act(page, "save-settings");
     await expect(page.locator("#round-to")).toHaveValue("10");
     await expect(page.locator("#cap-value")).toHaveText("100 USDG");
+    await tab(page, "");
+    await expect(page.locator('[data-field="weekly-cap"]')).toHaveText("$100.00");
+    await snap(page, "settings-weekly-cap");
+    await tab(page, "settings");
     await snap(page, "settings");
   });
 
-  await test.step("buy mix: 100% TSLA", async () => {
+  await test.step("buy mix: 100% TSLA (enabled once eligible)", async () => {
+    await expect(page.locator('[data-action="save-mix"]')).toBeEnabled();
+    await expect(page.locator('[data-why="save-mix"]')).toHaveCount(0);
     await page.fill("#mix-TSLA", "100");
     await act(page, "save-mix");
     await expect(page.locator("#mix-TSLA")).toHaveValue("100");
@@ -148,8 +207,11 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
         : undefined;
     });
     await tab(page, "");
+    await page.reload();
+    await settled(page);
+    // JOIN is enabled only while something is pending (todo 41); the keeper may have joined in the meantime.
     const byUi =
-      joinedBy === "user"
+      joinedBy === "user" && (await page.locator('[data-action="join"]').isEnabled())
         ? (await act(page, "join", { allowError: /Nothing pending/ })).length > 0
         : false;
     const { order } = await F.waitOrder(TSLA, USER);
@@ -159,6 +221,7 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
     );
     await page.reload();
     await settled(page);
+    await expect(page.locator('[data-field="next-execution"]').first()).toBeVisible();
     await snap(page, "joined-crowd");
   });
 
@@ -182,6 +245,7 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
     expect(hashes.length).toBe(1);
     expect(await F.balanceOf(TSLA, USER)).toBeGreaterThan(before);
     await expect(page.locator('[data-field="stocks"]')).not.toHaveText("$0.00");
+    await expect(page.locator('[data-field="allocation-bar"] i.alloc-stocks')).toHaveCount(1);
     await snap(page, "claimed-open");
   });
 
