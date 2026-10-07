@@ -7,8 +7,17 @@ import { mnemonicToAccount, type HDAccount } from "viem/accounts";
 
 export const APP = join(import.meta.dir, "..", "..");
 export const ROOT = join(APP, "..");
+/** PORT_OFFSET: run a second fork next to services already on the default ports (e.g. the testnet stack on
+ *  8787-8799): anvil 8545 + offset, rpc-cache 8600 + offset, every service port + offset, database plynth_fork2,
+ *  working directory app/.fork-<offset>. 0 (default) = the usual ports, plynth_fork and app/.fork. */
+export const PORT_OFFSET = (() => {
+  const n = Number(process.env.PORT_OFFSET || 0);
+  if (!Number.isInteger(n) || n < 0 || n > 50_000) throw new Error(`PORT_OFFSET must be an integer 0..50000, got ${process.env.PORT_OFFSET}`);
+  return n;
+})();
+
 /** Gitignored working directory of the fork: anvil state, deployment files, logs, pid files, secrets. */
-export const FORK_DIR = process.env.FORK_DIR || join(APP, ".fork");
+export const FORK_DIR = process.env.FORK_DIR || join(APP, PORT_OFFSET ? `.fork-${PORT_OFFSET}` : ".fork");
 export const PATHS = {
   state: join(FORK_DIR, "state.json"),
   forkBlock: join(FORK_DIR, "fork-block"),
@@ -25,11 +34,11 @@ export const PATHS = {
 };
 
 export const FORK_CHAIN_ID = 31337;
-export const RPC = process.env.FORK_RPC_URL || "http://127.0.0.1:8545";
-export const DB_NAME = "plynth_fork";
+export const RPC = process.env.FORK_RPC_URL || `http://127.0.0.1:${8545 + PORT_OFFSET}`;
+export const DB_NAME = PORT_OFFSET ? "plynth_fork2" : "plynth_fork";
 
-/** Ports: the .env.example defaults, one per service. */
-export const PORTS = {
+/** Ports: the .env.example defaults, one per service, + PORT_OFFSET. */
+const BASE_PORTS = {
   anvil: 8545,
   indexer: 8787,
   keeper: 8788,
@@ -45,6 +54,7 @@ export const PORTS = {
   "treasury-reconciler": 8798,
   "treasury-webhooks": 8799,
 } as const;
+export const PORTS = Object.fromEntries(Object.entries(BASE_PORTS).map(([k, v]) => [k, v + PORT_OFFSET])) as { [K in keyof typeof BASE_PORTS]: number };
 
 /** Anvil's well-known public dev mnemonic: every key derived from it is a public test key. */
 export const DEV_MNEMONIC = "test test test test test test test test test test test junk"; // test-key (anvil default mnemonic)

@@ -57,6 +57,7 @@ app/deployments/*
 !app/deployments/46630-treasury.json
 app/data/
 app/.fork/
+app/.fork-*/
 app/.testnet/
 circuits/*/target/
 sdk/.test-dist-*/

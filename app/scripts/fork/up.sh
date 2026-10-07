@@ -10,14 +10,20 @@
 # the fork source on every block. The fork runs under chain id 31337 ON PURPOSE: signatures made on it can never be replayed on mainnet (4663).
 # It never broadcasts anywhere but 127.0.0.1. Env: RHC_MAINNET_RPC_URL (fork source, default the free public
 # RPC), DATABASE_URL (Postgres server; the plynth_fork database is created on it), FORK_BLOCK (pin a block on
-# the first start; default the latest), FORK_PORT (default 8545).
+# the first start; default the latest), FORK_PORT (default 8545), PORT_OFFSET (a second fork beside services on the
+# default ports: anvil 8545+offset, rpc-cache 8600+offset, services 87xx+offset, database plynth_fork2,
+# directory app/.fork-<offset>; e.g. PORT_OFFSET=1000 next to the running testnet services).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 APP="$(pwd)"
 export PATH="$HOME/.foundry/bin:$HOME/.bun/bin:$PATH"
-FORK_DIR="${FORK_DIR:-$APP/.fork}"
-PORT="${FORK_PORT:-8545}"
+OFF="${PORT_OFFSET:-0}"
+[[ "$OFF" =~ ^[0-9]+$ ]] || { echo "up: PORT_OFFSET must be a number" >&2; exit 64; }
+export PORT_OFFSET="$OFF"
+if [[ "$OFF" == 0 ]]; then FORK_DIR="${FORK_DIR:-$APP/.fork}"; else FORK_DIR="${FORK_DIR:-$APP/.fork-$OFF}"; fi
+export FORK_DIR
+PORT="${FORK_PORT:-$((8545 + OFF))}"
 export FORK_RPC_URL="http://127.0.0.1:$PORT"
 SOURCE="${RHC_MAINNET_RPC_URL:-https://rpc.mainnet.chain.robinhood.com}"
 mkdir -p "$FORK_DIR"/{logs,pids,env,deployments,treasury}
@@ -29,7 +35,7 @@ done
 alive() { [[ -f "$FORK_DIR/pids/$1.pid" ]] && kill -0 "$(cat "$FORK_DIR/pids/$1.pid")" 2>/dev/null; }
 
 # ---- caching proxy in front of the public RPC (the public node keeps ~10-15 min of state; see rpc-cache.ts)
-CACHE_PORT="${FORK_RPC_CACHE_PORT:-8600}"
+CACHE_PORT="${FORK_RPC_CACHE_PORT:-$((8600 + OFF))}"
 if alive rpc-cache; then
   echo "up: rpc-cache already running"
 else
@@ -102,19 +108,19 @@ start() {
   exit 1
 }
 
-start indexer src/bin/indexer.ts http://127.0.0.1:8787/health
-start keeper src/bin/keeper.ts http://127.0.0.1:8788/health
-start api src/bin/api.ts http://127.0.0.1:8789/v1/meta/health
-start eligibility src/bin/eligibility.ts http://127.0.0.1:8790/health
-start relayer src/bin/relayer.ts http://127.0.0.1:8791/health
-start mcp src/bin/mcp.ts http://127.0.0.1:8792/health
-start treasury-marks src/bin/treasury-marks.ts http://127.0.0.1:8797/health
-start treasury-webhooks src/bin/treasury-webhooks.ts http://127.0.0.1:8799/health run
+start indexer src/bin/indexer.ts http://127.0.0.1:$((8787 + OFF))/health
+start keeper src/bin/keeper.ts http://127.0.0.1:$((8788 + OFF))/health
+start api src/bin/api.ts http://127.0.0.1:$((8789 + OFF))/v1/meta/health
+start eligibility src/bin/eligibility.ts http://127.0.0.1:$((8790 + OFF))/health
+start relayer src/bin/relayer.ts http://127.0.0.1:$((8791 + OFF))/health
+start mcp src/bin/mcp.ts http://127.0.0.1:$((8792 + OFF))/health
+start treasury-marks src/bin/treasury-marks.ts http://127.0.0.1:$((8797 + OFF))/health
+start treasury-webhooks src/bin/treasury-webhooks.ts http://127.0.0.1:$((8799 + OFF))/health run
 # Per-treasury services: only once exercise.ts (or you) created a treasury and wrote app/.fork/treasury/services.json.
-start treasury-desks src/bin/treasury-desks.ts http://127.0.0.1:8793/health
-start treasury-close src/bin/treasury-close.ts http://127.0.0.1:8794/health
-start treasury-risk src/bin/treasury-risk.ts http://127.0.0.1:8795/health
-start treasury-receipts src/bin/treasury-receipts.ts http://127.0.0.1:8796/health
-start treasury-reconciler src/bin/treasury-reconciler.ts http://127.0.0.1:8798/health
+start treasury-desks src/bin/treasury-desks.ts http://127.0.0.1:$((8793 + OFF))/health
+start treasury-close src/bin/treasury-close.ts http://127.0.0.1:$((8794 + OFF))/health
+start treasury-risk src/bin/treasury-risk.ts http://127.0.0.1:$((8795 + OFF))/health
+start treasury-receipts src/bin/treasury-receipts.ts http://127.0.0.1:$((8796 + OFF))/health
+start treasury-reconciler src/bin/treasury-reconciler.ts http://127.0.0.1:$((8798 + OFF))/health
 
-echo "up: fork ready. RPC $FORK_RPC_URL (chain id 31337), API http://127.0.0.1:8789/v1, logs $FORK_DIR/logs"
+echo "up: fork ready. RPC $FORK_RPC_URL (chain id 31337), API http://127.0.0.1:$((8789 + OFF))/v1, logs $FORK_DIR/logs"

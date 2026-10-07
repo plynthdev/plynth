@@ -2,7 +2,8 @@
 # Stops the fork's services, then anvil (SIGTERM: anvil writes app/.fork/state.json before it exits).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-FORK_DIR="${FORK_DIR:-$(pwd)/.fork}"
+OFF="${PORT_OFFSET:-0}"
+if [[ "$OFF" == 0 ]]; then FORK_DIR="${FORK_DIR:-$(pwd)/.fork}"; else FORK_DIR="${FORK_DIR:-$(pwd)/.fork-$OFF}"; fi
 [[ -d "$FORK_DIR/pids" ]] || { echo "down: nothing running"; exit 0; }
 
 stop() {
