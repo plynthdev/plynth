@@ -34,7 +34,8 @@ interface IInsuranceFees {
 /// 3. the other half goes to the ExceptionInsurancePool while it has ACTIVE LP shares (shares waiting to
 ///    withdraw earn nothing) or owes a queued claim; otherwise it goes to stakers as USDG, so fees nobody was
 ///    insuring never pile up for the next LP to walk in on. (The pool also hands back anything its active side
-///    holds once no active share is left.)
+///    holds once no active share is left.) If the pool reverts (a claim it can never pay, e.g. to a frozen
+///    address), that half goes to stakers too (`InsuranceSkipped`) so the push never halts on the pool;
 ///
 /// `push(minOut)` is keeper-only and runs at most once per hour (the staking side also only pays stake that
 /// was active for a whole hour). It used to be open to anyone, which let one contract move the PLTH pool,
@@ -91,6 +92,8 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         uint256 buyCarry
     );
     event BuySkipped(uint256 usdgIn, uint256 minOut);
+    /// The insurance pool refused its half (it reverted); the half went to stakers as USDG instead.
+    event InsuranceSkipped(uint256 amount);
     event TemplateFeesSet(address source, uint16 bps);
     event AuthorAccrued(address indexed account, address indexed author, uint256 amount);
     event AuthorClaimed(address indexed author, uint256 amount);
@@ -224,9 +227,18 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
                 usdg.forceApprove(address(staking), insHalf);
                 staking.notifyReward(address(usdg), insHalf);
             } else {
-                toInsurance = insHalf;
                 usdg.forceApprove(address(insurance), insHalf);
-                insurance.depositFees(insHalf);
+                try insurance.depositFees(insHalf) {
+                    toInsurance = insHalf;
+                } catch {
+                    // The pool pays queued claims inside depositFees: a claimant it can never pay (e.g. an
+                    // address the USDG issuer froze) must not stop stakers' rewards and the buyback forever.
+                    usdg.forceApprove(address(insurance), 0);
+                    emit InsuranceSkipped(insHalf);
+                    usdgToStakers = insHalf;
+                    usdg.forceApprove(address(staking), insHalf);
+                    staking.notifyReward(address(usdg), insHalf);
+                }
             }
         }
 

@@ -101,6 +101,25 @@ contract FeeRouterTest is TokenFixture {
         assertEq(usdg.balanceOf(address(router)), 500e6, "returned for the next push");
     }
 
+    /// G1 (release-gate review 2026-10-07): the pool pays queued claims inside `depositFees`. If that reverts
+    /// for good (real USDG lets its issuer freeze an address; a frozen claimant treasury makes every payout,
+    /// and so every `depositFees`, revert), the push must still pay stakers and buy back instead of halting
+    /// every hour from then on. The insurance half goes to stakers as USDG and nothing stays approved.
+    function test_G1_revertingInsuranceDoesNotHaltThePush() public {
+        _lpDeposit(1000e6);
+        vm.mockCall(address(insurance), abi.encodeCall(insurance.queuedOwed, ()), abi.encode(uint256(1)));
+        vm.mockCallRevert(address(insurance), abi.encodeWithSelector(insurance.depositFees.selector), "frozen");
+        _fees(1000e6);
+        vm.expectEmit(address(router));
+        emit FeeRouter.InsuranceSkipped(500e6);
+        _push();
+        assertEq(staking.queued(0), 500e6, "insurance half to stakers");
+        assertGt(staking.queued(1), 0, "buyback still ran");
+        assertEq(usdg.balanceOf(address(insurance)), 1000e6, "pool untouched");
+        assertEq(usdg.allowance(address(router), address(insurance)), 0, "no allowance left behind");
+        assertEq(usdg.balanceOf(address(router)), 0);
+    }
+
     MockTemplateSource src;
     address closeT = makeAddr("closeT"); // PeriodClose of a templated treasury
     address acctT = makeAddr("acctT");
