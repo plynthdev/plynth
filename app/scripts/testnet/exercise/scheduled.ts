@@ -143,6 +143,51 @@ const hiddenCaps: Handler = async (x) => {
   return { status: "done" };
 };
 
+type VaultKeys = ReturnType<typeof deriveVaultKeys>;
+
+/** Deposit 100 mUSDG (queued as pending) and refund it to the origin. True when both went through. */
+async function hiddenDepositRefund(x: TCtx, ks: VaultKeys, retry = false): Promise<boolean> {
+  const { r, A } = x;
+  const pool = x.addr("shieldedPool");
+  const usdg = x.addr("usdg");
+  const P = abiOf("ShieldedPool");
+  const d1 = depositTx(pool, usdg, 100n * U, ks);
+  let pendingId: bigint | undefined;
+  await r.sendRaw(`hidden deposits 100 mUSDG into the Hidden Vault (queued as pending)${retry ? " (retry)" : ""}`, A.hidden, { to: d1.to, data: d1.data }, async (rc) => {
+    const e = (await events(x, pool, "ShieldedPool", "DepositQueued", rc.blockNumber, { origin: A.hidden.address }))[0];
+    expect(!!e, "no DepositQueued");
+    pendingId = BigInt(e!.args.pendingId);
+    return `pending #${pendingId}`;
+  });
+  if (pendingId === undefined) return false;
+  const b0 = await r.read<bigint>(usdg, erc20Abi, "balanceOf", [A.hidden.address]);
+  const ok = await r.send(`hidden refunds the pending deposit${retry ? " (retry)" : ""}`, A.hidden, { address: pool, abi: P, functionName: "refundPending", args: [pendingId] }, async () => {
+    const got = await r.until("refund visible", async () => {
+      const d = (await r.read<bigint>(usdg, erc20Abi, "balanceOf", [A.hidden.address])) - b0;
+      return d === 100n * U ? d : undefined;
+    }, 30_000, 2000);
+    expect(got === 100n * U, "refund not received");
+    return "100 mUSDG back to the origin";
+  });
+  return ok !== undefined;
+}
+
+const hiddenRefund: Handler = async (x) => {
+  const { r, A } = x;
+  const usdg = x.addr("usdg");
+  if ((await r.read<bigint>(usdg, erc20Abi, "balanceOf", [A.hidden.address])) < 100n * U) {
+    await r.send("deployer mints the Hidden saver 100 mUSDG for the refund retry", A.deployer, { address: usdg, abi: erc20Abi, functionName: "mint", args: [A.hidden.address, 100n * U] });
+  }
+  await initVault();
+  try {
+    const ks = deriveVaultKeys(await r.wallet(A.hidden).signMessage({ message: VAULT_KEY_MESSAGE }));
+    if (await hiddenDepositRefund(x, ks, true)) return { status: "done" };
+  } finally {
+    await destroyProver().catch(() => undefined);
+  }
+  return { status: "later", dueAt: (await chainNow(x)) + 300, detail: "deposit -> refund did not go through; retrying" };
+};
+
 const hiddenVault: Handler = async (x) => {
   const { r, A } = x;
   const pool = x.addr("shieldedPool");
@@ -157,21 +202,7 @@ const hiddenVault: Handler = async (x) => {
       await r.send("deployer mints the Hidden saver 600 mUSDG for the vault deposits", A.deployer, { address: usdg, abi: erc20Abi, functionName: "mint", args: [A.hidden.address, 600n * U - bal] });
     }
     await r.send("hidden approves the pool for mUSDG", A.hidden, { address: usdg, abi: erc20Abi, functionName: "approve", args: [pool, maxUint256] });
-    const d1 = depositTx(pool, usdg, 100n * U, ks);
-    let pendingId: bigint | undefined;
-    await r.sendRaw("hidden deposits 100 mUSDG into the Hidden Vault (queued as pending)", A.hidden, { to: d1.to, data: d1.data }, async (rc) => {
-      const e = (await events(x, pool, "ShieldedPool", "DepositQueued", rc.blockNumber, { origin: A.hidden.address }))[0];
-      expect(!!e, "no DepositQueued");
-      pendingId = BigInt(e!.args.pendingId);
-      return `pending #${pendingId}`;
-    });
-    if (pendingId !== undefined) {
-      const b0 = await r.read<bigint>(usdg, erc20Abi, "balanceOf", [A.hidden.address]);
-      await r.send("hidden refunds the pending deposit", A.hidden, { address: pool, abi: P, functionName: "refundPending", args: [pendingId] }, async () => {
-        expect((await r.read<bigint>(usdg, erc20Abi, "balanceOf", [A.hidden.address])) - b0 === 100n * U, "refund not received");
-        return "100 mUSDG back to the origin";
-      });
-    }
+    if (!(await hiddenDepositRefund(x, ks))) x.schedule({ id: "hidden-refund", handler: "hidden-refund", area: "hidden", title: "Hidden Vault: deposit 100 mUSDG -> refund the pending deposit (retry)", dueAt: (await chainNow(x)) + 60 });
     const d2 = depositTx(pool, usdg, 500n * U, ks);
     const rc = await r.sendRaw("hidden deposits 500 mUSDG (1h pending queue, then the keeper inserts it)", A.hidden, { to: d2.to, data: d2.data });
     if (!rc) return { status: "failed", detail: "the 500 mUSDG deposit did not go through (retried on the next --resume)" };
@@ -324,6 +355,7 @@ export const HANDLERS: Record<string, Handler> = {
   "hidden-caps": hiddenCaps,
   "hidden-vault": hiddenVault,
   "hidden-withdraw": hiddenWithdraw,
+  "hidden-refund": hiddenRefund,
   "hidden-delivery": hiddenDelivery,
   "policy-activate": policyActivate,
   "lp-redeem": lpRedeem,

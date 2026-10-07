@@ -22,7 +22,15 @@ async function logsOf(x: TCtx, tx: Hex, contract: string, address: string) {
   return out;
 }
 
+/** A step that failed before any transaction was sent (an RPC error) passes when its retry passed later. */
+const retried = (x: TCtx, s: Step): string => {
+  const r = x.st.steps.find((o) => o !== s && o.status === "pass" && o.step === `${s.step} (retry)` && o.tx);
+  if (s.tx || !r) throw new Error(s.tx ? "the first attempt sent a transaction" : "no passing retry yet");
+  return `no transaction was sent (RPC error on the gas estimate); the retry passed: ${r.tx}`;
+};
+
 export const RECHECKS: [prefix: string, fn: Recheck][] = [
+  ["hidden deposits 100 mUSDG into the Hidden Vault (queued as pending)", async (x, s) => retried(x, s)],
   [
     "quiet: depositWithPermit2",
     async (x, s) => {

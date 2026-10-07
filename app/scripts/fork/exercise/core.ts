@@ -98,6 +98,25 @@ export type Step = {
 export type Call = { address: Address; abi: Abi; functionName: string; args?: readonly unknown[]; value?: bigint };
 
 export class AssertionFailed extends Error {}
+
+/** A JSON-RPC hiccup of a load-balanced public node (not a revert): worth one more try. */
+export function transientRpcError(e: unknown): boolean {
+  const m = String((e as Error)?.message ?? e);
+  if (/revert/i.test(m)) return false;
+  return /Missing or invalid parameters|header not found|unknown block|timed? ?out|ECONNRESET|socket hang up|502|503|504|429|rate limit/i.test(m);
+}
+
+/** Retries `fn` (a gas estimate) up to 4 times, 2 s apart, on transient RPC errors only. */
+export async function retryTransient<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= tries || !transientRpcError(e)) throw e;
+      await Bun.sleep(2000);
+    }
+  }
+}
 export function expect(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new AssertionFailed(msg);
 }
@@ -163,7 +182,7 @@ export class Recorder {
       const abi = [...call.abi, ...errorAbi()] as Abi;
       const base = { account: from, address: call.address, abi, functionName: call.functionName, args: call.args ?? [], ...(call.value ? { value: call.value } : {}) } as const;
       // lib/gas.ts: priced now and one second ahead, plus the standard headroom (what the desk services use).
-      const gas = withGasHeadroom(await estimateGasAhead(this.pub as never, base as never));
+      const gas = withGasHeadroom(await retryTransient(() => estimateGasAhead(this.pub as never, base as never)));
       hash = await this.wallet(from).writeContract({ ...base, gas } as never);
       r = await this.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error("reverted on chain");
@@ -182,7 +201,7 @@ export class Recorder {
     let hash: Hex | undefined;
     let r: TransactionReceipt | undefined;
     try {
-      const gas = withGasHeadroom(await this.pub.estimateGas({ account: from, ...tx } as never));
+      const gas = withGasHeadroom(await retryTransient(() => this.pub.estimateGas({ account: from, ...tx } as never)));
       hash = await this.wallet(from).sendTransaction({ ...tx, gas } as never);
       r = await this.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error("reverted on chain");
