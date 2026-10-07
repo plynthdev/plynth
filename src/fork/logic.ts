@@ -153,3 +153,14 @@ export function esc(s: unknown): string {
 }
 
 export const shortHash = (h: string) => (h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-6)}` : h);
+
+/** "Window 2 h · next opens 14:00 UTC" from the API's window (CrowdBuy.windowOf on chain): the length is the
+ *  deployment's CrowdBuy.WINDOW (1 day on mainnet, 2 hours on testnet), never assumed. */
+export function windowText(w: { start: string; end: string; next: string } | null | undefined): string {
+  if (!w) return "Windows start at genesis";
+  const secs = Math.round((Date.parse(w.end) - Date.parse(w.start)) / 1000);
+  const len = secs % 86_400 === 0 ? `${secs / 86_400} day${secs === 86_400 ? "" : "s"}` : secs % 3600 === 0 ? `${secs / 3600} h` : `${Math.round(secs / 60)} min`;
+  const next = new Date(w.next).toISOString();
+  const at = secs >= 86_400 ? `${next.slice(0, 10)} ${next.slice(11, 16)} UTC` : `${next.slice(11, 16)} UTC`;
+  return `Window ${len} · next opens ${at}`;
+}

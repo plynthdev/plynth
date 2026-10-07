@@ -18,6 +18,7 @@ import {
   chartPoints,
   esc,
   trimDecimals,
+  windowText,
   formatRaw,
   formatUsdg,
   MODE_NAMES,
@@ -272,7 +273,7 @@ function overviewTab(): string {
 ${field("deposit-amount", "Deposit", "USDG from your wallet into the savings vault (approves first if needed).", `<div class="cap-control">${input("deposit-amount", "", "100")}${btn("deposit", "DEPOSIT")}</div>`)}
 ${field("withdraw-amount", "Withdraw", "From available first, then pending. Leave the address empty to withdraw to yourself.", `<div class="cap-control">${input("withdraw-amount", "", "25")}${input("withdraw-to", "", "0x… (optional)")}${btn("withdraw", "WITHDRAW")}${btn("withdraw-all", "WITHDRAW ALL")}</div>`)}
 </section>
-<section class="dash-panel"><div class="panel-heading"><h2>Crowd Buy</h2><span class="mono">MIN CROWD ${esc(S.data.books?.books[0]?.open.minCrowd ?? "")}</span></div><p class="panel-intro">Pending round-ups join the open books (the keeper joins them too). A book executes once its crowd is big enough and the window’s jittered time has passed.</p>${
+<section class="dash-panel"><div class="panel-heading"><h2>Crowd Buy</h2><span class="mono">MIN CROWD ${esc(S.data.books?.books[0]?.open.minCrowd ?? "")}</span></div><p class="panel-intro">Pending round-ups join the open books (the keeper joins them too). A book executes once its crowd is big enough and the window’s jittered time has passed. <span class="mono">${esc(windowText(S.data.books?.window))}</span></p>${
     books.length
       ? `<div class="allocation-rows">${books.map((x) => `<p><span>${esc(x.symbol)} · book ${esc(x.open.bookId)}</span><b>${x.open.accounts}/${x.open.minCrowd} accounts · ${esc(x.open.usdgTotal)} USDG</b></p>`).join("")}</div>`
       : `<p class="panel-intro">No open orders right now.</p>`

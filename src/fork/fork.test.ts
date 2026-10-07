@@ -12,6 +12,7 @@ import { ANVIL_MNEMONIC, createDevProvider, devAccount, DEV_WALLET_INDEX } from 
 import { errorText } from "./api";
 import {
   chartPoints,
+  windowText,
   esc,
   formatRaw,
   formatUsdg,
@@ -270,5 +271,13 @@ describe("chart and markup helpers", () => {
     );
     expect(errorText({ error: "nullifier spent" }, 409)).toBe("nullifier spent");
     expect(errorText(null, 502)).toBe("HTTP 502");
+  });
+});
+
+describe("crowd window text follows the deployment's WINDOW", () => {
+  it("2 h testnet windows and 1 day mainnet windows", () => {
+    expect(windowText({ start: "2026-10-07T12:00:00.000Z", end: "2026-10-07T14:00:00.000Z", next: "2026-10-07T14:00:00.000Z" })).toBe("Window 2 h · next opens 14:00 UTC");
+    expect(windowText({ start: "2026-10-07T00:00:00.000Z", end: "2026-10-08T00:00:00.000Z", next: "2026-10-08T00:00:00.000Z" })).toBe("Window 1 day · next opens 2026-10-08 00:00 UTC");
+    expect(windowText(null)).toBe("Windows start at genesis");
   });
 });
