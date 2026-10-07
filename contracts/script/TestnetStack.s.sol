@@ -95,6 +95,11 @@ contract TestnetStack is Script {
     uint256 public constant HIDDEN_USDG_CAP = 1e12; // 1M mUSDG
     uint256 public constant HIDDEN_STOCK_CAP = 1e24;
     uint256 public constant HIDDEN_PARK_CAP = 1e24; // mock vault shares (12 dp)
+    // Testnet-only short timers so every time-bound step finishes the same day (mainnet/fork keep 1 day,
+    // 1 hour, 48 hours, 7 days, 14 days, 24 hours; each contract enforces its own hard minimum).
+    uint64 public constant CROWD_WINDOW = 2 hours;
+    uint64 public constant BEACON_GRACE = 15 minutes;
+    uint64 public constant SHORT_DELAY = 15 minutes; // cap/adapter/policy timelocks, unbonding, insurance, LP cooldown
 
     struct Stock {
         string sym;
@@ -215,8 +220,8 @@ contract TestnetStack is Script {
 
     function _token() private {
         plth = new PLTH(deployer, deployer, deployer);
-        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), _tiers());
-        insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee);
+        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), _tiers(), SHORT_DELAY);
+        insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, SHORT_DELAY);
         bool usdgIs0 = address(usdg) < address(plth);
         plthKey = usdgIs0
             ? PoolKey(address(usdg), address(plth), FEE, TICK_SPACING, IHooks(address(0)))
@@ -252,7 +257,7 @@ contract TestnetStack is Script {
     function _treasury() private {
         guard = new PolicyGuard(registry, valuer, 200);
         TreasuryPolicy.Policy memory none;
-        address policyImpl = address(new TreasuryPolicy(address(0), none));
+        address policyImpl = address(new TreasuryPolicy(address(0), none, SHORT_DELAY));
         address accountImpl =
             address(new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0)));
         address closeImpl = address(
@@ -287,7 +292,7 @@ contract TestnetStack is Script {
     }
 
     function _consumer() private {
-        beacon = new JitterBeacon(keeper, deployer);
+        beacon = new JitterBeacon(keeper, deployer, BEACON_GRACE);
         vault = new SavingsVault(IERC20(address(usdg)), PERMIT2, ICanonicalRegistry(address(registry)), deployer, keeper);
         vault.setEligibility(IEligibility(address(eligibility)));
         genesis = uint64(block.timestamp - (block.timestamp % 1 days));
@@ -299,7 +304,7 @@ contract TestnetStack is Script {
             CROWD_SLIPPAGE_BPS,
             genesis,
             deployer,
-            keeper
+            keeper, CROWD_WINDOW
         );
         vault.setCrowd(address(crowd));
         stealthClaims =
@@ -309,7 +314,7 @@ contract TestnetStack is Script {
 
     function _hidden() private {
         shieldedPool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), deployer
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), deployer, SHORT_DELAY
         );
         shieldedPool.setCrowd(address(crowd));
         shieldedTrade = new ShieldedTrade(
@@ -317,7 +322,7 @@ contract TestnetStack is Script {
             IHonkVerifier(address(new SwapVerifier())),
             IHonkVerifier(address(new SettleVerifier())),
             router,
-            deployer
+            deployer, SHORT_DELAY
         );
         shieldedPool.setTrade(address(shieldedTrade));
         crowd.setShieldedPool(IShieldedDeposit(address(shieldedPool)));
@@ -338,7 +343,7 @@ contract TestnetStack is Script {
 
     /// In-house perp venue: one PerpPool over mUSDG and a market per mock stock, seeded with LP_SEED.
     function _perps() private {
-        perpPool = new PerpPool(IERC20(address(usdg)), deployer);
+        perpPool = new PerpPool(IERC20(address(usdg)), deployer, SHORT_DELAY);
         for (uint256 i; i < stocks.length; ++i) {
             PerpMarket m = new PerpMarket(perpPool, valuer, address(stocks[i].token), deployer);
             perpPool.addMarket(address(m));

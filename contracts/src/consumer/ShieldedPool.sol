@@ -35,7 +35,7 @@ interface IHonkVerifier {
 /// Exits are never gated: `transfer`, `withdraw`, `insertPending` and `refundPending` check nothing the
 /// owner, a pause or a keeper controls. The owner can only pause new deposits, set CrowdBuy once, and change
 /// per-asset deposit caps. A cap is the maximum shielded balance of an asset and applies to deposits only.
-/// Caps start at 0 (no deposits); lowering applies at once, raising only after CAP_DELAY (48h). This vault
+/// Caps start at 0 (no deposits); lowering applies at once, raising only after CAP_DELAY (48h on mainnet). This vault
 /// needs a human audit before any cap is raised on mainnet; deploy scripts leave mainnet caps at 0.
 ///
 /// Private sell/buy/park (todo 25) live in one ShieldedTrade module that the owner can set exactly once, and
@@ -93,7 +93,9 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_LEAVES = 1 << TREE_DEPTH;
     uint256 public constant ROOT_HISTORY = 100;
     uint64 public constant MIN_PENDING_DELAY = 1 hours;
-    uint64 public constant CAP_DELAY = 48 hours;
+    /// Hard floor for the deploy-time CAP_DELAY (mainnet/fork 48 hours, testnet 15 minutes).
+    uint64 public constant MIN_CAP_DELAY = 10 minutes;
+    uint64 public immutable CAP_DELAY;
     uint256 public constant MAX_NOTE_BYTES = 512;
     uint256 public constant MAX_RAW = type(uint128).max; // circuits range-check amounts to 128 bits
     uint256 private constant P = Poseidon2.P;
@@ -165,6 +167,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     error InvalidProof();
     error NoProposal();
     error TooEarly(uint64 eta);
+    error DelayTooShort();
 
     modifier onlyCrowd() {
         if (msg.sender != crowd || msg.sender == address(0)) revert NotCrowd();
@@ -181,7 +184,11 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         _;
     }
 
-    constructor(IHonkVerifier transferVerifier_, IHonkVerifier withdrawVerifier_, address owner_) Ownable(owner_) {
+    constructor(IHonkVerifier transferVerifier_, IHonkVerifier withdrawVerifier_, address owner_, uint64 capDelay_)
+        Ownable(owner_)
+    {
+        if (capDelay_ < MIN_CAP_DELAY) revert DelayTooShort();
+        CAP_DELAY = capDelay_;
         if (address(transferVerifier_) == address(0) || address(withdrawVerifier_) == address(0)) {
             revert ZeroAddress();
         }

@@ -50,8 +50,8 @@ abstract contract TokenFixture is Test {
         vm.warp(T0);
         plth = new PLTH(worker, plthTreasury, reserve);
         usdg = new MockERC20("USDG", 6);
-        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), _tiers());
-        insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee);
+        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), _tiers(), 7 days);
+        insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
         pm = new MockPoolManager();
         bool u0 = address(usdg) < address(plth);
         key = u0

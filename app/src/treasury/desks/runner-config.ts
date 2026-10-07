@@ -7,6 +7,7 @@
 //   "cashDeskId": "cash", "equityDeskId": "equity",   // bytes32 strings the board registered
 //   "policyTemplate": "app/templates/balanced.yaml",       // relative to the config file
 //   "network": "mainnet" | "testnet",                  // for symbol resolution in the template
+//   "beaconWindowSeconds": 86400,                       // one rebalance per window; > the beacon GRACE (testnet: CrowdBuy.WINDOW())
 //   "cash":   { "reserveBps": 200, "sweepMinBps": 50 },
 //   "equity": { "targetBps": 4500, "weights": { "0x…": 2 }, "driftBps": 100, "slippageBps": 100 }
 // }
@@ -17,6 +18,7 @@ import { compileTemplate, loadTemplate, type Template } from "@/treasury/policy-
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { getAddress, type Address, type Hex } from "viem";
+import { DEFAULT_DESK_WINDOW } from "./beacon";
 import type { EquityConfig } from "./plan";
 
 export type CashConfig = { reserveBps: number; sweepMinBps: number };
@@ -30,6 +32,8 @@ export type DeskConfig = {
   beacon: Address;
   cashDeskId: string;
   equityDeskId: string;
+  /** Length of the equity desk's beacon window (one rebalance per window). */
+  beaconWindowSeconds: number;
   /** asset (checksummed) -> Merkle proof against the policy's instrumentAllowRoot */
   proofs: Record<string, Hex[]>;
   /** root the proofs were built for; the runner refuses to trade if the on-chain policy has another one */
@@ -49,6 +53,7 @@ type RawConfig = {
   equityDeskId?: string;
   policyTemplate: string;
   network?: "mainnet" | "testnet";
+  beaconWindowSeconds?: number;
   cash?: Partial<CashConfig>;
   equity?: EquityConfig;
 };
@@ -89,11 +94,18 @@ export function parseConfig(raw: RawConfig, baseDir: string): DeskConfig {
     beacon: getAddress(raw.beacon),
     cashDeskId: raw.cashDeskId ?? "cash",
     equityDeskId: raw.equityDeskId ?? "equity",
+    beaconWindowSeconds: beaconWindow(raw.beaconWindowSeconds),
     proofs,
     allowRoot: compiled.policy.instrumentAllowRoot,
     cash: { reserveBps: raw.cash?.reserveBps ?? 200, sweepMinBps: raw.cash?.sweepMinBps ?? 50 },
     equity: { targetBps: raw.equity?.targetBps ?? meta.targetBps, weights, driftBps: raw.equity?.driftBps, slippageBps: raw.equity?.slippageBps },
   };
+}
+
+function beaconWindow(v: number | undefined): number {
+  if (v === undefined) return Number(DEFAULT_DESK_WINDOW);
+  if (!Number.isInteger(v) || v < 3600) throw new Error("desk config: beaconWindowSeconds must be a whole number >= 3600");
+  return v;
 }
 
 export function loadConfig(path: string): DeskConfig {

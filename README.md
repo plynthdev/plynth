@@ -76,16 +76,18 @@ No contract is upgradeable. OpenZeppelin v5.7.0 and forge-std v1.17.0 are vendor
 
 Not deployed to mainnet. Deployed to Robinhood Chain testnet (`46630`) with mock assets (mock USDG, three mock Stock Tokens priced from the real mainnet feeds, a mock ERC-4626 USDG vault) and the chain's real Uniswap v4 PoolManager, Permit2 and ERC-5564/6538 contracts. Every testnet address is in [`app/deployments/46630.json`](app/deployments/46630.json) (and `46630-treasury.json`); explorer: <https://explorer.testnet.chain.robinhood.com>.
 
+Timers are deploy-time values with a hard minimum in each contract (10 minutes; the CrowdBuy window at least 1 hour and longer than the beacon GRACE). Mainnet and fork scripts keep the full values (crowd window 1 day, beacon GRACE 1 hour, Hidden Vault cap and park-adapter delays and the treasury policy timelock 48 hours, unbonding 7 days, insurance withdrawals 14 days, LP redeem cooldown 24 hours); `TestnetStack.s.sol` uses a 2 hour window, a 15 minute GRACE and 15 minutes for the rest. Services read them from the contracts.
+
 | Testnet contract | Address |
 | --- | --- |
-| `SavingsVault` | `0x6d7F16Ecc1E950db5C1768Be1c5a24af238Bf1eF` |
-| `CrowdBuy` | `0x4312bC9cA65743819F4e9079A30862218c4c7E3E` |
-| `StealthClaims` | `0x72772eCB69f6F07919883AaD8DbfdB19B6f4b295` |
-| `ShieldedPool` | `0x2F5c8705465aC966478E276E9B4252E2C2dCee3D` |
-| `TreasuryFactory` | `0xfe678Cc84D33B81A6169be1B092227847CaD9967` |
-| `PerpPool` | `0xC10edfC82aa0AC28Fe7526234d6da0C631ec4332` |
-| `PlinthStaking` | `0x1439769EA41F94B648041a6e0C9705Bdc9a36928` |
-| `MockUSDG` (mUSDG, 6 dp) | `0xd4D641DB556982C4E18aA94f7fA8d78f79D1600B` |
+| `SavingsVault` | `0x8a66d61f70aEE77854F5b4595e015cdC72fbda76` |
+| `CrowdBuy` | `0x685a849E8808F97fB30584DC80c48BA12eEa3c08` |
+| `StealthClaims` | `0x84e12a37567D561dffb16cBEe6B8ce55f9Ae8b94` |
+| `ShieldedPool` | `0x84cB78EB01D69082d93660f0341609a9553193Ff` |
+| `TreasuryFactory` | `0x8169dda5181b9B5f5662Df1be7eEDA7114A76D03` |
+| `PerpPool` | `0x4A43f6c890e9c253aD04d35302FC1cB251977d1b` |
+| `PlinthStaking` | `0x1f6924f6c69AADD5D4E1d356c9bD52CF55CF9f2b` |
+| `MockUSDG` (mUSDG, 6 dp) | `0x4B27310C5C93eA469802e045735E0A02Df5DE3B8` |
 
 The deploy scripts in `contracts/script` write every address to `app/deployments/<chainId>.json`; see [Deployment file](#deployment-file).
 

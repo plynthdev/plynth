@@ -115,8 +115,8 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R1_minCrowdIsAConstructorParam() public {
         vm.expectRevert(CrowdBuy.BadParam.selector);
-        new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 0, SLIP, GENESIS, owner, keeper);
-        CrowdBuy c = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 20, SLIP, GENESIS, owner, keeper);
+        new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 0, SLIP, GENESIS, owner, keeper, 1 days);
+        CrowdBuy c = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 20, SLIP, GENESIS, owner, keeper, 1 days);
         assertEq(c.MIN_CROWD(), 20);
     }
 
@@ -144,8 +144,8 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_R2_slippageCapAt300Bps() public {
         vm.expectRevert(CrowdBuy.BadParam.selector);
-        new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 3, 301, GENESIS, owner, keeper);
-        CrowdBuy c = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 3, 300, GENESIS, owner, keeper);
+        new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 3, 301, GENESIS, owner, keeper, 1 days);
+        CrowdBuy c = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), 3, 300, GENESIS, owner, keeper, 1 days);
         assertEq(c.slippageBps(), 300);
     }
 

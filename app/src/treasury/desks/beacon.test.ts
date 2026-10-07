@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { encodeAbiParameters, keccak256, zeroHash, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { beaconKey, beaconSteps, commitmentOf, dayStart, DAY, secretFor, type BeaconState } from "./beacon";
+import { beaconKey, beaconSteps, commitmentOf, dayStart, DAY, secretFor, windowStart, type BeaconState } from "./beacon";
 
 const ACC = "0x00000000000000000000000000000000000000a1" as const;
 const GRACE = 3600n;
@@ -54,5 +54,29 @@ describe("one commit/reveal per period day", () => {
     const revealAt = start + 5000n;
     expect(beaconSteps(revealAt - 1n, GRACE, { key: "0x01", b: today, revealAt }, { key: "0x02", b: tomorrow })).toEqual([]);
     expect(beaconSteps(revealAt, GRACE, { key: "0x01", b: today, revealAt }, { key: "0x02", b: tomorrow })).toEqual([{ kind: "reveal", key: "0x01" }]);
+  });
+});
+
+describe("a configurable desk window (testnet: 2 h windows on a 15 min GRACE beacon)", () => {
+  const W = 7_200n;
+  const G = 900n;
+  test("windowStart floors to the window grid", () => {
+    expect(windowStart(1_800_000_123n, W)).toBe(1_800_000_000n);
+    expect(windowStart(1_800_000_123n)).toBe(dayStart(1_800_000_123n)); // default 1 day
+  });
+
+  test("commits the next 2 h window, not tomorrow", () => {
+    const now = 1_800_000_000n;
+    const steps = beaconSteps(now, G, { key: "0x01", b: empty }, { key: "0x02", b: empty }, W);
+    expect(steps).toEqual([{ kind: "commit", key: "0x02", windowStart: windowStart(now, W) + W, windowEnd: windowStart(now, W) + 2n * W }]);
+  });
+
+  test("reveals inside [start, end - GRACE) of the 2 h window only", () => {
+    const start = windowStart(1_800_000_000n, W);
+    const today: BeaconState = { windowStart: start, windowEnd: start + W, executeAt: 0n, commitment: keccak256("0x05") };
+    const tomorrow: BeaconState = { windowStart: start + W, windowEnd: start + 2n * W, executeAt: 0n, commitment: keccak256("0x06") };
+    expect(beaconSteps(start + 60n, G, { key: "0x01", b: today }, { key: "0x02", b: tomorrow }, W)).toEqual([{ kind: "reveal", key: "0x01" }]);
+    expect(beaconSteps(start + W - G - 1n, G, { key: "0x01", b: today }, { key: "0x02", b: tomorrow }, W)).toEqual([{ kind: "reveal", key: "0x01" }]);
+    expect(beaconSteps(start + W - G, G, { key: "0x01", b: today }, { key: "0x02", b: tomorrow }, W)).toEqual([]);
   });
 });

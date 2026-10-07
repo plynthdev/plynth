@@ -8,7 +8,37 @@ import { schedule, type ExerciseState, type Scheduled } from "./state";
 export const U = 1_000_000n;
 export const E18 = 10n ** 18n;
 export const HOUR = 3600;
-export const DAY = 86_400;
+
+/** The deployment's timers, read from the contracts (deploy-time values: testnet uses short ones, mainnet keeps
+ *  1 day / 1 hour / 48 hours / 7 days / 14 days / 24 hours). Never assumed. Seconds. */
+export type Timers = { genesis: number; window: number; grace: number; capDelay: number; adapterDelay: number; policyTimelock: number; lpCooldown: number; unbonding: number; insuranceDelay: number };
+
+export async function timers(x: TCtx): Promise<Timers> {
+  if (x.data.timers) return x.data.timers as Timers;
+  const rd = async (key: string, contract: string, fn: string) => Number(await x.r.read<bigint>(x.addr(key), x.abi(contract), fn));
+  const policyImpl = await x.r.read<Address>(x.addr("treasuryFactory"), x.abi("TreasuryFactory"), "policyImpl"); // clones share its TIMELOCK
+  const t: Timers = {
+    genesis: await rd("crowdBuy", "CrowdBuy", "GENESIS"),
+    window: await rd("crowdBuy", "CrowdBuy", "WINDOW"),
+    grace: await rd("jitterBeacon", "JitterBeacon", "GRACE"),
+    capDelay: await rd("shieldedPool", "ShieldedPool", "CAP_DELAY"),
+    adapterDelay: await rd("shieldedTrade", "ShieldedTrade", "ADAPTER_DELAY"),
+    policyTimelock: Number(await x.r.read<bigint>(getAddress(policyImpl), x.abi("TreasuryPolicy"), "TIMELOCK")),
+    lpCooldown: await rd("perpPool", "PerpPool", "REDEEM_COOLDOWN"),
+    unbonding: await rd("staking", "PlinthStaking", "UNBONDING"),
+    insuranceDelay: await rd("insurancePool", "ExceptionInsurancePool", "WITHDRAW_DELAY"),
+  };
+  x.data.timers = t;
+  return t;
+}
+
+/** 900 -> "15 min", 7200 -> "2 h", 172800 -> "48 h", 604800 -> "7 days". */
+export function dur(s: number): string {
+  if (s % 86_400 === 0 && s >= 3 * 86_400) return `${s / 86_400} days`;
+  if (s % 3600 === 0) return `${s / 3600} h`;
+  if (s % 60 === 0) return `${s / 60} min`;
+  return `${s} s`;
+}
 
 export type TCtx = {
   r: Recorder;
@@ -75,7 +105,13 @@ export async function chainNow(x: TCtx): Promise<number> {
  * Logs of `eventName` since `fromBlock`, in chunks the public RPC accepts (it refuses very wide ranges).
  */
 export async function events(x: TCtx, address: Address, contract: string, eventName: string, fromBlock: bigint, args?: Record<string, unknown>) {
-  const latest = await x.r.pub.getBlockNumber();
+  // The public RPC is load-balanced: right after a receipt, the node answering may not have that block yet
+  // (2026-10-07: a Deposited log "missing" on a lagging node). Wait until it has reached fromBlock.
+  let latest = await x.r.pub.getBlockNumber();
+  for (let i = 0; latest < fromBlock && i < 30; i++) {
+    await Bun.sleep(1000);
+    latest = await x.r.pub.getBlockNumber();
+  }
   const out: { args: Record<string, any>; transactionHash: `0x${string}`; blockNumber: bigint; logIndex: number }[] = [];
   const CHUNK = 50_000n;
   for (let from = fromBlock; from <= latest; from += CHUNK) {

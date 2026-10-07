@@ -61,7 +61,7 @@ abstract contract ShieldedPoolBase is Test {
         wv = new SwitchVerifier();
         usdg = new MockUSDG();
         stock = new MockStockToken("Mock TSLA", "mTSLA");
-        pool = new ShieldedPool(tv, wv, owner);
+        pool = new ShieldedPool(tv, wv, owner, 48 hours);
         _raiseCap(address(usdg), capUsdg);
         _raiseCap(address(stock), capStock);
         vm.prank(owner);

@@ -134,7 +134,7 @@ contract PerpInvariantTest is Test {
         usdg = new MockUSDG();
         StockTokenRegistry registry = new StockTokenRegistry(address(this));
         Valuer valuer = new Valuer(registry, 30 minutes);
-        pool = new PerpPool(usdg, address(this));
+        pool = new PerpPool(usdg, address(this), 24 hours);
         MockFeed[2] memory feeds;
         for (uint256 i; i < 2; i++) {
             MockStockToken t = new MockStockToken("Mock", "mX");

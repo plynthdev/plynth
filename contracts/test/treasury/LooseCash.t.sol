@@ -27,7 +27,7 @@ contract LooseCashTest is TreasuryFixture {
         super.setUp();
         TreasuryPolicy.Policy memory none;
         factory = new TreasuryFactory(
-            address(new TreasuryPolicy(address(0), none)),
+            address(new TreasuryPolicy(address(0), none, 48 hours)),
             address(new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0))),
             address(
                 new PeriodClose(

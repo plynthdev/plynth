@@ -74,7 +74,7 @@ export async function treasurySetup(x: Ctx) {
   x.state.treasury = t;
   x.state.policy = t.policy;
 
-  const beacon = await r.deploy("equity desk JitterBeacon (keeper = equity desk key)", board, "JitterBeacon", [A.equityDesk.address, board.address]);
+  const beacon = await r.deploy("equity desk JitterBeacon (keeper = equity desk key)", board, "JitterBeacon", [A.equityDesk.address, board.address, 3600n]);
   const ACC = abiOf("TreasuryAccount");
   await r.send("board registers the cash desk (CashSleeve over USDG + steakUSDG)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("cash", { size: 32 }), A.cashDesk.address, [x.addr("cashSleeve")]] });
   await r.send("board registers the equity desk (EquitySleeve over the real Stock Tokens)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("equity", { size: 32 }), A.equityDesk.address, [x.addr("equitySleeve")]] });

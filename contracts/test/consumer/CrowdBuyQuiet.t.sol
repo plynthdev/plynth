@@ -59,7 +59,7 @@ contract CrowdBuyQuietTest is CrowdBuyBase {
     // ---------------------------------------------------------------- wiring
 
     function test_setStealthClaimsOnceOwnerOnlyMatchingCrowd() public {
-        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper);
+        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper, 1 days);
         StealthClaims wrong = new StealthClaims(address(crowd), IERC5564Announcer(StealthCode.ANNOUNCER), reg);
         vm.expectRevert();
         c2.setStealthClaims(wrong); // not owner

@@ -79,7 +79,7 @@ beforeAll(async () => {
   // 200 mTSLA of spot ($50k) on the account: NAV $150k, cash 67%, equity 33%.
   await kit.send(tsla.token, "MockStockToken.sol", "MockStockToken", "mint", [kit.a.account, 200n * E18]);
 
-  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d]);
+  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n]);
   a.market = await kit.deploy("PerpMarket.sol", "PerpMarket", [a.pool, kit.a.valuer, tsla.token, d]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "addMarket", [a.market]);
   await kit.send(a.market, "PerpMarket.sol", "PerpMarket", "setParams", [10n, 0n, 1000n, 0n, 10n ** 13n, 2000n, 10_000n, 5n * E6]);

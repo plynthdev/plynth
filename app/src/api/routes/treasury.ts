@@ -44,7 +44,6 @@ import { fixed, iso, usd } from "@/api/format";
 import { TxInputError, type UnsignedTx } from "@/api/tx";
 
 export const TEMPLATES_DIR = join(import.meta.dir, "..", "..", "..", "templates");
-export const POLICY_TIMELOCK = 48n * 3600n;
 const ZERO = "0x0000000000000000000000000000000000000000";
 const BPS = 10_000n;
 
@@ -81,6 +80,7 @@ export const tAccountAbi = parseAbi([
 ]);
 
 export const tPolicyAbi = parseAbi([
+  "function TIMELOCK() view returns (uint64)",
   "struct Band { uint16 minBps; uint16 maxBps; }",
   POLICY_STRUCT,
   "function current() view returns (Policy, bytes32 hash, uint32 version)",
@@ -300,6 +300,11 @@ export async function marketplaceList(d: Deps) {
 
 // ------------------------------------------------------------------ policy.*
 
+/** TreasuryPolicy.TIMELOCK: a deploy-time value (48h on mainnet, 15 min on testnet), never assumed. */
+async function policyTimelock(d: Deps, w: Wiring): Promise<bigint> {
+  return BigInt(await d.pub.readContract({ address: w.policy, abi: tPolicyAbi, functionName: "TIMELOCK" }));
+}
+
 async function currentPolicy(d: Deps, w: Wiring) {
   const [p, hash, version] = await d.pub.readContract({ address: w.policy, abi: tPolicyAbi, functionName: "current" });
   const [, , activatedAt] = await d.pub.readContract({ address: w.policy, abi: tPolicyAbi, functionName: "policyAt", args: [version] });
@@ -309,7 +314,10 @@ async function currentPolicy(d: Deps, w: Wiring) {
 export async function policyCurrent(d: Deps, account: Address) {
   const w = await wiring(d, account);
   const cur = await currentPolicy(d, w);
-  const [pp, pendingHash, eta] = await d.pub.readContract({ address: w.policy, abi: tPolicyAbi, functionName: "pending" });
+  const [[pp, pendingHash, eta], timelock] = await Promise.all([
+    d.pub.readContract({ address: w.policy, abi: tPolicyAbi, functionName: "pending" }),
+    policyTimelock(d, w),
+  ]);
   return {
     account,
     policyContract: w.policy,
@@ -319,7 +327,7 @@ export async function policyCurrent(d: Deps, account: Address) {
     activatedAt: iso(cur.activatedAt),
     policy: policyJson(cur.policy),
     tier: cur.policy.maxLeverageX10 > 0 ? "T2" : "T1",
-    timelockSeconds: Number(POLICY_TIMELOCK),
+    timelockSeconds: Number(timelock),
     pending: eta === 0n ? null : { hash: pendingHash, eta: iso(eta), etaUnix: eta.toString(), policy: policyJson(normPolicy(pp)) },
   };
 }
@@ -352,8 +360,8 @@ export async function policyPropose(d: Deps, account: Address, i: TemplateInput)
   const w = await wiring(d, account);
   const next = compileInput(d.chainId, i);
   const tx: UnsignedTx = { to: w.policy, data: encodeFunctionData({ abi: tPolicyAbi, functionName: "propose", args: [next.policy] }), value: "0", chainId: d.chainId };
-  const now = await chainNow(d);
-  return { tx, hash: next.hash, diff: df.diff, activatableAfter: iso(now + POLICY_TIMELOCK), from: w.board };
+  const [now, timelock] = await Promise.all([chainNow(d), policyTimelock(d, w)]);
+  return { tx, hash: next.hash, diff: df.diff, activatableAfter: iso(now + timelock), from: w.board };
 }
 
 // ------------------------------------------------------------------ desk.list

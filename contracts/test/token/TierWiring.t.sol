@@ -23,7 +23,7 @@ contract TierWiringTest is TreasuryFixture {
         PlinthStaking.TierSpec[] memory t = new PlinthStaking.TierSpec[](2);
         t[0] = PlinthStaking.TierSpec(0, Tier(2, false, false, 0));
         t[1] = PlinthStaking.TierSpec(10_000e18, Tier(4, true, false, 1));
-        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t);
+        staking = new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t, 7 days);
     }
 
     function _weeklyPolicy() internal {

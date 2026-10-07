@@ -7,7 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { compileTemplate } from "@/treasury/policy-compiler";
 import type { Step } from "../fork/exercise/core";
 import { testers, affordable, assertTestnetChainId, clients, fmtEth, guardRequest, ledgerTotals, topUpAmount, txUrl, WrongChainError, EXPLORER, MAINNET_CHAIN_ID, TESTNET_CHAIN_ID } from "./lib";
-import { deploymentText, envFileText, keystoreVars, normalizeDeployment, DEPLOYER_FLOOR, ETH_TARGETS, TESTER_ETH } from "./setup";
+import { deploymentText, deployCostAtBaseFee, envFileText, fundingNeed, keystoreVars, normalizeDeployment, DEPLOYER_FLOOR, ETH_TARGETS, TESTER_ETH } from "./setup";
 import { applyOutcome, dueItems, emptyState, schedule, waiting } from "./exercise/state";
 import { exitCode, renderHtml, renderMarkdown, type TestnetMeta } from "./exercise/report";
 import { roundUp, testnetTemplate } from "./exercise/areas";
@@ -118,6 +118,16 @@ describe("funding and the gas budget", () => {
     const plan = Object.values(ETH_TARGETS).reduce((a, b) => a + b!, 0n) + TESTER_ETH;
     expect(TESTER_ETH).toBe(parseEther("0.0005"));
     expect(affordable(parseEther("0.01"), plan + parseEther("0.0015"), DEPLOYER_FLOOR)).toBe(true);
+  });
+  test("a redeploy budgets only the top-ups still needed and the deploy at the base fee (todo 40)", () => {
+    const funded = Object.fromEntries(Object.entries(ETH_TARGETS).map(([r, t]) => [r, t!])) as Record<string, bigint>;
+    expect(fundingNeed(funded, [TESTER_ETH])).toBe(0n);
+    expect(fundingNeed({ ...funded, keeper: parseEther("0.001") }, [TESTER_ETH])).toBe(parseEther("0.0005")); // 67% < 80%
+    expect(fundingNeed({ ...funded, keeper: parseEther("0.00125") }, [0n])).toBe(TESTER_ETH); // keeper at 83%: skipped
+    const est = { l2Gas: 180_700_000n, l1Gas: 1_000_000n, gasPrice: 10_000_000n }; // 139M x 1.3, 0.01 gwei
+    expect(deployCostAtBaseFee(est)).toBe(181_700_000n * 10_000_000n);
+    // 2026-10-07: 0.004365 ETH left covers a ~0.0018 ETH redeploy and keeps the 0.001 floor.
+    expect(affordable(parseEther("0.004365"), deployCostAtBaseFee(est), DEPLOYER_FLOOR)).toBe(true);
   });
   test("ledgerTotals sums fees and value per sender", () => {
     const t = ledgerTotals([

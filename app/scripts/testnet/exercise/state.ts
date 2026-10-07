@@ -1,6 +1,6 @@
 // Persistent state of the testnet exercise (app/.testnet/exercise-state.json). Testnet has no time travel, so a
 // run records the steps that ran now and SCHEDULES the ones that wait on real time (crowd window + beacon jitter,
-// 48h timelocks, the 24h LP cooldown, 7-day unbonding). `exercise.ts --resume` runs the scheduled steps that are
+// cap/adapter/policy timelocks, the LP cooldown, unbonding: short deploy-time timers on testnet). `exercise.ts --resume` runs the scheduled steps that are
 // due and keeps the rest. Pure functions here; the file I/O is in exercise.ts.
 import type { Step } from "../../fork/exercise/core";
 

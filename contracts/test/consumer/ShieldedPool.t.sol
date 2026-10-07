@@ -27,7 +27,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
     }
 
     function test_setCrowdOnceOwnerOnly() public {
-        ShieldedPool p = new ShieldedPool(tv, wv, owner);
+        ShieldedPool p = new ShieldedPool(tv, wv, owner, 48 hours);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
         p.setCrowd(crowdAddr);
         vm.startPrank(owner);
@@ -234,7 +234,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
     }
 
     function test_unsetCrowdCannotDepositFor() public {
-        ShieldedPool p = new ShieldedPool(tv, wv, owner);
+        ShieldedPool p = new ShieldedPool(tv, wv, owner, 48 hours);
         vm.prank(address(0));
         vm.expectRevert(ShieldedPool.NotCrowd.selector);
         p.depositFor(address(usdg), 1, bytes32(uint256(1)), bytes32(uint256(1)), "", alice);
@@ -243,7 +243,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
     // ---------------------------------------------------------------- rule: caps (deposits only, 48h to raise)
 
     function test_capsStartAtZero() public {
-        ShieldedPool p = new ShieldedPool(tv, wv, owner);
+        ShieldedPool p = new ShieldedPool(tv, wv, owner, 48 hours);
         assertEq(p.cap(address(usdg)), 0);
         vm.startPrank(alice);
         usdg.approve(address(p), U);
@@ -442,7 +442,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
     function test_publicInputsInCircuitOrder() public {
         ExpectVerifier et = new ExpectVerifier();
         ExpectVerifier ew = new ExpectVerifier();
-        ShieldedPool p = new ShieldedPool(et, ew, owner);
+        ShieldedPool p = new ShieldedPool(et, ew, owner, 48 hours);
         bytes32 root = p.currentRoot();
 
         bytes32[] memory ti = new bytes32[](7);

@@ -202,8 +202,8 @@ contract ShieldedTradeTest is ShieldedTradeBase {
     /// The module hands the verifier exactly the circuit's public-input order.
     function test_publicInputsInCircuitOrder() public {
         ExpectVerifier ev = new ExpectVerifier();
-        ShieldedPool p2 = new ShieldedPool(tv, wv, owner);
-        ShieldedTrade t2 = new ShieldedTrade(p2, ev, stv, router, owner);
+        ShieldedPool p2 = new ShieldedPool(tv, wv, owner, 48 hours);
+        ShieldedTrade t2 = new ShieldedTrade(p2, ev, stv, router, owner, 48 hours);
         vm.prank(owner);
         p2.setTrade(address(t2));
         vm.prank(owner);
@@ -313,7 +313,7 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         vm.expectRevert(ShieldedPool.AlreadySet.selector);
         pool.setTrade(address(1));
 
-        ShieldedPool p2 = new ShieldedPool(tv, wv, owner);
+        ShieldedPool p2 = new ShieldedPool(tv, wv, owner, 48 hours);
         vm.prank(alice);
         vm.expectRevert(); // not owner
         p2.setTrade(address(trade));

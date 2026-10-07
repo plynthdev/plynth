@@ -54,7 +54,7 @@ contract PrivateSleeveTest is TreasuryFixture {
         nvda.mint(address(account), 500e18);
 
         pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), poolOwner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), poolOwner, 48 hours
         );
         vm.startPrank(poolOwner);
         pool.proposeCap(address(aapl), 1e30);

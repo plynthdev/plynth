@@ -17,7 +17,10 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 /// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once).
 /// All-zero constructor arguments (board 0 and controller 0) deploy a locked implementation for the factory.
 contract TreasuryPolicy {
-    uint64 public constant TIMELOCK = 48 hours;
+    /// Hard floor for the deploy-time TIMELOCK (mainnet/fork 48 hours, testnet 15 minutes). Factory clones
+    /// share their implementation's TIMELOCK (immutables live in the implementation's code).
+    uint64 public constant MIN_TIMELOCK = 10 minutes;
+    uint64 public immutable TIMELOCK;
     uint16 public constant BPS = 10_000;
     uint16 public constant MAX_NAME_FLOAT_BPS = 200;
     uint32 public constant MIN_PERIOD = 1 days;
@@ -89,13 +92,16 @@ contract TreasuryPolicy {
     error BadDrawdown();
     error BadPeriod();
     error AlreadyInitialized();
+    error TimelockTooShort();
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
         _;
     }
 
-    constructor(address board_, Policy memory initial) {
+    constructor(address board_, Policy memory initial, uint64 timelock_) {
+        if (timelock_ < MIN_TIMELOCK) revert TimelockTooShort();
+        TIMELOCK = timelock_;
         if (board_ == address(0) && initial.controller == address(0)) {
             _initialized = true; // implementation for clones: never usable itself
             return;

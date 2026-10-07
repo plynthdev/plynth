@@ -39,7 +39,7 @@ abstract contract PerpFixture is Test {
         feed = new MockFeed(8, 100e8, "mTSLA / USD");
         registry.list(address(token), address(feed), false);
 
-        pool = new PerpPool(usdg, owner);
+        pool = new PerpPool(usdg, owner, 24 hours);
         market = new PerpMarket(pool, valuer, address(token), owner);
         vm.prank(owner);
         pool.addMarket(address(market));

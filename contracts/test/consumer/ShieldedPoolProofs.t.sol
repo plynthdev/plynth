@@ -27,7 +27,7 @@ contract ShieldedPoolProofsTest is Test {
         deployCodeTo("MockUSDG.sol:MockUSDG", asset);
         token = MockUSDG(asset);
         pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner, 48 hours
         );
         vm.prank(owner);
         pool.proposeCap(asset, 10e12);

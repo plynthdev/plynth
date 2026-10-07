@@ -19,7 +19,7 @@ contract CrowdBuyHiddenTest is CrowdBuyBase {
 
     function setUp() public override {
         super.setUp();
-        pool = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner);
+        pool = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner, 48 hours);
         vm.startPrank(owner);
         pool.setCrowd(address(crowd));
         crowd.setShieldedPool(IShieldedDeposit(address(pool)));
@@ -87,8 +87,8 @@ contract CrowdBuyHiddenTest is CrowdBuyBase {
     // ---------------------------------------------------------------- wiring
 
     function test_setShieldedPoolOnceOwnerOnlyMatchingCrowd() public {
-        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper);
-        ShieldedPool wrong = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner);
+        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper, 1 days);
+        ShieldedPool wrong = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner, 48 hours);
         vm.prank(owner);
         wrong.setCrowd(address(crowd));
         vm.expectRevert();
@@ -96,7 +96,7 @@ contract CrowdBuyHiddenTest is CrowdBuyBase {
         vm.startPrank(owner);
         vm.expectRevert(CrowdBuy.BadParam.selector);
         c2.setShieldedPool(IShieldedDeposit(address(wrong))); // its crowd is another CrowdBuy
-        ShieldedPool right = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner);
+        ShieldedPool right = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner, 48 hours);
         right.setCrowd(address(c2));
         c2.setShieldedPool(IShieldedDeposit(address(right)));
         vm.expectRevert(CrowdBuy.AlreadySet.selector);
@@ -105,7 +105,7 @@ contract CrowdBuyHiddenTest is CrowdBuyBase {
     }
 
     function test_hiddenRouteNeedsPoolConfigured() public {
-        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper);
+        CrowdBuy c2 = new CrowdBuy(vault, router, crowd.beacon(), 3, SLIP, GENESIS, owner, keeper, 1 days);
         vm.prank(keeper);
         vm.expectRevert(CrowdBuy.HiddenNotConfigured.selector);
         c2.deliver(address(tokA), 0, _user(0), _route(""));

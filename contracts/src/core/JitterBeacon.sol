@@ -14,7 +14,10 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// the public, not from the keeper. If the keeper never reveals, execution falls back to
 /// `windowEnd - GRACE`, so a dead keeper delays execution but never blocks it.
 contract JitterBeacon is Ownable {
-    uint64 public constant GRACE = 1 hours;
+    /// Hard floor for the deploy-time GRACE (mainnet/fork deploys use 1 hour; testnet 15 minutes).
+    uint64 public constant MIN_GRACE = 10 minutes;
+    /// The tail of every window in which no reveal is accepted; the fallback execution time is windowEnd - GRACE.
+    uint64 public immutable GRACE;
     bytes32 public constant OFFSET_TAG = keccak256("plynth.jitter-beacon.offset");
 
     struct Beacon {
@@ -42,14 +45,17 @@ contract JitterBeacon is Ownable {
     error RevealTooLate();
     error WrongSecret();
     error RevealTooEarly(uint64 executeAt);
+    error GraceTooShort();
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
         _;
     }
 
-    constructor(address keeper_, address owner_) Ownable(owner_) {
+    constructor(address keeper_, address owner_, uint64 grace_) Ownable(owner_) {
         if (keeper_ == address(0)) revert ZeroAddress();
+        if (grace_ < MIN_GRACE) revert GraceTooShort();
+        GRACE = grace_;
         keeper = keeper_;
         emit KeeperSet(keeper_);
     }
@@ -99,7 +105,7 @@ contract JitterBeacon is Ownable {
 
     /// offset = uint256(keccak256(abi.encode(OFFSET_TAG, secret, key))) % (windowEnd - windowStart - GRACE).
     /// Domain-separated from the commitment: the old offset was the commitment itself mod the range.
-    function offsetOf(bytes32 secret, bytes32 key, uint64 windowStart, uint64 windowEnd) public pure returns (uint64) {
+    function offsetOf(bytes32 secret, bytes32 key, uint64 windowStart, uint64 windowEnd) public view returns (uint64) {
         return uint64(uint256(keccak256(abi.encode(OFFSET_TAG, secret, key))) % (windowEnd - windowStart - GRACE));
     }
 }

@@ -4,6 +4,7 @@
 //   bun run scripts/testnet/exercise.ts                 instant areas now; time-bound steps are scheduled
 //   bun run scripts/testnet/exercise.ts --resume        runs the scheduled steps that are due (re-run any time)
 //   bun run scripts/testnet/exercise.ts --report-only   re-renders the report from the saved state (no sends)
+//   bun run scripts/testnet/exercise.ts --recheck       re-verifies (read-only) failed steps listed in exercise/recheck.ts
 //   ... --only area,area                                 (first form) only these areas
 //
 // State: app/.testnet/exercise-state.json. Report: app/.testnet/reports/testnet-run-<date>.md + .html, also copied
@@ -18,6 +19,7 @@ import { HANDLERS } from "./exercise/scheduled";
 import { applyOutcome, dueItems, emptyState, waiting, type ExerciseState } from "./exercise/state";
 import { exitCode, renderHtml, renderMarkdown, type TestnetMeta } from "./exercise/report";
 import { closeDb } from "./exercise/services";
+import { recheck } from "./exercise/recheck";
 import { summarize } from "../fork/exercise/report";
 
 type Area = [name: string, fn: (x: TCtx) => Promise<void>];
@@ -98,6 +100,12 @@ async function main(): Promise<number> {
     return (await writeReport(dep, s)).code;
   }
   await assertTestnet();
+  if (argv.includes("--recheck")) {
+    const x = makeCtx(dep, s);
+    log(`${await recheck(x, log)} step(s) passed on re-check`);
+    saveState(s);
+    return (await writeReport(dep, s)).code;
+  }
   s.data.addresses = Object.fromEntries((Object.keys(WALLETS) as Role[]).map((r) => [r, role(r).address]));
   const resume = argv.includes("--resume");
   const run = { mode: resume ? ("resume" as const) : ("run" as const), startedAt: new Date().toISOString() } as ExerciseState["runs"][number];

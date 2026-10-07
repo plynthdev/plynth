@@ -51,13 +51,13 @@ contract PlinthStakingTest is TokenFixture {
         PlinthStaking.TierSpec[] memory t = _tiers();
         t[0].minStake = 1;
         vm.expectRevert(PlinthStaking.BadTiers.selector);
-        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t);
+        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t, 7 days);
         t = _tiers();
         t[2].minStake = t[1].minStake;
         vm.expectRevert(PlinthStaking.BadTiers.selector);
-        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t);
+        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), t, 7 days);
         vm.expectRevert(PlinthStaking.BadTiers.selector);
-        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), new PlinthStaking.TierSpec[](0));
+        new PlinthStaking(IERC20(address(plth)), IERC20(address(usdg)), new PlinthStaking.TierSpec[](0), 7 days);
     }
 
     // ------------------------------------------------------------ hour buckets

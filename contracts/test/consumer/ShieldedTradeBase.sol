@@ -67,8 +67,8 @@ abstract contract ShieldedTradeBase is Test {
         wv = new SwitchVerifier();
         sv = new SwitchVerifier();
         stv = new SwitchVerifier();
-        pool = new ShieldedPool(tv, wv, owner);
-        trade = new ShieldedTrade(pool, sv, stv, router, owner);
+        pool = new ShieldedPool(tv, wv, owner, 48 hours);
+        trade = new ShieldedTrade(pool, sv, stv, router, owner, 48 hours);
         vm.prank(owner);
         pool.setTrade(address(trade));
         _raiseCap(address(usdg), 10_000_000 * U);

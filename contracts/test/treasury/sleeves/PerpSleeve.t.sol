@@ -42,7 +42,7 @@ contract PerpSleeveTest is TreasuryFixture {
         super.setUp();
         ctrl = vm.addr(CTRL_PK);
 
-        pool = new PerpPool(usdg, address(this));
+        pool = new PerpPool(usdg, address(this), 24 hours);
         market = new PerpMarket(pool, valuer, address(aapl), address(this));
         pool.addMarket(address(market));
         market.setParams(10, 0, 1000, 0, 0, 2_000, 10_000, 5e6);

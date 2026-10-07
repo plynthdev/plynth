@@ -49,7 +49,7 @@ contract TestnetPerpKit is Script {
         internal
         returns (Deployment memory d)
     {
-        d.pool = new PerpPool(usdg, deployer);
+        d.pool = new PerpPool(usdg, deployer, 24 hours);
         for (uint256 i; i < 3; i++) {
             d.markets[i] = new PerpMarket(d.pool, valuer, tokens[i], deployer);
             d.pool.addMarket(address(d.markets[i]));

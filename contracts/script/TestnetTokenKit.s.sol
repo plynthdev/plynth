@@ -82,8 +82,8 @@ contract TestnetTokenKit is Script {
     function _deploy(address deployer, MockUSDG usdg, Params memory p) internal returns (Deployment memory d) {
         IPoolManager pm = IPoolManager(POOL_MANAGER);
         d.plth = new PLTH(p.worker, p.plthTreasury, p.stakerReserve);
-        d.staking = new PlinthStaking(IERC20(address(d.plth)), IERC20(address(usdg)), tiers());
-        d.insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), p.committee);
+        d.staking = new PlinthStaking(IERC20(address(d.plth)), IERC20(address(usdg)), tiers(), 7 days);
+        d.insurance = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), p.committee, 14 days);
 
         d.seeder = new TestnetPoolSeeder(pm);
         (d.key, d.poolId) = _seedPool(d.seeder, usdg, d.plth);

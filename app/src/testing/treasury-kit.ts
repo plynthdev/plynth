@@ -158,7 +158,7 @@ export class Kit {
       const Z = "0x0000000000000000000000000000000000000000" as Address;
       const zb = { minBps: 0, maxBps: 0 };
       const none: Policy = { cash: zb, equity: zb, basis: zb, netDeltaMinBps: 0, netDeltaMaxBps: 0, maxLeverageX10: 0, perOrderCapUsd: 0n, perDayCapUsd: 0n, perNameFloatCapBps: 0, perVenueCapBps: 0, noNewRiskOffHours: false, pauseNewRiskAtDrawdownBps: 0, deriskAtDrawdownBps: 0, approvalAboveUsd: 0n, periodSeconds: 0, instrumentAllowRoot: `0x${"0".repeat(64)}`, venueAllowRoot: `0x${"0".repeat(64)}`, controller: Z };
-      a.policyImpl = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [Z, none]);
+      a.policyImpl = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [Z, none, 48n * 3600n]);
       a.accountImpl = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [Z, Z, Z, Z]);
       a.closeImpl = await this.deploy("PeriodClose.sol", "PeriodClose", [Z, Z, Z, Z]);
       a.approvalsImpl = await this.deploy("BoardApprovals.sol", "BoardApprovals", [Z, Z]);
@@ -181,13 +181,13 @@ export class Kit {
       }
       if (!a.account) throw new Error("no TreasuryCreated event");
     } else {
-      a.policy = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [d, compiled.policy]);
+      a.policy = await this.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [d, compiled.policy, 48n * 3600n]);
       a.approvals = await this.deploy("BoardApprovals.sol", "BoardApprovals", [d, a.guard]);
       a.account = await this.deploy("TreasuryAccount.sol", "TreasuryAccount", [d, a.policy, a.guard, a.approvals]);
     }
     a.cashSleeve = await this.deploy("CashSleeve.sol", "CashSleeve", [a.valuer, a.usdg, [a.vault]]);
     a.equitySleeve = await this.deploy("EquitySleeve.sol", "EquitySleeve", [a.router, this.stocks.map((s) => s.token)]);
-    a.beacon = await this.deploy("JitterBeacon.sol", "JitterBeacon", [this.equityKey.address, d]);
+    a.beacon = await this.deploy("JitterBeacon.sol", "JitterBeacon", [this.equityKey.address, d, 3600n]);
 
     if (!opts.factory) await this.send(a.approvals!, "BoardApprovals.sol", "BoardApprovals", "bindAccount", [a.account!]);
     await this.send(a.account, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("cash", { size: 32 }), this.cashKey.address, [a.cashSleeve]]);

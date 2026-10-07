@@ -18,7 +18,7 @@ contract JitterBeaconTest is Test {
 
     function setUp() public {
         vm.warp(1_800_000_000);
-        beacon = new JitterBeacon(keeper, board);
+        beacon = new JitterBeacon(keeper, board, 1 hours);
         start = uint64(block.timestamp + 1 days);
         end = start + 6 hours;
     }

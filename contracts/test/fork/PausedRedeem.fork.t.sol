@@ -72,7 +72,7 @@ contract PausedRedeemForkTest is Test {
         );
         p.controller = board;
 
-        TreasuryPolicy policy = new TreasuryPolicy(board, p);
+        TreasuryPolicy policy = new TreasuryPolicy(board, p, 48 hours);
         guard = new PolicyGuard(reg, valuer, 200);
         BoardApprovals approvals = new BoardApprovals(board, address(guard));
         account = new TreasuryAccount(board, policy, guard, address(approvals));

@@ -85,7 +85,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     uint8 public constant MODE_QUIET = 1;
     uint8 public constant MODE_HIDDEN = 2;
     uint256 public constant STEALTH_SCHEME = 1;
-    uint64 public constant WINDOW = 1 days;
+    /// Hard floor for the deploy-time WINDOW; it must also exceed the beacon's GRACE (checked at deploy).
+    uint64 public constant MIN_WINDOW = 1 hours;
     uint256 private constant BPS = 10_000;
 
     SavingsVault public immutable vault;
@@ -96,6 +97,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     uint32 public immutable MIN_CROWD;
     uint16 public immutable slippageBps;
     uint64 public immutable GENESIS;
+    /// Execution window length (mainnet/fork 1 day, testnet 2 hours): one book execution per window.
+    uint64 public immutable WINDOW;
 
     address public keeper;
     StealthClaims public stealthClaims;
@@ -124,6 +127,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     error ZeroAddress();
     error BadParam();
+    error BadWindow();
     error NotKeeper();
     error NothingPending();
     error NoOrder();
@@ -159,12 +163,15 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         uint16 slippageBps_,
         uint64 genesis_,
         address owner_,
-        address keeper_
+        address keeper_,
+        uint64 window_
     ) Ownable(owner_) {
         if (address(vault_) == address(0) || address(router_) == address(0) || address(beacon_) == address(0)) {
             revert ZeroAddress();
         }
         if (minCrowd_ == 0 || slippageBps_ > MAX_SLIPPAGE_BPS) revert BadParam();
+        if (window_ < MIN_WINDOW || window_ <= beacon_.GRACE()) revert BadWindow();
+        WINDOW = window_;
         vault = vault_;
         router = router_;
         beacon = beacon_;
@@ -236,7 +243,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- execution
 
-    /// Fixed 24h grid from GENESIS.
+    /// Fixed WINDOW grid from GENESIS.
     function windowOf(uint256 t) public view returns (uint64 start, uint64 end) {
         if (t < GENESIS) revert BeforeGenesis();
         start = GENESIS + uint64((t - GENESIS) / WINDOW) * WINDOW;

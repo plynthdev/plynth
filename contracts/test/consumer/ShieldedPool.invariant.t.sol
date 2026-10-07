@@ -179,7 +179,7 @@ contract ShieldedPoolInvariantTest is Test {
         address owner = makeAddr("owner");
         usdg = new MockUSDG();
         stock = new MockStockToken("Mock TSLA", "mTSLA");
-        pool = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner);
+        pool = new ShieldedPool(new SwitchVerifier(), new SwitchVerifier(), owner, 48 hours);
         vm.startPrank(owner);
         pool.proposeCap(address(usdg), type(uint128).max);
         pool.proposeCap(address(stock), type(uint128).max);

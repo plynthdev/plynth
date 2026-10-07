@@ -125,18 +125,41 @@ export async function estimateDeploy(prices: Record<string, string>): Promise<{ 
   return { l2Gas, l1Gas, gasPrice, wei, txs: dry.transactions.length };
 }
 
+/** ETH the deployer will still send: each role's and each tester's top-up to its target (0 at >= 80%). */
+export function fundingNeed(balances: Partial<Record<Role, bigint>>, testerBalances: bigint[]): bigint {
+  let need = 0n;
+  for (const [r, target] of Object.entries(ETH_TARGETS) as [Role, bigint][]) need += topUpAmount(balances[r] ?? 0n, target);
+  for (const b of testerBalances) need += topUpAmount(b, TESTER_ETH);
+  return need;
+}
+
+/**
+ * What the deploy is charged: Orbit charges the base fee (the x2 max fee is only a per-transaction cap, and the
+ * deployer needs that cap for one transaction at a time, not for all of them). The L2 gas is forge's 1.3x bound.
+ * Measured 2026-10-06: 139.0M gas, 0.00139 ETH at 0.01 gwei.
+ */
+export function deployCostAtBaseFee(est: { l2Gas: bigint; l1Gas: bigint; gasPrice: bigint }): bigint {
+  return (est.l2Gas + est.l1Gas) * est.gasPrice;
+}
+
 async function deploy(estimateOnly: boolean) {
   const { pub } = clients();
   const D = role("deployer");
   const prices = await realPrices();
   log(`mock prices (per share, 8 dp): ${JSON.stringify(prices)}`);
   const est = await estimateDeploy(prices);
-  const plan = Object.values(ETH_TARGETS).reduce((a, b) => a + b!, 0n) + TESTER_ETH * BigInt(testers().length);
+  // Only what the wallets still need (a redeploy finds them funded), not every target in full.
+  const balances: Record<string, bigint> = {};
+  for (const r of Object.keys(ETH_TARGETS) as Role[]) balances[r] = await pub.getBalance({ address: role(r).address });
+  const testerBalances: bigint[] = [];
+  for (const t of testers()) testerBalances.push(await pub.getBalance({ address: t }));
+  const plan = fundingNeed(balances, testerBalances);
   const bal = await pub.getBalance({ address: D.address });
-  const line = `deploy estimate: ${est.txs} txs, L2 ${est.l2Gas} gas (forge 1.3x bound) + L1 data ${est.l1Gas} gas at ${est.gasPrice} wei (x2 max fee) = ${fmtEth(est.wei)} ETH; funding plan ${fmtEth(plan)} ETH; deployer ${fmtEth(bal)} ETH`;
+  const expected = deployCostAtBaseFee(est);
+  const line = `deploy estimate: ${est.txs} txs, L2 ${est.l2Gas} gas (forge 1.3x bound) + L1 data ${est.l1Gas} gas at ${est.gasPrice} wei = ${fmtEth(expected)} ETH (cap at the x2 max fee ${fmtEth(est.wei)}); funding still needed ${fmtEth(plan)} ETH; deployer ${fmtEth(bal)} ETH`;
   log(line);
-  writeFileSync(join(TESTNET_DIR, "deploy-estimate.json"), JSON.stringify({ at: new Date().toISOString(), ...Object.fromEntries(Object.entries(est).map(([k, v]) => [k, String(v)])), fundingPlanWei: String(plan), deployerWei: String(bal), prices }, null, 2));
-  if (!affordable(bal, est.wei + plan, DEPLOYER_FLOOR)) {
+  writeFileSync(join(TESTNET_DIR, "deploy-estimate.json"), JSON.stringify({ at: new Date().toISOString(), ...Object.fromEntries(Object.entries(est).map(([k, v]) => [k, String(v)])), expectedWei: String(expected), fundingPlanWei: String(plan), deployerWei: String(bal), prices }, null, 2));
+  if (!affordable(bal, expected + plan, DEPLOYER_FLOOR)) {
     throw new Error(`budget: ${line} would leave the deployer below ${fmtEth(DEPLOYER_FLOOR)} ETH. Deploy in priority order instead (docs BACKLOG A3).`);
   }
   if (estimateOnly) return;
@@ -307,12 +330,13 @@ export function writeEnvFiles() {
   writeEnv("treasury-webhooks", { ...treasury, TREASURY_WEBHOOKS_PORT: PORTS["treasury-webhooks"] });
 
   // Per-treasury services: only once exercise.ts created a treasury and wrote treasury/services.json.
+  // Desk passes every 5 min: testnet desk windows are 2 h, so a pass reveals close to the jittered time.
   const tf = join(PATHS.treasury, "services.json");
   for (const n of ["treasury-desks", "treasury-close", "treasury-risk", "treasury-receipts"]) rmSync(join(PATHS.env, `${n}.env`), { force: true });
   if (existsSync(tf)) {
     const t = JSON.parse(readFileSync(tf, "utf8")) as Record<string, string>;
     const controller = keystoreVars("TREASURY_CONTROLLER", "controller");
-    writeEnv("treasury-desks", { ...treasury, TREASURY_DESKS_PORT: PORTS["treasury-desks"], TREASURY_CONFIG: t.desksConfig, TREASURY_DESK_INTERVAL_S: 900, TREASURY_JURY: "off", ...keystoreVars("TREASURY_CASH_DESK", "cashDesk"), ...keystoreVars("TREASURY_EQUITY_DESK", "equityDesk") });
+    writeEnv("treasury-desks", { ...treasury, TREASURY_DESKS_PORT: PORTS["treasury-desks"], TREASURY_CONFIG: t.desksConfig, TREASURY_DESK_INTERVAL_S: 300, TREASURY_JURY: "off", ...keystoreVars("TREASURY_CASH_DESK", "cashDesk"), ...keystoreVars("TREASURY_EQUITY_DESK", "equityDesk") });
     writeEnv("treasury-close", { ...treasury, ...controller, TREASURY_CLOSE_PORT: PORTS["treasury-close"], TREASURY_PERIOD_CLOSE: t.periodClose, TREASURY_CLOSE_SKIP_RECONCILE: 1 });
     writeEnv("treasury-risk", { ...treasury, ...controller, TREASURY_RISK_PORT: PORTS["treasury-risk"], TREASURY_ACCOUNT: t.account, RISK_INTERVAL_SEC: 300 });
     writeEnv("treasury-receipts", { ...treasury, ...controller, TREASURY_RECEIPTS_PORT: PORTS["treasury-receipts"], TREASURY_RECEIPTS: readDeployment()!.receipts as string });

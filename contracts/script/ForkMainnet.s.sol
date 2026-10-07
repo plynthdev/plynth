@@ -199,8 +199,8 @@ contract ForkMainnet is Script {
 
     function _token() private {
         plth = new PLTH(deployer, deployer, deployer);
-        staking = new PlinthStaking(IERC20(address(plth)), IERC20(USDG), _tiers());
-        insurance = new ExceptionInsurancePool(IERC20Metadata(USDG), committee);
+        staking = new PlinthStaking(IERC20(address(plth)), IERC20(USDG), _tiers(), 7 days);
+        insurance = new ExceptionInsurancePool(IERC20Metadata(USDG), committee, 14 days);
         TestnetPoolSeeder seeder = new TestnetPoolSeeder(IPoolManager(POOL_MANAGER));
         bool usdgIs0 = USDG < address(plth);
         plthKey = usdgIs0
@@ -237,7 +237,7 @@ contract ForkMainnet is Script {
     function _treasury() private {
         guard = new PolicyGuard(registry, valuer, 200);
         TreasuryPolicy.Policy memory none;
-        address policyImpl = address(new TreasuryPolicy(address(0), none));
+        address policyImpl = address(new TreasuryPolicy(address(0), none, 48 hours));
         address accountImpl =
             address(new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0)));
         address closeImpl = address(
@@ -274,7 +274,7 @@ contract ForkMainnet is Script {
     }
 
     function _consumer() private {
-        beacon = new JitterBeacon(keeper, deployer);
+        beacon = new JitterBeacon(keeper, deployer, 1 hours);
         vault = new SavingsVault(IERC20(USDG), PERMIT2, ICanonicalRegistry(address(registry)), deployer, keeper);
         vault.setEligibility(IEligibility(address(eligibility)));
         genesis = uint64(block.timestamp - (block.timestamp % 1 days));
@@ -286,7 +286,7 @@ contract ForkMainnet is Script {
             CROWD_SLIPPAGE_BPS,
             genesis,
             deployer,
-            keeper
+            keeper, 1 days
         );
         vault.setCrowd(address(crowd));
         stealthClaims =
@@ -296,7 +296,7 @@ contract ForkMainnet is Script {
 
     function _hidden() private {
         shieldedPool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), deployer
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), deployer, 48 hours
         );
         shieldedPool.setCrowd(address(crowd));
         shieldedTrade = new ShieldedTrade(
@@ -304,7 +304,7 @@ contract ForkMainnet is Script {
             IHonkVerifier(address(new SwapVerifier())),
             IHonkVerifier(address(new SettleVerifier())),
             router,
-            deployer
+            deployer, 48 hours
         );
         shieldedPool.setTrade(address(shieldedTrade));
         crowd.setShieldedPool(IShieldedDeposit(address(shieldedPool)));
@@ -327,7 +327,7 @@ contract ForkMainnet is Script {
     /// In-house perp venue: one PerpPool over real USDG and a market for each of the four deepest names,
     /// priced by the same Valuer (real feeds), seeded with LP_SEED of the deployer's USDG.
     function _perps() private {
-        perpPool = new PerpPool(IERC20(USDG), deployer);
+        perpPool = new PerpPool(IERC20(USDG), deployer, 24 hours);
         Stock[] memory s = stocks();
         uint256[4] memory pick = [uint256(0), 1, 2, 8]; // TSLA, AAPL, NVDA, SPY
         for (uint256 i; i < pick.length; ++i) {

@@ -100,7 +100,7 @@ abstract contract SleeveFixture is Test {
 
         vault = new MockCashVault(IERC20(address(usdg)));
         _buildTree();
-        policy = new TreasuryPolicy(board, _policy());
+        policy = new TreasuryPolicy(board, _policy(), 48 hours);
         guard = new PolicyGuard(registry, valuer, MAX_LOSS_BPS);
         approvals = new BoardApprovals(board, address(guard));
         account = new TreasuryAccount(board, policy, guard, address(approvals));

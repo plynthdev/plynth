@@ -38,7 +38,7 @@ contract ThresholdVerifierTest is Test {
         deployCodeTo("MockUSDG.sol:MockUSDG", asset);
         token = MockUSDG(asset);
         pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner, 48 hours
         );
         address tvAt = vm.parseJsonAddress(json, ".tv");
         deployCodeTo(

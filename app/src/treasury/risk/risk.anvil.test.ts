@@ -52,7 +52,7 @@ beforeAll(async () => {
   a.tsla = tsla.token;
   a.mirror = await kit.deploy("PositionMirror.sol", "PositionMirror", [kit.a.policy]);
   a.sleeve = await kit.deploy("PerpSleeve.sol", "PerpSleeve", [kit.a.account, kit.a.usdg, 0]);
-  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d]);
+  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n]);
   a.market = await kit.deploy("PerpMarket.sol", "PerpMarket", [a.pool, kit.a.valuer, tsla.token, d]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "addMarket", [a.market]);
   a.inHouse = await kit.deploy("InHousePerpVenue.sol", "InHousePerpVenue", [a.sleeve, a.pool, [a.market]]);

@@ -42,7 +42,9 @@ contract PlinthStaking is ITierSource, ReentrancyGuard {
     }
 
     uint256 public constant BUCKET = 1 hours;
-    uint256 public constant UNBONDING = 7 days;
+    /// Hard floor for the deploy-time UNBONDING (mainnet/fork 7 days, testnet 15 minutes).
+    uint256 public constant MIN_UNBONDING = 10 minutes;
+    uint256 public immutable UNBONDING;
     uint256 public constant MAX_TIERS = 8;
     uint256 private constant P = 1e36;
 
@@ -73,9 +75,12 @@ contract PlinthStaking is ITierSource, ReentrancyGuard {
     error InsufficientStake(uint256 have, uint256 want);
     error StillUnbonding(uint64 releaseAt);
     error NothingToWithdraw();
+    error DelayTooShort();
 
     /// `tiers_` must start at minStake 0 and be strictly ascending in minStake.
-    constructor(IERC20 plth_, IERC20 usdg_, TierSpec[] memory tiers_) {
+    constructor(IERC20 plth_, IERC20 usdg_, TierSpec[] memory tiers_, uint256 unbonding_) {
+        if (unbonding_ < MIN_UNBONDING) revert DelayTooShort();
+        UNBONDING = unbonding_;
         if (address(plth_) == address(0) || address(usdg_) == address(0)) revert ZeroAddress();
         if (tiers_.length == 0 || tiers_.length > MAX_TIERS || tiers_[0].minStake != 0) revert BadTiers();
         for (uint256 i; i < tiers_.length; ++i) {

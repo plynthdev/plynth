@@ -7,7 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { abiOf, expect, j } from "../../fork/exercise/core";
 import { PORTS, TESTNET_CHAIN_ID } from "../lib";
 import { erc20Abi } from "./areas";
-import { api, chainNow, E18, events, HOUR, U, type TCtx } from "./ctx";
+import { api, chainNow, dur, E18, events, HOUR, timers, U, type TCtx } from "./ctx";
 import { deskRows } from "./services";
 import type { Outcome, Scheduled } from "./state";
 import { beaconKey } from "@/keeper/jobs/beacon";
@@ -78,7 +78,7 @@ const crowdExecution: Handler = async (x, item) => {
       return { tx: e.transactionHash, assertion: `Delivered(${e.args.raw} raw)` };
     });
   }
-  // Hidden deliveries need the Hidden Vault caps (48h after deploy): checked on their own once those apply.
+  // Hidden deliveries need the Hidden Vault caps (CAP_DELAY after deploy): checked on their own once those apply.
   x.schedule({ id: "hidden-delivery", handler: "hidden-delivery", area: "hidden", title: "keeper delivers the Hidden saver's crowd allocations as shielded notes (after the caps apply)", dueAt: now, args: { books } });
   x.schedule({ id: "quiet-claim", handler: "quiet-claim", area: "quiet", title: "relayer claims the Quiet saver's stealth parts gaslessly to fresh addresses", dueAt: now });
   return { status: "done", detail: "3 books executed, Open claimed, Quiet delivered (Hidden waits for the caps)" };
@@ -115,8 +115,8 @@ const quietClaim: Handler = async (x) => {
     await r.reverts(`replaying part ${i + 1}'s claim signature reverts`, A.open, { address: sc, abi: S, functionName: "claim", args: [body.token, body.stealth, to, BigInt(body.raw), BigInt(body.deadline), body.sig] }, "BadSignature");
   }
   x.data.claimedStealth = [...claimed];
-  // SPLIT_PARTS = 2: the second part of each delivery is released one crowd execution later.
-  return { status: "later", dueAt: (await chainNow(x)) + 6 * HOUR, detail: `${claimed.size} part(s) claimed; looking again for parts released later` };
+  // SPLIT_PARTS = 2: the second part of each delivery is released one crowd execution (one WINDOW) later.
+  return { status: "later", dueAt: (await chainNow(x)) + (await timers(x)).window + 600, detail: `${claimed.size} part(s) claimed; looking again for parts released later` };
 };
 
 const hiddenCaps: Handler = async (x) => {
@@ -241,7 +241,7 @@ const hiddenDelivery: Handler = async (x, item) => {
     else missing.push(r.who(a));
   }
   if (missing.length) {
-    if (now < item.dueAt + 2 * 86_400) return { status: "later", dueAt: now + 1800, detail: `not delivered yet: ${missing.join(", ")}` };
+    if (now < item.dueAt + 3 * (await timers(x)).window) return { status: "later", dueAt: now + 900, detail: `not delivered yet: ${missing.join(", ")}` };
     return { status: "failed", detail: `the keeper never delivered ${missing.join(", ")} to the Hidden saver` };
   }
   for (const f of found) {
@@ -266,7 +266,7 @@ const policyActivate: Handler = async (x, item) => {
   const { r, A } = x;
   const policy = getAddress(item.args!.policy as string);
   const P = abiOf("TreasuryPolicy");
-  await r.send("anyone activates treasury policy v2 after the 48h timelock", A.quiet, { address: policy, abi: P, functionName: "activate" }, async () => {
+  await r.send(`anyone activates treasury policy v2 after the ${dur((await timers(x)).policyTimelock)} timelock`, A.quiet, { address: policy, abi: P, functionName: "activate" }, async () => {
     const [, hash, v] = await r.read<[unknown, Hex, number]>(policy, P, "current");
     expect(hash === item.args!.hash && v === 2, `version ${v} hash ${hash}`);
     return "current() version 2, hash as proposed";
@@ -280,7 +280,7 @@ const lpRedeem: Handler = async (x) => {
   const PP = abiOf("PerpPool");
   const shares = await r.read<bigint>(pool, PP, "convertToShares", [1_000n * U]);
   const b0 = await r.read<bigint>(x.addr("usdg"), erc20Abi, "balanceOf", [A.deployer.address]);
-  await r.send("LP redeems 1,000 mUSDG of shares after the 24h cooldown", A.deployer, { address: pool, abi: PP, functionName: "redeem", args: [shares, A.deployer.address, A.deployer.address] }, async () => {
+  await r.send(`LP redeems 1,000 mUSDG of shares after the ${dur((await timers(x)).lpCooldown)} cooldown`, A.deployer, { address: pool, abi: PP, functionName: "redeem", args: [shares, A.deployer.address, A.deployer.address] }, async () => {
     const got = (await r.read<bigint>(x.addr("usdg"), erc20Abi, "balanceOf", [A.deployer.address])) - b0;
     expect(got > 990n * U, `got ${got}`);
     return `${Number(got) / 1e6} mUSDG out`;
@@ -308,8 +308,9 @@ const equityRebalance: Handler = async (x, item) => {
   const rows = (await deskRows(account)).filter((w) => w.desk === "equity" && w.status === "sent" && (w.action === "buy" || w.action === "sell"));
   if (!rows.length) {
     const now = await chainNow(x);
-    if (now < item.dueAt + 2 * 86_400) return { status: "later", dueAt: now + 3 * HOUR, detail: "no equity trade by the running desk service yet" };
-    return { status: "failed", detail: "the running treasury-desks service sent no equity trade within 2 days" };
+    const w = (await timers(x)).window;
+    if (now < item.dueAt + 3 * w) return { status: "later", dueAt: now + Math.min(3 * HOUR, Math.floor(w / 4)), detail: "no equity trade by the running desk service yet" };
+    return { status: "failed", detail: `the running treasury-desks service sent no equity trade within ${dur(3 * w)} of its due time` };
   }
   for (const w of rows.slice(0, 4)) {
     await r.external(`treasury-desks (running service): equity ${w.action}${w.asset ? ` ${r.who(w.asset as Address)}` : ""}`, "equity desk", async () => ({ tx: (w.tx_hash ?? undefined) as Hex | undefined, assertion: `desk_actions row ${w.id}: ${w.status}` }));

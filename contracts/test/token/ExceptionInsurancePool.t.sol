@@ -16,7 +16,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
 
     function setUp() public override {
         super.setUp();
-        pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee);
+        pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
     }
 
     function _fund(uint256 amount) internal {

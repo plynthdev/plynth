@@ -36,7 +36,9 @@ interface IPerpMarketValuation {
 contract PerpPool is ERC4626, Ownable2Step {
     using SafeERC20 for IERC20;
 
-    uint256 public constant REDEEM_COOLDOWN = 24 hours;
+    /// Hard floor for the deploy-time REDEEM_COOLDOWN (mainnet/fork 24 hours, testnet 15 minutes).
+    uint256 public constant MIN_REDEEM_COOLDOWN = 10 minutes;
+    uint256 public immutable REDEEM_COOLDOWN;
 
     uint256 public traderCollateral;
     uint256 public totalReserved;
@@ -65,17 +67,21 @@ contract PerpPool is ERC4626, Ownable2Step {
     error CollateralUnderflow();
     error ZeroAmount();
     error MarketOnHold(address market);
+    error CooldownTooShort();
 
     modifier onlyMarket() {
         if (!isMarket[msg.sender]) revert NotMarket();
         _;
     }
 
-    constructor(IERC20 usdg, address owner_)
+    constructor(IERC20 usdg, address owner_, uint256 redeemCooldown_)
         ERC20("Plynth Perp LP", "pPLP")
         ERC4626(usdg)
         Ownable(owner_)
-    {}
+    {
+        if (redeemCooldown_ < MIN_REDEEM_COOLDOWN) revert CooldownTooShort();
+        REDEEM_COOLDOWN = redeemCooldown_;
+    }
 
     // ---------------------------------------------------------------- admin
 

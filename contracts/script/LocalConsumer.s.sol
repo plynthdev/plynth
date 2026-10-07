@@ -112,7 +112,8 @@ contract LocalConsumer is Script {
 
     function _consumer(Out memory o, address deployer) private {
         address keeper = vm.envAddress("KEEPER_ADDRESS");
-        o.beacon = address(new JitterBeacon(keeper, deployer));
+        // Deploy-time timers (env for tests: CROWD_WINDOW / BEACON_GRACE seconds); defaults are the mainnet values.
+        o.beacon = address(new JitterBeacon(keeper, deployer, uint64(vm.envOr("BEACON_GRACE", uint256(1 hours)))));
         SavingsVault vault =
             new SavingsVault(IERC20(o.usdg), PERMIT2, ICanonicalRegistry(o.registry), deployer, keeper);
         o.vault = address(vault);
@@ -127,7 +128,8 @@ contract LocalConsumer is Script {
                 SLIPPAGE_BPS,
                 o.genesis,
                 deployer,
-                keeper
+                keeper,
+                uint64(vm.envOr("CROWD_WINDOW", uint256(1 days)))
             )
         );
         vault.setCrowd(o.crowd);
@@ -165,7 +167,7 @@ contract LocalConsumer is Script {
             IHonkVerifier(address(new SwapVerifier())),
             IHonkVerifier(address(new SettleVerifier())),
             StockRouter(o.router),
-            owner
+            owner, 48 hours
         );
         pool.setTrade(address(trade));
         o.shieldedTrade = address(trade);
@@ -181,7 +183,7 @@ contract LocalConsumer is Script {
         returns (address)
     {
         ShieldedPool pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner, 48 hours
         );
         pool.setCrowd(crowd);
         for (uint256 i; i < assets.length; ++i) {

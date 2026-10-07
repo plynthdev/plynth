@@ -32,7 +32,7 @@ contract TreasuryPolicyTest is Test {
 
     function setUp() public {
         vm.warp(T0);
-        tp = new TreasuryPolicy(board, _good());
+        tp = new TreasuryPolicy(board, _good(), 48 hours);
     }
 
     function _propose(TreasuryPolicy.Policy memory p) internal {
@@ -57,12 +57,12 @@ contract TreasuryPolicyTest is Test {
         TreasuryPolicy.Policy memory p = _good();
         p.controller = address(0);
         vm.expectRevert(TreasuryPolicy.ZeroAddress.selector);
-        new TreasuryPolicy(board, p);
+        new TreasuryPolicy(board, p, 48 hours);
     }
 
     function test_constructor_rejectsZeroBoard() public {
         vm.expectRevert(TreasuryPolicy.ZeroAddress.selector);
-        new TreasuryPolicy(address(0), _good());
+        new TreasuryPolicy(address(0), _good(), 48 hours);
     }
 
     // ------------------------------------------------------------ timelock
@@ -310,7 +310,7 @@ contract TreasuryPolicyTest is Test {
 
     function test_validate_t2GoodPolicyPasses() public {
         tp.validate(_t2());
-        TreasuryPolicy t = new TreasuryPolicy(board, _t2());
+        TreasuryPolicy t = new TreasuryPolicy(board, _t2(), 48 hours);
         (TreasuryPolicy.Policy memory cur,,) = t.current();
         assertEq(cur.maxLeverageX10, 30);
         assertEq(t.venueLeaf(address(this)), keccak256(abi.encode(address(this))));
@@ -464,7 +464,7 @@ contract TreasuryPolicyTest is Test {
         bytes32 root = a < b ? keccak256(abi.encode(a, b)) : keccak256(abi.encode(b, a));
         TreasuryPolicy.Policy memory p = _good();
         p.instrumentAllowRoot = root;
-        TreasuryPolicy t = new TreasuryPolicy(board, p);
+        TreasuryPolicy t = new TreasuryPolicy(board, p, 48 hours);
         bytes32[] memory proof = new bytes32[](1);
         proof[0] = b;
         assertTrue(t.isInstrumentAllowed(usdg, 0, proof));

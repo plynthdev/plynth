@@ -22,6 +22,7 @@ import {
   vaultDepositTx,
   vaultWithdrawTx,
   windowOf,
+  crowdTiming,
 } from "../src/crowd";
 
 const A = (n: number) => getAddress(`0x${n.toString(16).padStart(40, "0")}`) as Address;
@@ -97,6 +98,24 @@ describe("contract arithmetic", () => {
     expect(windowOf(g, g + 86_399n).start).toBe(g);
     expect(windowOf(g, g + 86_400n).start).toBe(g + 86_400n);
     expect(() => windowOf(g, g - 1n)).toThrow(/genesis/);
+  });
+
+  test("windowOf follows the deploy-time WINDOW (testnet 2 h) and crowdTiming reads it from the contracts", async () => {
+    const g = 1_700_000_000n - (1_700_000_000n % 86_400n);
+    expect(windowOf(g, g + 7_199n, 7_200n)).toEqual({ start: g, end: g + 7_200n });
+    expect(windowOf(g, g + 7_200n, 7_200n)).toEqual({ start: g + 7_200n, end: g + 14_400n });
+    const BEACON = A(0xbeac);
+    const reads: string[] = [];
+    const pub = {
+      readContract: async ({ address, functionName }: { address: Address; functionName: string }) => {
+        reads.push(`${address === BEACON ? "beacon" : "crowd"}.${functionName}`);
+        return ({ GENESIS: g, WINDOW: 7_200n, beacon: BEACON, GRACE: 900n } as Record<string, unknown>)[functionName];
+      },
+    } as unknown as PublicClient;
+    expect(await crowdTiming(pub, CROWD)).toEqual({ genesis: g, window: 7_200n, grace: 900n });
+    expect(reads.sort()).toEqual(["beacon.GRACE", "crowd.GENESIS", "crowd.WINDOW", "crowd.beacon"]);
+    // A 15 min GRACE on a 2 h window: offsets land in [0, 2 h - 15 min).
+    expect(beaconOffsetOf(keccak256("0x01"), keccak256("0x02"), g, g + 7_200n, 900n)).toBeLessThan(6_300n);
   });
 
   test("beaconOffsetOf = JitterBeacon.offsetOf (domain-separated from the commitment)", () => {

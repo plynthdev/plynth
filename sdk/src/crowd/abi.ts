@@ -62,6 +62,7 @@ export const crowdBuyAbi = parseAbi([
 export const jitterBeaconAbi = parseAbi([
   "struct Beacon { uint64 windowStart; uint64 windowEnd; uint64 executeAt; bytes32 commitment; }",
   "function executeAfter(bytes32 key) view returns (uint64)",
+  "function GRACE() view returns (uint64)",
   "function beacon(bytes32 key) view returns (Beacon)",
   "function reveal(bytes32 key, bytes32 secret)",
 ]);

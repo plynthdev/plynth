@@ -14,7 +14,7 @@ import { compileTemplate, policyAbiParam, type Compiled } from "@/treasury/polic
 import { packProofs } from "@/treasury/desks/runner";
 import { abiOf, expect, j } from "../../fork/exercise/core";
 import { PATHS, PORTS, RPC, TESTNET_CHAIN_ID } from "../lib";
-import { api, chainNow, DAY, E18, events, U, type TCtx } from "./ctx";
+import { api, chainNow, dur, E18, events, timers, U, type TCtx } from "./ctx";
 import { deskPass } from "./services";
 import { beaconKey } from "@/keeper/jobs/beacon";
 
@@ -320,9 +320,13 @@ export async function crowd(x: TCtx) {
     expect(o[0] === total / 2n && o[1] === (total * 2500n) / 10_000n, `orders ${o.join("/")}`);
     return `quiet's orders ${o.map((v) => Number(v) / 1e6).join(" / ")} mUSDG`;
   });
-  const genesis = await r.read<bigint>(crowd, C, "GENESIS");
+  const tm = await timers(x);
+  const genesis = BigInt(tm.genesis);
+  const W = BigInt(tm.window); // CrowdBuy.WINDOW(): 2 h on testnet, 1 day on mainnet
   const now = BigInt(await chainNow(x));
-  const next = genesis + ((now - genesis) / BigInt(DAY) + 1n) * BigInt(DAY);
+  let next = genesis + ((now - genesis) / W + 1n) * W;
+  // The keeper commits only before a window opens: if the next one starts within 3 min, use the one after it.
+  if (next - now < 180n) next += W;
   x.data.crowdWindow = String(next);
   for (const a of assets) {
     await r.external(`keeper commits the ${r.who(a)} beacon for the next window (${new Date(Number(next) * 1000).toISOString().slice(0, 16)}Z)`, "keeper", async () => {
@@ -332,7 +336,12 @@ export async function crowd(x: TCtx) {
       return { tx: e.transactionHash, assertion: `Committed(key(${r.who(a)}, ${next}))` };
     });
   }
-  await r.reverts("a saver cannot execute a book (keeper-only until windowEnd - GRACE)", A.open, { address: crowd, abi: C, functionName: "execute", args: [assets[0]] }, "NotKeeper");
+  // Keeper-only until windowEnd - GRACE; in the last GRACE of a (2 h) window anyone may call, and the current
+  // window has no beacon yet, so the call is TooEarly(max) instead.
+  const nowE = BigInt(await chainNow(x));
+  const [, curEnd] = await r.read<[bigint, bigint]>(crowd, C, "windowOf", [nowE]);
+  if (nowE < curEnd - BigInt(tm.grace)) await r.reverts("a saver cannot execute a book (keeper-only until windowEnd - GRACE)", A.open, { address: crowd, abi: C, functionName: "execute", args: [assets[0]] }, "NotKeeper");
+  else await r.reverts("a saver's execute in the last GRACE of the window waits for a beacon (none for this window): TooEarly", A.open, { address: crowd, abi: C, functionName: "execute", args: [assets[0]] }, "TooEarly");
   await r.check("API lists the open books", async () => {
     const res = await api("/v1/crowd/books");
     expect(res.status === 200, `HTTP ${res.status}`);
@@ -357,10 +366,11 @@ export async function timelocks(x: TCtx) {
   }
   const [, adapterEta] = await r.read<[Address, bigint]>(x.addr("shieldedTrade"), T, "adapterProposal", [x.addr("cashVault")]);
   eta = Math.max(eta, Number(adapterEta));
-  await r.reverts("Hidden Vault cap cannot apply before its 48h timelock", A.deployer, { address: pool, abi: P, functionName: "applyCap", args: [x.addr("usdg")] }, "TooEarly");
-  await r.reverts("park adapter cannot apply before its 48h timelock", A.deployer, { address: x.addr("shieldedTrade"), abi: T, functionName: "applyAdapter", args: [x.addr("cashVault")] }, "TooEarly");
+  const tm = await timers(x);
+  await r.reverts(`Hidden Vault cap cannot apply before its ${dur(tm.capDelay)} timelock`, A.deployer, { address: pool, abi: P, functionName: "applyCap", args: [x.addr("usdg")] }, "TooEarly");
+  await r.reverts(`park adapter cannot apply before its ${dur(tm.adapterDelay)} timelock`, A.deployer, { address: x.addr("shieldedTrade"), abi: T, functionName: "applyAdapter", args: [x.addr("cashVault")] }, "TooEarly");
   await r.reverts("a Hidden Vault deposit is refused while the cap is 0", A.hidden, { address: pool, abi: P, functionName: "deposit", args: [x.addr("usdg"), 1n * U, `0x${"11".repeat(32)}`, `0x${"22".repeat(32)}`, "0x"] }, "CapExceeded");
-  x.schedule({ id: "hidden-caps", handler: "hidden-caps", area: "timelocks", title: "apply the Hidden Vault caps (mUSDG, mock vault shares, 3 mock stocks) and the park adapter after their 48h timelock", dueAt: eta + 30 });
+  x.schedule({ id: "hidden-caps", handler: "hidden-caps", area: "timelocks", title: `apply the Hidden Vault caps (mUSDG, mock vault shares, 3 mock stocks) and the park adapter after their ${dur(tm.capDelay)} timelock`, dueAt: eta + 30 });
   x.schedule({ id: "hidden-vault", handler: "hidden-vault", area: "hidden", title: "Hidden Vault: deposit -> refund; deposit -> insert (1h queue) -> withdraw through the relayer; crowd allocation delivered as a note", dueAt: eta + 120 });
 }
 
@@ -378,7 +388,8 @@ export async function perps(x: TCtx) {
   await r.send("trader approves the perp pool for collateral", t, { address: usdg, abi: erc20Abi, functionName: "approve", args: [pool, maxUint256] });
   const pos = () => r.read<{ size: bigint; collateral: bigint; tokens: bigint; isLong: boolean }>(m, PM, "position", [t.address]);
   await r.send("trader opens a 1,000 mUSDG long mTSLA at 5x (feed price, keeper-refreshed)", t, { address: m, abi: PM, functionName: "open", args: [true, 1_000n * U, 200n * U, 100n] }, async () => {
-    const p = await pos();
+    // Retry: a lagging public RPC node can answer from the block before the open (seen 2026-10-07).
+    const p = await r.until("the position on a node that has the block", async () => ((await pos()).size > 0n ? pos() : undefined), 30_000, 2000).catch(() => pos());
     expect(p.isLong && p.size === 1_000n * U, j(p));
     return `size 1,000, ${Number(p.tokens) / 1e18} mTSLA notional`;
   });
@@ -395,14 +406,15 @@ export async function perps(x: TCtx) {
     const got = (await r.read<bigint>(usdg, erc20Abi, "balanceOf", [t.address])) - b0;
     return `closed; ${Number(got) / 1e6} mUSDG back (collateral +/- PnL, fees)`;
   });
-  // LP: a fresh deposit starts the 24h redeem cooldown.
+  // LP: a fresh deposit starts the redeem cooldown (PerpPool.REDEEM_COOLDOWN: 15 min testnet, 24 h mainnet).
+  const cooldown = (await timers(x)).lpCooldown;
   await r.send("LP (deployer) approves the perp pool", A.deployer, { address: usdg, abi: erc20Abi, functionName: "approve", args: [pool, 1_000n * U] });
   const rc = await r.send("LP deposits 1,000 mUSDG into the PerpPool (ERC-4626)", A.deployer, { address: pool, abi: PP, functionName: "deposit", args: [1_000n * U, A.deployer.address] });
   await r.reverts("an LP cannot deposit for someone else (would reset their cooldown)", A.deployer, { address: pool, abi: PP, functionName: "deposit", args: [1n * U, A.quiet.address] }, "ReceiverNotSender");
-  await r.reverts("an LP cannot redeem inside the 24h cooldown", A.deployer, { address: pool, abi: PP, functionName: "redeem", args: [1n, A.deployer.address, A.deployer.address] }, "ERC4626ExceededMaxRedeem");
+  await r.reverts(`an LP cannot redeem inside the ${dur(cooldown)} cooldown`, A.deployer, { address: pool, abi: PP, functionName: "redeem", args: [1n, A.deployer.address, A.deployer.address] }, "ERC4626ExceededMaxRedeem");
   if (rc) {
     const at = Number((await r.pub.getBlock({ blockNumber: rc.blockNumber })).timestamp);
-    x.schedule({ id: "lp-redeem", handler: "lp-redeem", area: "perps", title: "LP redeems 1,000 mUSDG of shares after the 24h cooldown", dueAt: at + DAY + 60 });
+    x.schedule({ id: "lp-redeem", handler: "lp-redeem", area: "perps", title: `LP redeems 1,000 mUSDG of shares after the ${dur(cooldown)} cooldown`, dueAt: at + cooldown + 60 });
   }
 }
 
@@ -420,12 +432,13 @@ export async function token(x: TCtx) {
     expect(tier.maxDesks === 4 && tier.weeklyClose, `tier ${j(tier)}`);
     return "tierOf(board): maxDesks 4, weeklyClose";
   });
-  const rc = await r.send("board unstakes 2,000 PLTH (7-day unbonding starts)", A.deployer, { address: st, abi: S, functionName: "unstake", args: [2_000n * E18] });
-  await r.reverts("unbonding PLTH cannot be withdrawn before 7 days", A.deployer, { address: st, abi: S, functionName: "withdraw" }, "StillUnbonding");
+  const unbonding = (await timers(x)).unbonding;
+  const rc = await r.send(`board unstakes 2,000 PLTH (${dur(unbonding)} unbonding starts)`, A.deployer, { address: st, abi: S, functionName: "unstake", args: [2_000n * E18] });
+  await r.reverts(`unbonding PLTH cannot be withdrawn before ${dur(unbonding)}`, A.deployer, { address: st, abi: S, functionName: "withdraw" }, "StillUnbonding");
   if (rc) {
     const e = (await events(x, st, "PlinthStaking", "Unstaked", rc.blockNumber, { staker: A.deployer.address }))[0];
-    const releaseAt = Number(e?.args.releaseAt ?? 0n) || Number((await r.pub.getBlock({ blockNumber: rc.blockNumber })).timestamp) + 7 * DAY;
-    x.schedule({ id: "unbonding-withdraw", handler: "unbonding-withdraw", area: "token", title: "board withdraws the 2,000 unbonded PLTH after 7 days", dueAt: releaseAt + 30 });
+    const releaseAt = Number(e?.args.releaseAt ?? 0n) || Number((await r.pub.getBlock({ blockNumber: rc.blockNumber })).timestamp) + unbonding;
+    x.schedule({ id: "unbonding-withdraw", handler: "unbonding-withdraw", area: "token", title: `board withdraws the 2,000 unbonded PLTH after ${dur(unbonding)}`, dueAt: releaseAt + 30 });
   }
 }
 
@@ -483,7 +496,9 @@ export async function treasury(x: TCtx) {
   if (!t.account) throw new Error("no treasury: the rest of the treasury area depends on it");
   for (const [k, v] of Object.entries(t)) r.names.set(v.toLowerCase(), `treasury ${k}`);
   const ACC = abiOf("TreasuryAccount");
-  const beacon = await r.deploy("equity desk JitterBeacon (keeper = equity desk key)", board, "JitterBeacon", [A.equityDesk.address, board.address]);
+  const tm = await timers(x);
+  // Same GRACE as the crowd beacon, and the desk rebalances once per CrowdBuy.WINDOW (2 h on testnet).
+  const beacon = await r.deploy(`equity desk JitterBeacon (keeper = equity desk key, GRACE ${dur(tm.grace)})`, board, "JitterBeacon", [A.equityDesk.address, board.address, BigInt(tm.grace)]);
   if (beacon) t.beacon = beacon;
   await r.send("board registers the cash desk (CashSleeve over mUSDG + the mock vault)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("cash", { size: 32 }), A.cashDesk.address, [x.addr("cashSleeve")]] });
   await r.send("board registers the equity desk (EquitySleeve over the mock stocks)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("equity", { size: 32 }), A.equityDesk.address, [x.addr("equitySleeve")]] });
@@ -515,19 +530,19 @@ export async function treasury(x: TCtx) {
   mkdirSync(PATHS.treasury, { recursive: true });
   writeFileSync(join(PATHS.treasury, "policy.yaml"), JSON.stringify(tpl, null, 2));
   const desksConfig = join(PATHS.treasury, "desks.json");
-  writeFileSync(desksConfig, JSON.stringify({ rpcUrl: RPC, account: t.account, cashSleeve, equitySleeve, vault: cashVault, beacon: t.beacon, cashDeskId: "cash", equityDeskId: "equity", policyTemplate: "policy.yaml", network: "testnet", equity: { slippageBps: 150 } }, null, 2));
+  writeFileSync(desksConfig, JSON.stringify({ rpcUrl: RPC, account: t.account, cashSleeve, equitySleeve, vault: cashVault, beacon: t.beacon, cashDeskId: "cash", equityDeskId: "equity", policyTemplate: "policy.yaml", network: "testnet", beaconWindowSeconds: tm.window, equity: { slippageBps: 150 } }, null, 2));
   writeFileSync(join(PATHS.treasury, "services.json"), JSON.stringify({ desksConfig, account: t.account, periodClose: t.close }, null, 2));
   x.data.desksConfig = desksConfig;
   await deskPass(x, t.account, desksConfig, "first pass");
 
-  // Policy v2 through the public 48h timelock.
+  // Policy v2 through the public timelock (TreasuryPolicy.TIMELOCK: 15 min testnet, 48 h mainnet).
   const v2 = compileTemplate(testnetTemplate(x, A.controller.address, 600) as never, { controller: A.controller.address, network: "testnet" });
   const P = abiOf("TreasuryPolicy");
   await r.reverts("only the board may propose a policy", A.cashDesk, { address: t.policy!, abi: P, functionName: "propose", args: [v2.policy] }, "NotBoard");
-  await r.send("board proposes policy v2 (per-order cap $600): 48h public timelock", board, { address: t.policy!, abi: P, functionName: "propose", args: [v2.policy] }, async () => {
+  await r.send(`board proposes policy v2 (per-order cap $600): ${dur(tm.policyTimelock)} public timelock`, board, { address: t.policy!, abi: P, functionName: "propose", args: [v2.policy] }, async () => {
     const [, hash, eta] = await r.read<[unknown, Hex, bigint]>(t.policy!, P, "pending");
     expect(hash === v2.hash, "pending hash differs");
-    x.schedule({ id: "policy-activate", handler: "policy-activate", area: "treasury", title: "anyone activates treasury policy v2 after its 48h timelock", dueAt: Number(eta) + 30, args: { policy: t.policy, hash: v2.hash } });
+    x.schedule({ id: "policy-activate", handler: "policy-activate", area: "treasury", title: `anyone activates treasury policy v2 after its ${dur(tm.policyTimelock)} timelock`, dueAt: Number(eta) + 30, args: { policy: t.policy, hash: v2.hash } });
     return `pending ${hash.slice(0, 10)}…, eta ${new Date(Number(eta) * 1000).toISOString()}`;
   });
   await r.reverts("policy v2 cannot activate before its timelock", A.quiet, { address: t.policy!, abi: P, functionName: "activate" }, "TimelockActive");
@@ -538,7 +553,8 @@ export async function treasury(x: TCtx) {
     }, 120_000, 5000);
     return `HTTP 200: ${j(res.body).slice(0, 140)}`;
   }, "api");
-  // The running treasury-desks service rebalances equity at tomorrow's beacon time.
-  const tomorrow = Math.floor((await chainNow(x)) / DAY) * DAY + DAY;
-  x.schedule({ id: "equity-rebalance", handler: "equity-rebalance", area: "treasury", title: "the running treasury-desks service rebalances equity (mTSLA/mAAPL) at its jittered beacon time", dueAt: tomorrow + 23 * 3600, args: { account: t.account } });
+  // The running treasury-desks service commits the next window's beacon and rebalances equity at its time;
+  // by the fallback (next window end - GRACE) at the latest.
+  const nextWin = Math.floor((await chainNow(x)) / tm.window) * tm.window + tm.window;
+  x.schedule({ id: "equity-rebalance", handler: "equity-rebalance", area: "treasury", title: "the running treasury-desks service rebalances equity (mTSLA/mAAPL) at its jittered beacon time", dueAt: nextWin + tm.window - tm.grace + 120, args: { account: t.account, window: tm.window } });
 }

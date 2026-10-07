@@ -73,7 +73,7 @@ contract HiddenVault is Script {
             }
         }
         pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner, 48 hours
         );
         if (crowd != address(0)) pool.setCrowd(crowd);
         for (uint256 i; i < assets.length; ++i) {
@@ -91,7 +91,7 @@ contract HiddenVault is Script {
         bytes32[] memory morphoMarkets
     ) public returns (ShieldedTrade trade) {
         trade = new ShieldedTrade(
-            pool, IHonkVerifier(address(new SwapVerifier())), IHonkVerifier(address(new SettleVerifier())), router, owner
+            pool, IHonkVerifier(address(new SwapVerifier())), IHonkVerifier(address(new SettleVerifier())), router, owner, 48 hours
         );
         pool.setTrade(address(trade));
         address usdg = address(router.usdg());

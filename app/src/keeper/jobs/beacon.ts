@@ -11,7 +11,7 @@ import { chainNow, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { newSecret } from "@/keeper/seal";
 import { getJob, insertJobIfAbsent, setJob } from "@/keeper/jobstore";
 
-/** CrowdBuy.windowOf: the fixed 24h grid from GENESIS. */
+/** CrowdBuy.windowOf: the fixed grid of CrowdBuy.WINDOW() seconds from GENESIS. */
 export function windowAt(t: bigint, genesis: bigint, window: bigint): { start: bigint; end: bigint } {
   if (t < genesis) throw new Error("before genesis");
   const start = genesis + ((t - genesis) / window) * window;

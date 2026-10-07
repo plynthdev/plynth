@@ -30,7 +30,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
     function setUp() public override {
         super.setUp();
         TreasuryPolicy.Policy memory none;
-        policyImpl = new TreasuryPolicy(address(0), none);
+        policyImpl = new TreasuryPolicy(address(0), none, 48 hours);
         accountImpl = new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0));
         closeImpl = new PeriodClose(
             TreasuryAccount(payable(address(0))), IERC20Metadata(address(0)), address(0), ITierSource(address(0))

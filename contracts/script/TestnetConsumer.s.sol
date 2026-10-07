@@ -78,7 +78,7 @@ contract TestnetConsumer is Script {
         IERC20 usdg = IERC20(vm.parseJsonAddress(kit, ".usdg"));
         StockRouter router = StockRouter(vm.parseJsonAddress(kit, ".stockRouter"));
         // The kit's own beacon is keyed to its deployer; the consumer gets one keyed to the keeper.
-        o.beacon = address(new JitterBeacon(keeper, owner));
+        o.beacon = address(new JitterBeacon(keeper, owner, 1 hours));
         SavingsVault vault = new SavingsVault(
             usdg, PERMIT2, ICanonicalRegistry(vm.parseJsonAddress(kit, ".stockTokenRegistry")), owner, keeper
         );
@@ -93,7 +93,7 @@ contract TestnetConsumer is Script {
             SLIPPAGE_BPS,
             o.genesis,
             owner,
-            keeper
+            keeper, 1 days
         );
         o.crowd = address(crowd);
         vault.setCrowd(o.crowd);
@@ -107,13 +107,13 @@ contract TestnetConsumer is Script {
 
     function _hidden(address owner, CrowdBuy crowd, StockRouter router) private returns (address, address) {
         ShieldedPool pool = new ShieldedPool(
-            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner
+            IHonkVerifier(address(new TransferVerifier())), IHonkVerifier(address(new WithdrawVerifier())), owner, 48 hours
         );
         pool.setCrowd(address(crowd));
         // ShieldedTrade must be set before the first deposit; park adapters are proposed later by the owner
         // (48h timelock), as in HiddenVault.s.sol.
         ShieldedTrade trade = new ShieldedTrade(
-            pool, IHonkVerifier(address(new SwapVerifier())), IHonkVerifier(address(new SettleVerifier())), router, owner
+            pool, IHonkVerifier(address(new SwapVerifier())), IHonkVerifier(address(new SettleVerifier())), router, owner, 48 hours
         );
         pool.setTrade(address(trade));
         crowd.setShieldedPool(IShieldedDeposit(address(pool)));

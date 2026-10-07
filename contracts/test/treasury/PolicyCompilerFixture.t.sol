@@ -52,7 +52,7 @@ contract PolicyCompilerFixtureTest is Test {
     function _check(string memory t) internal {
         TreasuryPolicy.Policy memory p = _policy(t);
         assertEq(uint256(keccak256(abi.encode(p))), _u(t, "hash"), string.concat(t, ": hash"));
-        tp = new TreasuryPolicy(makeAddr("board"), p); // runs validate()
+        tp = new TreasuryPolicy(makeAddr("board"), p, 48 hours); // runs validate()
         (, bytes32 h,) = tp.current();
         assertEq(uint256(h), _u(t, "hash"));
 

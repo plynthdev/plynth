@@ -75,7 +75,7 @@ contract TestnetKit is Script {
         d.registry = new StockTokenRegistry(deployer);
         d.valuer = new Valuer(d.registry, MAX_STALENESS);
         d.router = new StockRouter(pm, d.registry, d.valuer, IERC20Metadata(address(d.usdg)), deployer);
-        d.beacon = new JitterBeacon(deployer, deployer);
+        d.beacon = new JitterBeacon(deployer, deployer, 1 hours);
         d.seeder = new TestnetPoolSeeder(pm);
 
         // Feeds price one SHARE (8 dp, like Chainlink); the token price is share price x uiMultiplier,

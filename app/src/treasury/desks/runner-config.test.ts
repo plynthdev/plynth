@@ -14,6 +14,14 @@ const A = "0x00000000000000000000000000000000000000a1";
 const base = { account: A, cashSleeve: A, equitySleeve: A, vault: A, beacon: A };
 
 describe("desk config", () => {
+  test("beaconWindowSeconds: 1 day by default, the testnet's 2 h when set, under 1 h refused", () => {
+    const tpl = join(ROOT, "app", "templates", "balanced.yaml");
+    expect(parseConfig({ ...base, policyTemplate: tpl }, ROOT).beaconWindowSeconds).toBe(86_400);
+    expect(parseConfig({ ...base, policyTemplate: tpl, beaconWindowSeconds: 7200 } as never, ROOT).beaconWindowSeconds).toBe(7200);
+    expect(() => parseConfig({ ...base, policyTemplate: tpl, beaconWindowSeconds: 600 } as never, ROOT)).toThrow("beaconWindowSeconds");
+    expect(() => parseConfig({ ...base, policyTemplate: tpl, beaconWindowSeconds: 7200.5 } as never, ROOT)).toThrow("beaconWindowSeconds");
+  });
+
   test("proofs come from the board's template and match the compiled allow root", () => {
     const c = parseConfig({ ...base, policyTemplate: join(ROOT, "app", "templates", "balanced.yaml") }, ROOT);
     const compiled = compileFile(join(ROOT, "app", "templates", "balanced.yaml"), { controller: A });

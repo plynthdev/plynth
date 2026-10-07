@@ -72,7 +72,7 @@ contract TreasuryFactoryScript is Script {
     {
         d.guard = new PolicyGuard(registry, valuer, lossBps);
         TreasuryPolicy.Policy memory none;
-        address policyImpl = address(new TreasuryPolicy(address(0), none));
+        address policyImpl = address(new TreasuryPolicy(address(0), none, 48 hours));
         address accountImpl =
             address(new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0)));
         address closeImpl = address(

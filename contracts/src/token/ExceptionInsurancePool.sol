@@ -49,7 +49,9 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         Status status;
     }
 
-    uint256 public constant WITHDRAW_DELAY = 14 days;
+    /// Hard floor for the deploy-time WITHDRAW_DELAY (mainnet/fork 14 days, testnet 15 minutes).
+    uint256 public constant MIN_WITHDRAW_DELAY = 10 minutes;
+    uint256 public immutable WITHDRAW_DELAY;
     uint256 public constant MAX_PROCESS = 16;
     uint256 private constant VIRTUAL_SHARES = 1e6;
 
@@ -90,8 +92,11 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     error InsufficientShares();
     error NotReady(uint64 readyAt);
     error ClaimsOwed();
+    error DelayTooShort();
 
-    constructor(IERC20Metadata usdg_, address committee_) {
+    constructor(IERC20Metadata usdg_, address committee_, uint256 withdrawDelay_) {
+        if (withdrawDelay_ < MIN_WITHDRAW_DELAY) revert DelayTooShort();
+        WITHDRAW_DELAY = withdrawDelay_;
         if (address(usdg_) == address(0) || committee_ == address(0)) revert ZeroAddress();
         usdg = IERC20(address(usdg_));
         usdgDecimals = usdg_.decimals();

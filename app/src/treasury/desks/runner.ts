@@ -19,7 +19,7 @@ import {
   type WalletClient,
 } from "viem";
 import { accountAbi, beaconAbi, equitySleeveAbi, erc20Abi, guardAbi, policyAbi, valuerAbi, vaultAbi } from "@/abi/treasury-desks";
-import { beaconKey, beaconSteps, commitmentOf, dayStart, DAY, offsetOf, secretFor } from "./beacon";
+import { beaconKey, beaconSteps, commitmentOf, offsetOf, secretFor, windowStart } from "./beacon";
 import type { DeskConfig } from "./runner-config";
 import { decodeRejection, type Rejection } from "./errors";
 import type { ActionLog, ActionRow } from "./log";
@@ -283,11 +283,13 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
     throw new Error(`policy template is stale: on-chain allow root ${s.policy.allowRoot} != template ${cfg.allowRoot}`);
   }
 
-  // ---- beacon: one commit/reveal per day
+  // ---- beacon: one commit/reveal per window (beaconWindowSeconds)
   const grace = await pub.readContract({ address: cfg.beacon, abi: beaconAbi, functionName: "GRACE" });
-  const today = dayStart(s.ts);
+  const window = BigInt(cfg.beaconWindowSeconds);
+  if (window <= grace) throw new Error(`desk config: beaconWindowSeconds ${window} must exceed the beacon GRACE ${grace}`);
+  const today = windowStart(s.ts, window);
   const kToday = beaconKey(cfg.account, today);
-  const kTomorrow = beaconKey(cfg.account, today + DAY);
+  const kTomorrow = beaconKey(cfg.account, today + window);
   const [bToday, bTomorrow, keeper] = await Promise.all([
     pub.readContract({ address: cfg.beacon, abi: beaconAbi, functionName: "beacon", args: [kToday] }),
     pub.readContract({ address: cfg.beacon, abi: beaconAbi, functionName: "beacon", args: [kTomorrow] }),
@@ -297,7 +299,7 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
   const revealAt = bToday.windowEnd > bToday.windowStart
     ? bToday.windowStart + offsetOf(await secretFor(sign, kToday), kToday, bToday.windowStart, bToday.windowEnd, grace)
     : undefined;
-  for (const step of beaconSteps(s.ts, grace, { key: kToday, b: bToday, ...(revealAt === undefined ? {} : { revealAt }) }, { key: kTomorrow, b: bTomorrow })) {
+  for (const step of beaconSteps(s.ts, grace, { key: kToday, b: bToday, ...(revealAt === undefined ? {} : { revealAt }) }, { key: kTomorrow, b: bTomorrow }, window)) {
     const secret = await secretFor(sign, step.key);
     if (step.kind === "commit" && keeper.toLowerCase() !== ctx.equity.account.address.toLowerCase()) {
       await ctx.log.record({ chainId: ctx.chain.id, account: cfg.account, desk: "equity", action: "beacon_commit", status: "skipped", reason: "NOT_BEACON_KEEPER", beaconKey: step.key });
@@ -319,7 +321,7 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
     }
   }
 
-  // ---- rebalance at the beacon time, once per day
+  // ---- rebalance at the beacon time, once per window
   s = await readState(ctx);
   const executeAfter = await pub.readContract({ address: cfg.beacon, abi: beaconAbi, functionName: "executeAfter", args: [kToday] });
   if (s.ts < executeAfter) return res;

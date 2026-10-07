@@ -43,7 +43,7 @@ contract BasisSleeveTest is TreasuryFixture {
         registry.list(address(thin), address(thinFeed), true);
         thin.mint(address(this), 10_000e18);
 
-        pool = new PerpPool(usdg, address(this));
+        pool = new PerpPool(usdg, address(this), 24 hours);
         market = new PerpMarket(pool, valuer, address(aapl), address(this));
         thinMarket = new PerpMarket(pool, valuer, address(thin), address(this));
         pool.addMarket(address(market));

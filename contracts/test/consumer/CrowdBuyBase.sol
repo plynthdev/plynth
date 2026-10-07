@@ -69,6 +69,15 @@ abstract contract CrowdBuyBase is Test {
         return 3;
     }
 
+    /// Deploy-time timers (mainnet/fork values here; CrowdBuyShortWindow.t.sol runs the testnet ones).
+    function _window() internal pure virtual returns (uint64) {
+        return 1 days;
+    }
+
+    function _grace() internal pure virtual returns (uint64) {
+        return 1 hours;
+    }
+
     function setUp() public virtual {
         vm.warp(T0);
         usdg = new MockUSDG();
@@ -89,11 +98,11 @@ abstract contract CrowdBuyBase is Test {
         tokA.mint(address(pm), 1e27);
         tokB.mint(address(pm), 1e27);
 
-        beacon = new JitterBeacon(keeper, owner);
+        beacon = new JitterBeacon(keeper, owner, _grace());
         vault = new SavingsVault(
             IERC20(address(usdg)), makeAddr("permit2"), ICanonicalRegistry(address(registry)), owner, keeper
         );
-        crowd = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), _minCrowd(), SLIP, GENESIS, owner, keeper);
+        crowd = new CrowdBuy(vault, router, IExecuteBeacon(address(beacon)), _minCrowd(), SLIP, GENESIS, owner, keeper, _window());
         vm.prank(owner);
         vault.setCrowd(address(crowd));
     }
@@ -156,7 +165,7 @@ abstract contract CrowdBuyBase is Test {
     }
 
     function _windowStart(uint256 idx) internal pure returns (uint64) {
-        return GENESIS + uint64(idx) * 1 days;
+        return GENESIS + uint64(idx) * _window();
     }
 
     /// Commits a beacon for (asset, window idx). Must run before the window starts.
@@ -164,14 +173,14 @@ abstract contract CrowdBuyBase is Test {
         uint64 s = _windowStart(idx);
         bytes32 key = crowd.beaconKey(asset, s);
         vm.prank(keeper);
-        beacon.commit(key, s, s + 1 days, keccak256(abi.encode(secret, key)));
+        beacon.commit(key, s, s + _window(), keccak256(abi.encode(secret, key)));
     }
 
     /// Reveals at the execution time (the beacon refuses earlier reveals); warps there if needed.
     function _reveal(address asset, uint256 idx, bytes32 secret) internal returns (uint64 at) {
         uint64 s = _windowStart(idx);
         bytes32 key = crowd.beaconKey(asset, s);
-        at = s + beacon.offsetOf(secret, key, s, s + 1 days);
+        at = s + beacon.offsetOf(secret, key, s, s + _window());
         if (block.timestamp < at) vm.warp(at);
         beacon.reveal(key, secret);
         assertEq(beacon.executeAfter(key), at);

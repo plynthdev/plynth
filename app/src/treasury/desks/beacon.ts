@@ -1,16 +1,24 @@
-// JitterBeacon timing for the equity desk: one commit/reveal per day. The desk commits for tomorrow's window
-// [day, day + 1 day) before it opens, reveals once it is open, and rebalances once `executeAfter(key)` has
-// passed (the beacon falls back to windowEnd - GRACE if nobody reveals).
+// JitterBeacon timing for the equity desk: one commit/reveal per window (1 day by default; the desk config's
+// beaconWindowSeconds sets it, e.g. 2 hours on testnet, and must exceed the beacon's GRACE). The desk commits
+// for the next window [start, start + window) before it opens, reveals once it is open, and rebalances once
+// `executeAfter(key)` has passed (the beacon falls back to windowEnd - GRACE if nobody reveals).
 import { encodeAbiParameters, keccak256, toHex, type Address, type Hex } from "viem";
 
 export const DAY = 86_400n;
+/** Default desk window when the config names none (mainnet/fork). */
+export const DEFAULT_DESK_WINDOW = DAY;
 export const BEACON_TAG: Hex = toHex("plynth.treasury.equity-rebalance", { size: 32 });
 
-export function dayStart(ts: bigint): bigint {
-  return (ts / DAY) * DAY;
+/** Start of the window holding `ts` on a grid of `window` seconds from the epoch (UTC midnight for 1 day). */
+export function windowStart(ts: bigint, window: bigint = DEFAULT_DESK_WINDOW): bigint {
+  return (ts / window) * window;
 }
 
-/** One beacon key per (account, day). */
+export function dayStart(ts: bigint): bigint {
+  return windowStart(ts, DAY);
+}
+
+/** One beacon key per (account, window start). */
 export function beaconKey(account: Address, day: bigint): Hex {
   return keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes32" }, { type: "uint64" }], [account, BEACON_TAG, day]));
 }
@@ -34,9 +42,9 @@ export type BeaconStep =
   | { kind: "commit"; key: Hex; windowStart: bigint; windowEnd: bigint }
   | { kind: "reveal"; key: Hex };
 
-/** What the desk should do with the beacon now: commit tomorrow's window, reveal today's once its execution
- *  time (`revealAt` = windowStart + offsetOf(secret, ...)) has come; the beacon refuses earlier reveals. */
-export function beaconSteps(now: bigint, grace: bigint, today: { key: Hex; b: BeaconState; revealAt?: bigint }, tomorrow: { key: Hex; b: BeaconState }): BeaconStep[] {
+/** What the desk should do with the beacon now: commit the next window, reveal the current one once its
+ *  execution time (`revealAt` = windowStart + offsetOf(secret, ...)) has come; the beacon refuses earlier reveals. */
+export function beaconSteps(now: bigint, grace: bigint, today: { key: Hex; b: BeaconState; revealAt?: bigint }, tomorrow: { key: Hex; b: BeaconState }, window: bigint = DEFAULT_DESK_WINDOW): BeaconStep[] {
   const steps: BeaconStep[] = [];
   const zero = /^0x0+$/;
   const t = today.b;
@@ -44,9 +52,9 @@ export function beaconSteps(now: bigint, grace: bigint, today: { key: Hex; b: Be
   if (!zero.test(t.commitment) && t.executeAt === 0n && due && now >= t.windowStart && now < t.windowEnd - grace) {
     steps.push({ kind: "reveal", key: today.key });
   }
-  const start = dayStart(now) + DAY;
+  const start = windowStart(now, window) + window;
   if (zero.test(tomorrow.b.commitment) && now < start) {
-    steps.push({ kind: "commit", key: tomorrow.key, windowStart: start, windowEnd: start + DAY });
+    steps.push({ kind: "commit", key: tomorrow.key, windowStart: start, windowEnd: start + window });
   }
   return steps;
 }

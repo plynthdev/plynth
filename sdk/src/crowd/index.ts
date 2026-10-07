@@ -15,6 +15,8 @@ export type Book = { usdgTotal: bigint; accounts: number; openedAt: bigint; rawO
 
 export const BPS = 10_000;
 export const MAX_MIX = 5;
+/** Mainnet/fork CrowdBuy.WINDOW. The window is a deploy-time value (testnet: 2 hours): read `WINDOW()` from the
+ *  contract (`crowdTiming`) rather than assuming this. */
 export const WINDOW = 86_400n;
 
 const tx = (to: Address, abi: any, functionName: string, args: readonly unknown[]): UnsignedTx => ({
@@ -78,11 +80,11 @@ export function allocation(rawOut: bigint, order: bigint, usdgTotal: bigint): bi
   return (rawOut * order) / usdgTotal;
 }
 
-/** CrowdBuy.windowOf: the fixed 24h grid from GENESIS. */
-export function windowOf(genesis: bigint, t: bigint): { start: bigint; end: bigint } {
+/** CrowdBuy.windowOf: the fixed grid of `window` seconds from GENESIS (pass CrowdBuy.WINDOW()). */
+export function windowOf(genesis: bigint, t: bigint, window: bigint = WINDOW): { start: bigint; end: bigint } {
   if (t < genesis) throw new Error("before genesis");
-  const start = genesis + ((t - genesis) / WINDOW) * WINDOW;
-  return { start, end: start + WINDOW };
+  const start = genesis + ((t - genesis) / window) * window;
+  return { start, end: start + window };
 }
 
 /** CrowdBuy.beaconKey: keccak256(abi.encode(asset, windowStart)). */
@@ -92,6 +94,7 @@ export function beaconKey(asset: Address, windowStart: bigint): Hex {
 
 /** JitterBeacon.OFFSET_TAG: the offset hash is domain-separated from the public commitment. */
 export const BEACON_OFFSET_TAG: Hex = keccak256(toBytes("plynth.jitter-beacon.offset"));
+/** Mainnet/fork JitterBeacon.GRACE; deploy-time (testnet: 15 minutes): prefer `crowdTiming`. */
 export const BEACON_GRACE = 3_600n;
 
 /** JitterBeacon.offsetOf: keccak256(abi.encode(OFFSET_TAG, secret, key)) mod (windowEnd - windowStart - GRACE).
@@ -108,14 +111,26 @@ export async function openBook(pub: PublicClient, crowd: Address, asset: Address
   return { bookId, book: { ...b } };
 }
 
+/** The deployment's timing, read from the contracts: GENESIS, WINDOW (1 day mainnet, 2 hours testnet) and the
+ *  beacon's GRACE (1 hour mainnet, 15 minutes testnet). */
+export async function crowdTiming(pub: PublicClient, crowd: Address): Promise<{ genesis: bigint; window: bigint; grace: bigint }> {
+  const [genesis, window, beacon] = await Promise.all([
+    pub.readContract({ address: crowd, abi: crowdBuyAbi, functionName: "GENESIS" }) as Promise<bigint>,
+    pub.readContract({ address: crowd, abi: crowdBuyAbi, functionName: "WINDOW" }) as Promise<bigint>,
+    pub.readContract({ address: crowd, abi: crowdBuyAbi, functionName: "beacon" }) as Promise<Address>,
+  ]);
+  const grace = (await pub.readContract({ address: beacon, abi: jitterBeaconAbi, functionName: "GRACE" })) as bigint;
+  return { genesis, window, grace };
+}
+
 /** Earliest time the current window's execution may happen (uint64 max when the window has no beacon). */
 export async function nextExecution(pub: PublicClient, crowd: Address, asset: Address, at?: bigint): Promise<{ windowStart: bigint; executeAfter: bigint }> {
   const now = at ?? (await pub.getBlock({ blockTag: "latest" })).timestamp;
-  const [genesis, beacon] = await Promise.all([
-    pub.readContract({ address: crowd, abi: crowdBuyAbi, functionName: "GENESIS" }) as Promise<bigint>,
+  const [{ genesis, window }, beacon] = await Promise.all([
+    crowdTiming(pub, crowd),
     pub.readContract({ address: crowd, abi: crowdBuyAbi, functionName: "beacon" }) as Promise<Address>,
   ]);
-  const { start } = windowOf(genesis, now);
+  const { start } = windowOf(genesis, now, window);
   const executeAfter = (await pub.readContract({ address: beacon, abi: jitterBeaconAbi, functionName: "executeAfter", args: [beaconKey(asset, start)] })) as bigint;
   return { windowStart: start, executeAfter };
 }

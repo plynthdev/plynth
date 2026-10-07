@@ -31,7 +31,7 @@ import {StockRouter} from "../core/StockRouter.sol";
 /// keeper controls, and an adapter, once applied, stays the unpark route for its share token forever (park
 /// shares can also always be settled and withdrawn from the pool as shares, then redeemed at the adapter).
 ///
-/// The owner manages the park adapter allow-list only: adding takes ADAPTER_DELAY (48h) like a cap raise,
+/// The owner manages the park adapter allow-list only: adding takes ADAPTER_DELAY (48h on mainnet) like a cap raise,
 /// disabling (new parks only) applies at once. Buy, sell and park outputs count against the pool's deposit
 /// caps and stop while pool deposits are paused; unpark does neither.
 ///
@@ -65,7 +65,9 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
         uint64 eta;
     }
 
-    uint64 public constant ADAPTER_DELAY = 48 hours;
+    /// Hard floor for the deploy-time ADAPTER_DELAY (mainnet/fork 48 hours, testnet 15 minutes).
+    uint64 public constant MIN_ADAPTER_DELAY = 10 minutes;
+    uint64 public immutable ADAPTER_DELAY;
     uint256 public constant MAX_RAW = type(uint128).max;
     uint256 private constant P = Poseidon2.P;
 
@@ -110,14 +112,18 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
     error BadAdapter();
     error NoProposal();
     error TooEarly(uint64 eta);
+    error DelayTooShort();
 
     constructor(
         ShieldedPool pool_,
         IHonkVerifier swapVerifier_,
         IHonkVerifier settleVerifier_,
         StockRouter router_,
-        address owner_
+        address owner_,
+        uint64 adapterDelay_
     ) Ownable(owner_) {
+        if (adapterDelay_ < MIN_ADAPTER_DELAY) revert DelayTooShort();
+        ADAPTER_DELAY = adapterDelay_;
         if (
             address(pool_) == address(0) || address(swapVerifier_) == address(0)
                 || address(settleVerifier_) == address(0) || address(router_) == address(0)

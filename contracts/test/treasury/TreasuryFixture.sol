@@ -94,7 +94,7 @@ abstract contract TreasuryFixture is Test {
         vault = new MockCashVault(usdg);
         _buildTree();
 
-        policy = new TreasuryPolicy(board, _policy());
+        policy = new TreasuryPolicy(board, _policy(), 48 hours);
         guard = new PolicyGuard(registry, valuer, 200);
         approvals = new BoardApprovals(board, address(guard));
         account = new TreasuryAccount(board, policy, guard, address(approvals));
