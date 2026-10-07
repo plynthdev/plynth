@@ -17,8 +17,10 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     function setUp() public override {
         super.setUp();
         pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
+        pool.bindFeeRouter(address(this)); // this test plays the FeeRouter
     }
 
+    /// Router fees (this contract is the bound FeeRouter).
     function _fund(uint256 amount) internal {
         usdg.mint(address(this), amount);
         usdg.approve(address(pool), amount);
@@ -63,7 +65,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     // ------------------------------------------------------------ both approvals
 
     function test_committeeAloneDoesNotPay() public {
-        _fund(10_000e6);
+        _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
         vm.prank(committee);
         pool.approveClaim(id);
@@ -72,7 +74,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     }
 
     function test_controllerAloneDoesNotPay() public {
-        _fund(10_000e6);
+        _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
         vm.prank(controller);
         pool.attest(id, true);
@@ -81,7 +83,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     }
 
     function test_bothApprovalsPayTheTreasury() public {
-        _fund(10_000e6);
+        _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
         vm.prank(controller);
         pool.attest(id, true);
@@ -93,7 +95,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     }
 
     function test_marketMoveAttestationRejects() public {
-        _fund(10_000e6);
+        _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
         vm.prank(committee);
         pool.approveClaim(id);
@@ -135,7 +137,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     // ------------------------------------------------------------ payout cap + FIFO
 
     function test_payoutCappedAtBalanceThenCompleted() public {
-        _fund(300e6);
+        _lp(lp, 300e6);
         uint256 id = _file(1000e18);
         _approveBoth(id);
         ExceptionInsurancePool.Claim memory c = pool.claim(id);
@@ -169,7 +171,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     function testFuzz_payoutNeverExceedsBalance(uint64 bal, uint64 loss) public {
         bal = uint64(bound(bal, 0, 1e15));
         loss = uint64(bound(loss, 1, 1e15));
-        if (bal != 0) _fund(bal);
+        if (bal != 0) _lp(lp, bal);
         uint256 id = _file(uint256(loss) * 1e12);
         _approveBoth(id);
         uint256 paid = pool.claim(id).paid;
@@ -285,5 +287,139 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         uint256 out = pool.withdraw();
         assertApproxEqAbs(out, 1_000e6, 1, "no fees for shares waiting to leave");
         assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp2)), 2_000e6, 2, "the staying LP keeps them");
+    }
+
+    // ------------------------------------------------------------ delta review 2026-10-07 (D2, D3)
+
+    function _requestAll(address who) internal returns (uint256 value) {
+        uint256 s = pool.sharesOf(who);
+        value = pool.previewRedeem(s);
+        vm.prank(who);
+        pool.requestWithdraw(s);
+    }
+
+    function _withdrawAfterDelay(address who) internal returns (uint256 out) {
+        vm.warp(block.timestamp + 14 days);
+        vm.prank(who);
+        out = pool.withdraw();
+    }
+
+    /// D2: the only LP waits to withdraw while fees arrive. Nobody is insuring, so the fees go back to the
+    /// router; nothing stays behind under the virtual shares to dilute the next LP's fees forever.
+    function test_D2_lastLpLeavingLeavesNothingUnderVirtualShares() public {
+        _lp(lp, 10_000e6);
+        _requestAll(lp);
+        assertEq(pool.activeShares(), 0);
+        uint256 routerBefore = usdg.balanceOf(address(this));
+        _fund(10_000e6); // fees while lp waits
+        assertEq(usdg.balanceOf(address(this)) - routerBefore, 10_000e6, "fees nobody insures go back to the router");
+        assertApproxEqAbs(_withdrawAfterDelay(lp), 10_000e6, 1);
+        assertEq(usdg.balanceOf(address(pool)), 0, "nothing left ownerless");
+
+        uint256 s2 = _lp(lp2, 10_000e6);
+        assertApproxEqAbs(pool.previewRedeem(s2), 10_000e6, 1);
+        _fund(10_000e6);
+        assertApproxEqAbs(pool.previewRedeem(s2), 20_000e6, 2, "the new LP gets every fee it insures");
+    }
+
+    /// D2: a donation (or rounding dust) while no active share exists is handed back, not left to the
+    /// virtual shares; anyone can trigger it.
+    function test_D2_idleSurplusReturnedToRouter() public {
+        _lp(lp, 1_000e6);
+        _requestAll(lp);
+        usdg.mint(address(pool), 777e6); // a direct transfer
+        uint256 before = usdg.balanceOf(address(this));
+        vm.prank(stranger);
+        pool.returnIdle();
+        assertEq(usdg.balanceOf(address(this)) - before, 777e6);
+        assertApproxEqAbs(pool.pendingValueOf(lp), 1_000e6, 1, "the withdrawer's liability is untouched");
+    }
+
+    /// D3: a newcomer depositing just before a withdrawer exits buys at the active price, so it captures none
+    /// of the fees the staying LP earned (old pricing let it take ~4,926 of lp2's 5,000).
+    function test_D3_depositBeforeExitCannotCaptureStayersFees() public {
+        _lp(lp, 10_000e6);
+        uint256 s2 = _lp(lp2, 10_000e6);
+        _requestAll(lp);
+        _fund(10_000e6); // all of it is lp2's: lp stopped earning at the request
+        assertApproxEqAbs(pool.previewRedeem(s2), 20_000e6, 2);
+
+        address attacker = makeAddr("attacker");
+        vm.warp(block.timestamp + 14 days - 1);
+        uint256 sa = _lp(attacker, 1_000_000e6);
+        vm.warp(block.timestamp + 1);
+        vm.prank(lp);
+        assertApproxEqAbs(pool.withdraw(), 10_000e6, 1);
+
+        assertApproxEqAbs(pool.previewRedeem(s2), 20_000e6, 2, "the staying LP keeps its fees");
+        assertLe(pool.previewRedeem(sa), 1_000_000e6, "the newcomer gains nothing from the exit");
+    }
+
+    /// Withdrawing LPs still bear a claim exactly like active ones, and get min(value at request, value at
+    /// withdraw): fees after the request never reach them.
+    function test_D3_withdrawerBearsLossesButNoFees() public {
+        _lp(lp, 1_000e6);
+        uint256 s2 = _lp(lp2, 1_000e6);
+        uint256 v = _requestAll(lp);
+        _approveBoth(_file(500e18)); // 25% of 2,000
+        assertApproxEqAbs(pool.pendingValueOf(lp), 750e6, 1);
+        assertApproxEqAbs(pool.previewRedeem(s2), 750e6, 1);
+        _fund(1_000e6); // fees: only lp2
+        assertApproxEqAbs(pool.previewRedeem(s2), 1_750e6, 2);
+        (uint256 requested, uint256 now_,) = pool.pendingOf(lp);
+        assertEq(requested, v);
+        assertApproxEqAbs(now_, 750e6, 1);
+        assertApproxEqAbs(_withdrawAfterDelay(lp), 750e6, 1);
+    }
+
+    /// A claim that takes the whole pool wipes the pending withdrawals too; a later request starts afresh and
+    /// is not diluted by the worthless old ones.
+    function test_D3_wipedWithdrawalsDoNotDiluteLaterOnes() public {
+        _lp(lp, 1_000e6);
+        _requestAll(lp);
+        _approveBoth(_file(1_000e18)); // takes everything
+        assertEq(pool.pendingValueOf(lp), 0);
+        uint256 s2 = _lp(lp2, 2_000e6); // no active share was left, so entry is at par
+        assertApproxEqAbs(pool.previewRedeem(s2), 2_000e6, 1);
+        vm.prank(lp2);
+        pool.requestWithdraw(s2);
+        assertApproxEqAbs(pool.pendingValueOf(lp2), 2_000e6, 1);
+        assertEq(_withdrawAfterDelay(lp), 0, "wiped");
+        vm.prank(lp2);
+        assertApproxEqAbs(pool.withdraw(), 2_000e6, 1);
+    }
+
+    /// Fees arriving with no active LP pay an owed claim first; only the rest goes back to the router.
+    function test_feesWithoutLpsPayClaimsThenReturn() public {
+        _lp(lp, 100e6);
+        _requestAll(lp);
+        _approveBoth(_file(300e18)); // pays 100 (the withdrawer's liability is wiped), owes 200
+        assertEq(pool.queuedOwed(), 200e6);
+        uint256 before = usdg.balanceOf(address(this));
+        _fund(500e6);
+        assertEq(pool.queuedOwed(), 0);
+        assertEq(usdg.balanceOf(address(account)), FUNDING + 300e6);
+        assertEq(usdg.balanceOf(address(this)) - before, 300e6, "the 300 above the debt back to the router");
+        assertEq(usdg.balanceOf(address(pool)), 0);
+    }
+
+    /// Shares a claim made worthless can still leave (nothing is paid); otherwise they could never exit and
+    /// whatever lands under them later (a donation, dust) could never go back to the router.
+    function test_worthlessSharesCanLeave() public {
+        _lp(lp, 1_000e6);
+        _approveBoth(_file(1_000e18));
+        uint256 s = pool.sharesOf(lp);
+        assertEq(pool.previewRedeem(s), 0);
+        vm.prank(lp);
+        pool.requestWithdraw(s);
+        assertEq(pool.activeShares(), 0);
+        assertEq(pool.pendingValueOf(lp), 0);
+        vm.prank(lp);
+        vm.expectRevert(ExceptionInsurancePool.ZeroAmount.selector);
+        pool.withdraw(); // nothing pending
+        usdg.mint(address(pool), 3);
+        uint256 before = usdg.balanceOf(address(this));
+        pool.returnIdle();
+        assertEq(usdg.balanceOf(address(this)) - before, 3);
     }
 }

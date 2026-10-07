@@ -76,6 +76,31 @@ contract FeeRouterTest is TokenFixture {
         assertEq(staking.earned(alice)[0], 500e6);
     }
 
+    /// D2 (delta review 2026-10-07): when every LP is waiting to withdraw nobody earns insurance fees, so the
+    /// insurance half goes to stakers instead of piling up in the pool for nobody.
+    function test_D2_allLpsWithdrawingSendsInsuranceHalfToStakers() public {
+        _lpDeposit(1000e6);
+        uint256 s = insurance.sharesOf(lp);
+        vm.prank(lp);
+        insurance.requestWithdraw(s);
+        assertEq(insurance.activeShares(), 0);
+        _fees(1000e6);
+        _push();
+        assertApproxEqAbs(usdg.balanceOf(address(insurance)), 1000e6, 1, "only the withdrawer's liability");
+        assertEq(staking.queued(0), 500e6);
+    }
+
+    /// With no active LP but a claim still owed, the insurance half goes to the pool to pay it (here the pool
+    /// reports a debt it does not hold, so the whole half is handed straight back for the next push).
+    function test_claimOwedKeepsInsuranceHalfInThePool() public {
+        vm.mockCall(address(insurance), abi.encodeCall(insurance.queuedOwed, ()), abi.encode(uint256(1)));
+        _fees(1000e6);
+        _push();
+        assertEq(staking.queued(0), 0, "not to stakers");
+        assertEq(usdg.balanceOf(address(insurance)), 0, "nothing ownerless in the pool");
+        assertEq(usdg.balanceOf(address(router)), 500e6, "returned for the next push");
+    }
+
     MockTemplateSource src;
     address closeT = makeAddr("closeT"); // PeriodClose of a templated treasury
     address acctT = makeAddr("acctT");

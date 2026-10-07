@@ -71,10 +71,12 @@ export function tokenApi(pub: Pick<PublicClient, "readContract">, a: TokenAddres
     }
 
     if (parts[0] === "insurance" && parts.length === 1) {
-      const [freeAssets, queuedOwed, totalShares, queueLength, claimCount] = await Promise.all(
-        ["freeAssets", "queuedOwed", "totalShares", "queueLength", "claimCount"].map((f) => read<bigint>(a.insurancePool, insuranceAbi, f)),
+      const [freeAssets, queuedOwed, activeShares, pendingAssets, queueLength, claimCount] = await Promise.all(
+        ["freeAssets", "queuedOwed", "activeShares", "pendingAssets", "queueLength", "claimCount"].map((f) => read<bigint>(a.insurancePool, insuranceAbi, f)),
       );
-      return json(200, { freeAssets, queuedOwed, totalShares, queueLength, claimCount, hasDepositors: totalShares! > 0n });
+      // Shares waiting to withdraw are burnt at the request (pendingAssets is what they are owed), so only
+      // active shares count as depositors.
+      return json(200, { freeAssets, queuedOwed, activeShares, pendingAssets, queueLength, claimCount, hasDepositors: activeShares! > 0n });
     }
 
     if (parts[0] === "insurance" && parts[1] === "claims" && parts.length === 3) {

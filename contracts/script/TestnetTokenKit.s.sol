@@ -99,6 +99,7 @@ contract TestnetTokenKit is Script {
             PER_PUSH_CAP,
             deployer
         );
+        d.insurance.bindFeeRouter(address(d.router));
     }
 
     function _seedPool(TestnetPoolSeeder seeder, MockUSDG usdg, PLTH plth)

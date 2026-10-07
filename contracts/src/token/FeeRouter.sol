@@ -18,7 +18,8 @@ interface ITemplateFeeSource {
 }
 
 interface IInsuranceFees {
-    function totalShares() external view returns (uint256);
+    function activeShares() external view returns (uint256);
+    function queuedOwed() external view returns (uint256);
     function depositFees(uint256 amount) external;
 }
 
@@ -30,8 +31,10 @@ interface IInsuranceFees {
 ///    the TreasuryFactory (`closeAuthor`) that the caller is a PeriodClose it made, so nobody can claim fees
 ///    for a treasury they do not close. Set-aside USDG is never part of a push;
 /// 2. half of the rest buys PLTH on the PLTH/USDG Uniswap v4 pool and the PLTH goes to stakers;
-/// 3. the other half goes to the ExceptionInsurancePool, unless the pool has no depositors (no LP shares):
-///    then it goes to stakers as USDG, so the first LP cannot walk in and take fees nobody was insuring.
+/// 3. the other half goes to the ExceptionInsurancePool while it has ACTIVE LP shares (shares waiting to
+///    withdraw earn nothing) or owes a queued claim; otherwise it goes to stakers as USDG, so fees nobody was
+///    insuring never pile up for the next LP to walk in on. (The pool also hands back anything its active side
+///    holds once no active share is left.)
 ///
 /// `push(minOut)` is keeper-only and runs at most once per hour (the staking side also only pays stake that
 /// was active for a whole hour). It used to be open to anyone, which let one contract move the PLTH pool,
@@ -216,7 +219,7 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
         uint256 toInsurance;
         uint256 usdgToStakers;
         if (insHalf != 0) {
-            if (insurance.totalShares() == 0) {
+            if (insurance.activeShares() == 0 && insurance.queuedOwed() == 0) {
                 usdgToStakers = insHalf;
                 usdg.forceApprove(address(staking), insHalf);
                 staking.notifyReward(address(usdg), insHalf);

@@ -223,6 +223,7 @@ contract ForkMainnet is Script {
             200e6,
             deployer
         );
+        insurance.bindFeeRouter(address(feeRouter));
     }
 
     /// Same four tiers as the testnet token kit: 0 / 10k / 100k / 1M PLTH.

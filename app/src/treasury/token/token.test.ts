@@ -71,7 +71,8 @@ describe("token api", () => {
     [`${A.feeRouter}.spotSqrtPriceX96`]: 354319114228591420592203432321452013n,
     [`${A.insurancePool}.freeAssets`]: 600_000000n,
     [`${A.insurancePool}.queuedOwed`]: 0n,
-    [`${A.insurancePool}.totalShares`]: 100_000000n,
+    [`${A.insurancePool}.activeShares`]: 100_000000n,
+    [`${A.insurancePool}.pendingAssets`]: 50_000000n,
     [`${A.insurancePool}.queueLength`]: 0n,
     [`${A.insurancePool}.claimCount`]: 1n,
     [`${A.insurancePool}.claim`]: {
@@ -109,7 +110,9 @@ describe("token api", () => {
   });
 
   test("insurance totals and one claim", async () => {
-    expect((await get("/token/insurance")).body.hasDepositors).toBe(true);
+    const ins = (await get("/token/insurance")).body;
+    expect(ins.hasDepositors).toBe(true);
+    expect(ins.pendingAssets).toBe("50000000");
     const c = await get("/token/insurance/claims/0");
     expect(c.status).toBe(200);
     expect(c.body.status).toBe("queued");

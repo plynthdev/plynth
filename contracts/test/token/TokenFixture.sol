@@ -69,6 +69,7 @@ abstract contract TokenFixture is Test {
             10_000e6,
             owner
         );
+        insurance.bindFeeRouter(address(router));
         vm.prank(worker);
         plth.transfer(address(pm), 100_000_000e18); // pool-side PLTH liquidity for the mock
         usdg.mint(address(pm), 1_000_000e6);
