@@ -134,6 +134,7 @@ const plan: Plan = {
   user: A(0x11),
   allocation: RAW.toString(),
   parts: [{ stealth: STEALTH, ephemeralPublicKey: `0x02${"ab".repeat(32)}` as Hex, viewTag: "0x7a" as Hex, raw: RAW.toString(), releaseAt: 0 }],
+  delivered: { raw: RAW.toString(), tx: `0x${"de".repeat(32)}` as Hex, via: "receipt", atBlock: "99" }, // our deliver, proven (quiet-proof.test.ts)
 };
 
 const result = (): JobResult => ({ job: "deliver-quiet", ok: true, actions: 0, notes: [] });

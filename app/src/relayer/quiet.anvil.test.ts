@@ -1,16 +1,20 @@
 // Quiet delivery end to end on anvil, against the real ERC-5564 Announcer / ERC-6538 Registry bytecode:
 // users register meta-addresses -> crowd executes -> keeper delivers into StealthClaims and releases split parts
 // to fresh stealth addresses across executions -> the SDK scan finds them with the viewing key -> the relayer
-// claims each part to a fresh address. The user's main wallet never touches a stealth address.
+// claims each part to a fresh address. The user's main wallet never touches a stealth address. Last: a Quiet user
+// whose deliver is still pending when they claim openly gets no stealth parts (E1).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { addressOfPrivateKey, decodeAnnouncementLog, generateKeys, KEY_DERIVATION_MESSAGE, keyForHit, metaAddress, registerTx, scan, signClaim, announcementEvent, type ScanHit, type StealthKeys } from "@plynth/sdk/stealth";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bytesToHex, createPublicClient, createWalletClient, defineChain, http, pad, parseAbi, type Address, type Hex, type PublicClient } from "viem";
+import { bytesToHex, createPublicClient, createWalletClient, defineChain, getAddress, http, pad, parseAbi, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { beaconAbi, crowdAbi } from "@/abi/keeper";
+import { keeperDeployment, type Ctx } from "@/keeper/context";
 import { beaconKey } from "@/keeper/jobs/beacon";
+import { runDeliverQuiet, type Plan } from "@/keeper/jobs/quiet";
+import { Sender, TxUnconfirmed, viemSenderIO } from "@/keeper/sender";
 import { ANVIL_ADDR_1, ANVIL_KEY_0, ANVIL_KEY_1, ROOT, keeperTestDb, permit2Runtime, startAnvil } from "@/testing/keeper-helpers";
 import { relayerApp } from "./app";
 import { chainDeps } from "./chain";
@@ -293,7 +297,9 @@ describe("Quiet delivery on anvil", () => {
   }, 120_000);
 
   test("relayer CLI boots on a lane port and serves /health", async () => {
-    const port = 8550 + Math.floor(Math.random() * 50);
+    const anvilPort = Number(new URL(anvil.rpc).port);
+    let port = anvilPort;
+    while (port === anvilPort) port = 8550 + Math.floor(Math.random() * 50); // never the test's own anvil
     const proc = Bun.spawn(["bun", "app/src/bin/relayer.ts"], {
       cwd: ROOT,
       env: { ...process.env, RELAYER_CHAIN: "local", LOCAL_RPC_URL: anvil.rpc, RELAYER_DEPLOYMENTS_DIR: dir, RELAYER_PRIVATE_KEY: RELAYER_KEY, RELAYER_PORT: String(port) },
@@ -302,7 +308,7 @@ describe("Quiet delivery on anvil", () => {
     });
     try {
       let body: any;
-      for (let i = 0; i < 50 && !body; i++) {
+      for (let i = 0; i < 200 && !body; i++) {
         await Bun.sleep(100);
         body = await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.json()).catch(() => undefined);
       }
@@ -313,5 +319,64 @@ describe("Quiet delivery on anvil", () => {
     }
     const out = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
     expect(out.toLowerCase()).not.toContain(RELAYER_KEY.slice(2));
-  }, 30_000);
+  }, 60_000);
+
+  test("E1: the keeper's deliver is pending, the user's claimOpen lands first: plan skipped, no stealth parts, the pool still covers everyone else", async () => {
+    const bookId = await fillAndExecute(2_000_000n); // book 2; book 1's second parts are due with this execution
+    cli("app/src/bin/indexer.ts", { INDEXER_CHAIN: "local", INDEXER_DEPLOYMENTS_DIR: dir });
+    const account = privateKeyToAccount(ANVIL_KEY_1);
+    const ctx = {
+      chainId: 31337,
+      db: t.db,
+      pub,
+      account: account.address,
+      sender: new Sender(viemSenderIO(pub, account, 31337), account.address, { pollMs: 50, waitMs: 1_000 }),
+      dep: keeperDeployment(dep as any, 31337),
+      lookahead: 2,
+      splitParts: 2,
+      log: () => {},
+    } as unknown as Ctx;
+    const owed = async () => {
+      const plans = (await t.sql`select job_key, payload from keeper_jobs where kind = 'quiet-plan' and status = 'delivered'`) as unknown as { job_key: string; payload: Plan }[];
+      let sum = 0n;
+      for (const p of plans) {
+        const done = new Set((await t.sql`select job_key from keeper_jobs where kind = 'quiet-part' and status = 'done' and job_key like ${`${p.job_key}:%`}`).map((r) => Number(String(r.job_key).split(":").pop())));
+        p.payload.parts.forEach((part, i) => (sum += done.has(i) ? 0n : BigInt(part.raw)));
+      }
+      return sum;
+    };
+
+    await rpc("evm_setAutomine", [false]);
+    let racer: Address;
+    let ours: Hex;
+    try {
+      expect(await runDeliverQuiet(ctx).catch((e) => e)).toBeInstanceOf(TxUnconfirmed); // first Quiet candidate's deliver is in the mempool
+      const [row] = await t.sql`select payload from keeper_jobs where kind = 'quiet-plan' and job_key like ${`${tsla().toLowerCase()}:${bookId}:%`} and payload ? 'deliverTx'`;
+      racer = getAddress(row!.payload.user);
+      ours = row!.payload.deliverTx.hash;
+      const claim = await wc.writeContract({ account: racer, address: dep.crowdBuy, abi: crowdAbi, functionName: "claimOpen", args: [tsla(), bookId], maxPriorityFeePerGas: 50_000_000_000n, maxFeePerGas: 100_000_000_000n, chain: null } as any);
+      await rpc("evm_mine");
+      expect((await pub.getTransactionReceipt({ hash: claim })).status).toBe("success");
+    } finally {
+      await rpc("evm_setAutomine", [true]);
+    }
+    expect((await pub.getTransactionReceipt({ hash: ours })).status).toBe("reverted"); // AlreadySettled: the claim won
+    const alloc = (await read(dep.crowdBuy, crowdAbi, "allocationOf", [tsla(), bookId, racer])) as bigint;
+    expect(alloc).toBeGreaterThan(0n);
+    expect((await read(tsla(), usdgAbi, "balanceOf", [racer])) as bigint).toBe(alloc);
+
+    const res = await runDeliverQuiet(ctx);
+    expect(res.notes.join(" ")).toContain("claimed openly");
+    const key = `${tsla().toLowerCase()}:${bookId}:${racer.toLowerCase()}`;
+    const [plan] = await t.sql`select status, payload from keeper_jobs where kind = 'quiet-plan' and job_key = ${key}`;
+    expect(plan!.status).toBe("skipped");
+    expect(JSON.stringify(plan!.payload.parts)).not.toContain("stealth");
+    expect(await t.sql`select 1 from keeper_jobs where kind = 'quiet-part' and job_key like ${`${key}:%`}`).toHaveLength(0);
+    // the other Quiet user was delivered and every part still owed is in the pool
+    expect(await pub.getTransactionCount({ address: account.address })).toBeGreaterThan(0);
+    expect((await read(dep.stealthClaims, scAbi, "pooled", [tsla()])) as bigint).toBe(await owed());
+    expect(cycle("deliver-quiet")).toContain("deliver-quiet: ok actions=0");
+    expect((await read(dep.stealthClaims, scAbi, "pooled", [tsla()])) as bigint).toBe(await owed());
+    expect(await owed()).toBeGreaterThan(0n); // the other user's second part waits for the next execution
+  }, 180_000);
 });

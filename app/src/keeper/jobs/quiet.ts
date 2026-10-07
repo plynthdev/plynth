@@ -20,22 +20,50 @@
 //     (and a later pass) and a re-check pinned to the block that showed the nonce taken is it sent again.
 // A "sending" row without a recorded transaction from an older keeper is held for a manual check.
 //
+// Proof of delivery: CrowdBuy.settled is also set by claimOpen (the user's ungated exit) and by a Hidden deliver,
+// so "settled and a plan exists" proves nothing. Parts come out of the pool every Quiet user shares, so releasing
+// them for a user whose allocation never went into it pays that user twice from other users' funds. A plan is
+// promoted to "delivered" only on proof that OUR Quiet deliver settled it:
+//   (a) the deliver transaction we signed (hash, nonce and bytes stored via onSigned before its broadcast) has a
+//       successful receipt carrying Delivered(asset, bookId, user, raw) right after StealthClaims' Pooled(asset, raw);
+//   (b) or, read pinned to the block where settled was seen true, a Delivered log for (asset, bookId, user) whose
+//       transaction pooled the same raw into StealthClaims (a Hidden deliver emits Delivered too, but pools nothing).
+// A Claimed log instead (the user claimed openly), or a Delivered that pooled nothing, marks the plan "skipped" and
+// releases nothing. Neither log yet (a lagging node) waits. Before any part goes out, the delivered raw must equal
+// plan.allocation and the parts must sum to it.
+//
 // Privacy note: the plan row links user to stealth addresses; it is scrubbed to amounts once every part is out.
 import { computeStealthAddress } from "@plynth/sdk/stealth";
 import { sql } from "drizzle-orm";
-import { encodeAbiParameters, getAddress, parseAbiItem, type Address, type Hex } from "viem";
+import { encodeAbiParameters, getAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from "viem";
 import { crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
-import type { SignedTx } from "@/keeper/sender";
+import { TxReverted, type SignedTx } from "@/keeper/sender";
 import { getJob, insertJobIfAbsent, setJob } from "@/keeper/jobstore";
 
 export const QUIET_ROUTE: Hex = encodeAbiParameters([{ type: "uint8" }], [1]);
 export const DEFAULT_SPLIT_PARTS = 2;
 const registryAbi = [parseAbiItem("function stealthMetaAddressOf(address registrant, uint256 schemeId) view returns (bytes)")] as const;
 const creditedEvent = parseAbiItem("event Credited(address indexed token, address indexed stealth, uint256 raw)");
+const deliveredEvent = parseAbiItem("event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)");
+const claimedEvent = parseAbiItem("event Claimed(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)");
+const pooledEvent = parseAbiItem("event Pooled(address indexed token, uint256 raw)");
+const settlementEvents = [deliveredEvent, claimedEvent, pooledEvent] as const;
 
 export type PlannedPart = { stealth: Address; ephemeralPublicKey: Hex; viewTag: Hex; raw: string; releaseAt: number };
-export type Plan = { asset: Address; bookId: string; user: Address; allocation: string; parts: PlannedPart[] };
+/** Our deliver transaction, stored before its first broadcast (raw is dropped once it is proven). */
+export type DeliverTx = { hash: Hex; nonce: number; raw: Hex | null };
+/** Why the plan is "delivered": the settling transaction and the raw it pooled. */
+export type DeliveryProof = { raw: string; tx: Hex; via: "receipt" | "log"; atBlock: string };
+export type Plan = {
+  asset: Address;
+  bookId: string;
+  user: Address;
+  allocation: string;
+  parts: PlannedPart[];
+  deliverTx?: DeliverTx | null;
+  delivered?: DeliveryProof;
+};
 
 export function splitParts(env: string | undefined): number {
   if (env === undefined || env === "") return DEFAULT_SPLIT_PARTS;
@@ -102,16 +130,140 @@ async function candidates(ctx: Ctx): Promise<{ asset: Address; bookId: string; u
   return rows.map((r) => ({ asset: getAddress(r.asset), bookId: r.book_id, user: getAddress(r.u) }));
 }
 
+/** The block the book executed in (from the indexer): settlement logs are searched from here. */
+async function executedAt(ctx: Ctx, asset: Address, bookId: string): Promise<bigint> {
+  const [r] = (await ctx.db.execute(sql`
+    select min(block_number)::text as b from ev_logs
+    where chain_id = ${ctx.chainId} and address = ${ctx.dep.crowd.toLowerCase()} and data_json->>'eventName' = 'Executed'
+      and lower(data_json->'args'->>'asset') = ${asset.toLowerCase()} and data_json->'args'->>'bookId' = ${bookId}`)) as unknown as { b: string | null }[];
+  return BigInt(r?.b ?? "0");
+}
+
+type Ev = { address: Address; eventName: string; args: Record<string, unknown>; transactionHash: Hex; logIndex: number; blockNumber: bigint; blockHash: Hex };
+
+/** How (asset, bookId, user) was settled, as far as the chain shows at the pinned block. */
+export type Settlement =
+  | { kind: "quiet"; raw: bigint; tx: Hex; via: "receipt" | "log" }
+  | { kind: "claimed"; tx: Hex }
+  | { kind: "other-route"; raw: bigint; tx: Hex }
+  | { kind: "unknown"; note: string };
+
+const same = (a: unknown, b: string) => String(a).toLowerCase() === b.toLowerCase();
+
+/**
+ * One transaction's logs: Claimed for this triple, or Delivered for it, which is Quiet only when the log right
+ * before it is StealthClaims' Pooled(asset, raw) of the same transaction (raw 0 pools nothing: nothing to release).
+ */
+export function classifySettlement(logs: Ev[], crowd: Address, stealthClaims: Address, asset: Address, bookId: string, user: Address): Exclude<Settlement, { kind: "unknown" }> | undefined {
+  const mine = (l: Ev) => same(l.address, crowd) && same(l.args.asset, asset) && String(l.args.bookId) === bookId && same(l.args.user, user);
+  const claimed = logs.find((l) => l.eventName === "Claimed" && mine(l));
+  if (claimed) return { kind: "claimed", tx: claimed.transactionHash };
+  const d = logs.find((l) => l.eventName === "Delivered" && mine(l));
+  if (!d) return undefined;
+  const raw = BigInt(d.args.raw as bigint);
+  if (raw === 0n) return { kind: "quiet", raw, tx: d.transactionHash, via: "log" };
+  const pooled = logs.find(
+    (l) => l.eventName === "Pooled" && same(l.address, stealthClaims) && l.transactionHash === d.transactionHash && Number(l.logIndex) === Number(d.logIndex) - 1 && same(l.args.token, asset) && BigInt(l.args.raw as bigint) === raw,
+  );
+  return pooled ? { kind: "quiet", raw, tx: d.transactionHash, via: "log" } : { kind: "other-route", raw, tx: d.transactionHash };
+}
+
+const RANGE_ERROR = /range|too many|more than|limit|exceed|10000|10,000/i;
+
+/** getLogs over [from, to], split in halves when the node refuses the range. */
+async function logsIn(ctx: Ctx, q: { address: Address; event: any; args: Record<string, unknown> }, from: bigint, to: bigint): Promise<Ev[]> {
+  try {
+    return (await ctx.pub.getLogs({ ...q, fromBlock: from, toBlock: to } as any)) as unknown as Ev[];
+  } catch (err) {
+    if (to - from < 2_000n || !RANGE_ERROR.test(String((err as Error)?.message ?? err))) throw err;
+    const mid = from + (to - from) / 2n;
+    return [...(await logsIn(ctx, q, from, mid)), ...(await logsIn(ctx, q, mid + 1n, to))];
+  }
+}
+
+/**
+ * Proof of how (asset, bookId, user) was settled: our stored deliver's receipt first, else the settlement logs
+ * from the book's execution up to `atBlock` (the block where settled was read true, so one of them is there; a node
+ * without that block errors instead of answering from the past).
+ */
+export async function proveSettlement(ctx: Ctx, plan: Plan, fromBlock: bigint, atBlock: bigint): Promise<Settlement> {
+  const { asset, bookId, user } = plan;
+  const sc = ctx.dep.stealthClaims!;
+  if (plan.deliverTx?.hash) {
+    const r = await ctx.sender.receiptOf(plan.deliverTx.hash);
+    if (r && r.status === "success") {
+      const s = classifySettlement(parseEventLogs({ abi: settlementEvents, logs: r.logs }) as unknown as Ev[], ctx.dep.crowd, sc, asset, bookId, user);
+      if (s?.kind === "quiet") return { ...s, via: "receipt" };
+    }
+  }
+  const args = { asset, bookId: BigInt(bookId), user };
+  const delivered = await logsIn(ctx, { address: ctx.dep.crowd, event: deliveredEvent, args }, fromBlock, atBlock);
+  const claimed = await logsIn(ctx, { address: ctx.dep.crowd, event: claimedEvent, args }, fromBlock, atBlock);
+  if (delivered.length + claimed.length > 1) return { kind: "unknown", note: `${delivered.length} Delivered + ${claimed.length} Claimed logs for one settlement; check by hand` };
+  if (claimed[0]) return classifySettlement(claimed, ctx.dep.crowd, sc, asset, bookId, user)!;
+  const d = delivered[0];
+  if (!d) return { kind: "unknown", note: `settled at block ${atBlock} but no Delivered or Claimed log up to it yet (lagging node?)` };
+  // Pinned by block HASH: a node without that block errors instead of returning no Pooled log, which would read as
+  // "another route" and skip a plan whose allocation really is in the pool.
+  const pooled = (await ctx.pub.getLogs({ address: sc, event: pooledEvent, args: { token: asset }, blockHash: d.blockHash })) as unknown as Ev[];
+  return classifySettlement([...pooled, d], ctx.dep.crowd, sc, asset, bookId, user)!;
+}
+
+const scrubbed = (plan: Plan) => plan.parts.map((p) => ({ raw: p.raw, releaseAt: p.releaseAt }));
+
+/** Applies a settlement proof to a plan row. Returns true when the plan may release parts. */
+async function recordSettlement(ctx: Ctx, res: JobResult, key: string, plan: Plan, s: Settlement, atBlock: bigint): Promise<boolean> {
+  const tag = `${plan.user} ${plan.asset} book ${plan.bookId}`;
+  const deliverTx = plan.deliverTx ? { ...plan.deliverTx, raw: null } : null;
+  switch (s.kind) {
+    case "quiet": {
+      const delivered: DeliveryProof = { raw: s.raw.toString(), tx: s.tx, via: s.via, atBlock: atBlock.toString() };
+      await setJob(ctx, "quiet-plan", key, { status: "delivered", txHash: s.tx, payload: { delivered, deliverTx } });
+      plan.delivered = delivered;
+      return true;
+    }
+    case "claimed":
+      await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: `claimed openly (tx ${s.tx})`, parts: scrubbed(plan), deliverTx } });
+      res.notes.push(`${tag}: claimed openly; Quiet plan skipped, nothing released`);
+      return false;
+    case "other-route":
+      await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: `settled by a deliver that pooled nothing into StealthClaims (tx ${s.tx})`, parts: scrubbed(plan), deliverTx } });
+      res.notes.push(`${tag}: settled by another route; Quiet plan skipped, nothing released`);
+      return false;
+    case "unknown":
+      res.notes.push(`${tag}: ${s.note}`);
+      return false;
+  }
+}
+
+/** The rule before any part goes out: the proven delivered raw equals plan.allocation and the parts sum to it. */
+export function releaseCheck(plan: Plan): { ok: true } | { ok: false; reason: string } {
+  if (!plan.delivered) return { ok: false, reason: "no delivery proof" };
+  const raw = BigInt(plan.delivered.raw);
+  const sum = plan.parts.reduce((a, p) => a + BigInt(p.raw), 0n);
+  if (raw !== BigInt(plan.allocation)) return { ok: false, reason: `delivered raw ${raw} != planned allocation ${plan.allocation}` };
+  if (sum !== raw) return { ok: false, reason: `parts sum ${sum} != delivered raw ${raw}` };
+  return { ok: true };
+}
+
 async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promise<void> {
   const n = ctx.splitParts ?? DEFAULT_SPLIT_PARTS;
-  for (const { asset, bookId, user } of await candidates(ctx)) {
+  const list = await candidates(ctx);
+  if (list.length === 0) return;
+  // Every read of this phase is pinned to one block: settled and the settlement logs agree with each other.
+  const atBlock = await ctx.pub.getBlockNumber({ cacheTime: 0 }); // viem caches the head for its polling interval
+  for (const { asset, bookId, user } of list) {
     const key = planKey(asset, bookId, user);
-    const settled = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "settled", args: [asset, BigInt(bookId), user] })) as boolean;
+    const settled = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "settled", args: [asset, BigInt(bookId), user], blockNumber: atBlock })) as boolean;
     const existing = await getJob(ctx, "quiet-plan", key);
+    let plan = existing?.payload as Plan | undefined;
     if (settled) {
-      // Either our deliver landed and the receipt was lost (plan exists), or the user claimed openly.
-      if (existing) await setJob(ctx, "quiet-plan", key, { status: "delivered" });
-      else await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: "settled without Quiet delivery (claimed openly or cancelled)" } });
+      if (!plan) {
+        await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: "settled without Quiet delivery (claimed openly or cancelled)" } });
+        continue;
+      }
+      // NOT proof that our deliver landed: claimOpen and a Hidden deliver set settled too.
+      await recordSettlement(ctx, res, key, plan, await proveSettlement(ctx, plan, await executedAt(ctx, asset, bookId), atBlock), atBlock);
       continue;
     }
     const order = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "orderOf", args: [asset, BigInt(bookId), user] })) as bigint;
@@ -126,23 +278,55 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
       res.notes.push(`${user}: Quiet but no valid ERC-6538 meta-address`);
       continue;
     }
-    if (!existing) {
+    if (!plan) {
       const allocation = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "allocationOf", args: [asset, BigInt(bookId), user] })) as bigint;
       const parts = splitAmount(allocation, n).map((raw, i): PlannedPart => {
         const g = computeStealthAddress(meta);
         return { stealth: g.stealthAddress, ephemeralPublicKey: g.ephemeralPublicKey, viewTag: g.viewTag, raw: raw.toString(), releaseAt: execCount + i };
       });
-      const plan: Plan = { asset, bookId, user, allocation: allocation.toString(), parts };
-      await insertJobIfAbsent(ctx, "quiet-plan", key, { status: "planned", payload: plan });
+      plan = (await insertJobIfAbsent(ctx, "quiet-plan", key, { status: "planned", payload: { asset, bookId, user, allocation: allocation.toString(), parts } satisfies Plan })).payload as Plan;
+    }
+    const prior = plan.deliverTx;
+    if (prior?.hash) {
+      // An earlier deliver of ours: while it may still mine, keep its bytes alive instead of signing another. A
+      // second deliver could never pay twice (it reverts AlreadySettled) but it would only waste gas.
+      const r = await ctx.sender.receiptOf(prior.hash);
+      if (r?.status === "success") {
+        res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} mined after block ${atBlock}; proven next pass`);
+        continue;
+      }
+      if (!r) {
+        const confirmed = await ctx.pub.getTransactionCount({ address: ctx.sender.address, blockNumber: atBlock });
+        if (confirmed <= prior.nonce) {
+          if (prior.raw) await ctx.sender.rebroadcast(prior.raw);
+          res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} (nonce ${prior.nonce}) still pending`);
+          continue;
+        }
+      }
+      // It reverted, or another transaction took its nonce: it can never settle anything. Send a new one.
     }
     const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "deliver", [asset, BigInt(bookId), user, QUIET_ROUTE]);
     if (!sim.ok) {
       res.notes.push(`${user} ${asset} book ${bookId}: deliver reverts ${sim.errorName}`);
       continue;
     }
-    const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", [asset, BigInt(bookId), user, QUIET_ROUTE], "deliver-quiet");
-    await setJob(ctx, "quiet-plan", key, { status: "delivered", txHash: r.transactionHash });
-    res.actions++;
+    const onSigned = async (tx: SignedTx) => {
+      await setJob(ctx, "quiet-plan", key, { status: "planned", payload: { deliverTx: { hash: tx.hash, nonce: tx.nonce, raw: tx.raw } } });
+      plan!.deliverTx = { hash: tx.hash, nonce: tx.nonce, raw: tx.raw };
+    };
+    let receipt;
+    try {
+      receipt = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", [asset, BigInt(bookId), user, QUIET_ROUTE], "deliver-quiet", { onSigned });
+    } catch (err) {
+      if (!(err instanceof TxReverted)) throw err; // TxUnconfirmed / transport: the next pass decides from the stored tx
+      res.notes.push(`${user} ${asset} book ${bookId}: deliver ${err.hash} reverted; the next pass checks how it was settled`);
+      continue;
+    }
+    const s = classifySettlement(parseEventLogs({ abi: settlementEvents, logs: receipt.logs }) as unknown as Ev[], ctx.dep.crowd, ctx.dep.stealthClaims!, asset, bookId, user);
+    if (s?.kind === "quiet") {
+      await recordSettlement(ctx, res, key, plan, { ...s, via: "receipt" }, receipt.blockNumber);
+      res.actions++;
+    } else res.notes.push(`${user} ${asset} book ${bookId}: deliver ${receipt.transactionHash} mined without a Quiet Delivered log; the next pass checks the logs`);
   }
 }
 
@@ -205,7 +389,30 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
   type Item = { key: string; plan: Plan; i: number; fromBlock?: string | undefined };
   const due: Item[] = [];
   const doneByPlan = new Map<string, Set<number>>();
+  const blocked = new Set<string>();
+  let atBlock: bigint | undefined;
   for (const { job_key, payload: plan } of plans) {
+    if (!plan.delivered) {
+      // Promoted by an older keeper on "settled and a plan exists", which is no proof: prove it now.
+      atBlock ??= await ctx.pub.getBlockNumber({ cacheTime: 0 });
+      const s = await proveSettlement(ctx, plan, await executedAt(ctx, plan.asset, plan.bookId), atBlock);
+      const anyPart = s.kind === "claimed" || s.kind === "other-route" ? ((await ctx.db.execute(sql`select 1 from keeper_jobs where chain_id = ${ctx.chainId} and kind = 'quiet-part' and job_key like ${`${job_key}:%`} limit 1`)) as unknown as unknown[]).length > 0 : false;
+      if (anyPart) {
+        res.notes.push(`plan ${job_key}: parts were sent but the settlement was not our Quiet deliver (${s.kind}); held for a manual check`);
+        blocked.add(job_key);
+        continue;
+      }
+      if (!(await recordSettlement(ctx, res, job_key, plan, s, atBlock))) {
+        blocked.add(job_key);
+        continue;
+      }
+    }
+    const check = releaseCheck(plan);
+    if (!check.ok) {
+      res.notes.push(`plan ${job_key}: ${check.reason}; nothing released (check by hand)`);
+      blocked.add(job_key);
+      continue;
+    }
     const done = new Set<number>();
     const held = new Set<number>();
     const resendFrom = new Map<number, string | undefined>();
@@ -254,6 +461,7 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
     res.actions++;
   }
   for (const { job_key, payload: plan } of plans) {
+    if (blocked.has(job_key)) continue;
     if (doneByPlan.get(job_key)!.size === plan.parts.length) {
       // scrub the user -> stealth link; keep amounts for accounting
       await setJob(ctx, "quiet-plan", job_key, { status: "done", payload: { parts: plan.parts.map((p) => ({ raw: p.raw, releaseAt: p.releaseAt })) } });
