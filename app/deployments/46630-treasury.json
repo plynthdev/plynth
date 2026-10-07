@@ -1,8 +1,8 @@
 {
   "chainId": 46630,
-  "treasuryFactory": "0x8169dda5181b9B5f5662Df1be7eEDA7114A76D03",
-  "treasuryFactoryBlock": 130529695,
-  "policyGuard": "0x84f11381a28a86cA8818527d67614fecaA39285e",
-  "receipts": "0x468796D48B13C05f5351C34D9804E34DF5150Bf1",
-  "templateRegistry": "0xd3B6eBC58AE1D46ba9001f9f4DbdEC4700E54e1c"
+  "treasuryFactory": "0x1701D1C655c28611FE46FbEe8b49969821CAe2D8",
+  "treasuryFactoryBlock": 130709942,
+  "policyGuard": "0xdB6E5DA49496F657E79A40EF42Bf06E860A0282f",
+  "receipts": "0xC60324a06019DE7997e1CA049AFf748A9F7fbC16",
+  "templateRegistry": "0x8f07696DDd242cFBc8B38461Ce13647a20129eac"
 }
