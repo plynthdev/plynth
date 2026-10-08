@@ -7,7 +7,7 @@ import type { Address, PublicClient } from "viem";
 import { loadConfig } from "@/config";
 import { keeperTestDb } from "@/testing/keeper-helpers";
 import { confirmedBlock, keeperConfirmations } from "./context";
-import { acquireKeeperLock, KeeperLockHeld, keeperLockKey, lockParts, type KeeperLock } from "./lock";
+import { acquireKeeperLock, KeeperLockHeld, keeperLockKey, lockParts, type KeeperLock, type KeeperLockOptions } from "./lock";
 
 const A = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address;
 const DEP = { crowd: A(0xc0), vault: A(0xc2) };
@@ -15,11 +15,51 @@ const randBig = (bits: number) => BigInt(`0x${Array.from(crypto.getRandomValues(
 
 let t: Awaited<ReturnType<typeof keeperTestDb>>;
 const held: KeeperLock[] = [];
-const take = async (key: bigint) => {
-  const l = await acquireKeeperLock(t.url, key);
+const take = async (key: bigint, opts?: KeeperLockOptions) => {
+  const l = await acquireKeeperLock(t.url, key, opts);
   held.push(l);
   return l;
 };
+/** Ends a session the way a crash or a database restart does, and returns once the server has removed it. */
+const kill = async (pid: number) => {
+  const admin = postgres(t.url, { max: 1, onnotice: () => {} });
+  try {
+    expect((await admin`select pg_terminate_backend(${pid}, 10000) as gone`)[0]?.gone).toBe(true);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+};
+/** Holders of a key in THIS test database (advisory locks are per database; other test files share the server). */
+const holders = async (key: bigint) => {
+  const { classid, objid } = lockParts(key);
+  const rows = await t.sql`select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())
+    and classid::bigint = ${classid}::bigint and objid::bigint = ${objid}::bigint and objsubid = 1`;
+  return rows.map((r) => Number(r.pid));
+};
+const alive = async (pid: number) => (await t.sql`select 1 from pg_stat_activity where pid = ${pid}`).length > 0;
+type Sql = ReturnType<typeof postgres>;
+/**
+ * A dedicated-connection factory for the lock whose FIRST client can be made to stop answering (what postgres.js
+ * does after a dropped socket, about 1 in 4 times under load), and whose end() can be delayed (a server that has not
+ * noticed the closed socket yet). Later clients are plain.
+ */
+function flakyConnect(opts: { lingerMs?: number; failOpens?: number } = {}) {
+  let n = 0;
+  let stuck = false;
+  const connect = (url: string): Sql => {
+    n++;
+    if (n > 1 && opts.failOpens && n <= 1 + opts.failOpens) return postgres("postgres://127.0.0.1:1/unreachable", { max: 1, connect_timeout: 1, onnotice: () => {} });
+    const real = postgres(url, { max: 1, idle_timeout: 0, max_lifetime: null, onnotice: () => {}, connection: { application_name: "plynth-keeper" } });
+    if (n > 1) return real;
+    const f = ((strings: TemplateStringsArray, ...v: unknown[]) => (stuck ? new Promise(() => {}) : real(strings, ...(v as never[])))) as unknown as Sql;
+    (f as { end: Sql["end"] }).end = (async (o?: { timeout?: number }) => {
+      if (opts.lingerMs) await Bun.sleep(opts.lingerMs);
+      return real.end(o);
+    }) as Sql["end"];
+    return f;
+  };
+  return { connect, stick: () => (stuck = true), opens: () => n };
+}
 
 beforeAll(async () => {
   t = await keeperTestDb("lock");
@@ -54,7 +94,8 @@ describe("keeper lock key", () => {
     for (const k of [key, -key]) {
       const l = await take(k);
       const { classid, objid } = lockParts(k);
-      const rows = await t.sql`select pid from pg_locks where locktype = 'advisory' and granted and classid::bigint = ${classid}::bigint and objid::bigint = ${objid}::bigint and objsubid = 1`;
+      const rows = await t.sql`select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())
+        and classid::bigint = ${classid}::bigint and objid::bigint = ${objid}::bigint and objsubid = 1`;
       expect(rows.map((r) => Number(r.pid))).toEqual([l.pid()]);
       await l.release();
     }
@@ -82,13 +123,8 @@ describe("single keeper (session advisory lock)", () => {
 
   test("the lock lives in the database session: a crashed keeper's session ends and the lock is free again", async () => {
     const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd1) });
-    const crashed = await take(key);
-    const admin = postgres(t.url, { max: 1, onnotice: () => {} });
-    try {
-      await admin`select pg_terminate_backend(${crashed.pid()})`;
-    } finally {
-      await admin.end({ timeout: 5 });
-    }
+    const crashed = await take(key, { queryTimeoutMs: 2_000 });
+    await kill(crashed.pid());
     let next: KeeperLock | undefined;
     for (let i = 0; i < 50 && !next; i++) {
       next = await acquireKeeperLock(t.url, key).catch(() => undefined);
@@ -97,26 +133,93 @@ describe("single keeper (session advisory lock)", () => {
     expect(next).toBeDefined();
     held.push(next!);
     // the crashed keeper's client reconnects but must not run beside the new holder
-    expect(await crashed.ensure().catch(() => crashed.ensure())).toBe(false);
+    expect(await crashed.ensure()).toBe(false);
+    expect(await holders(key)).toEqual([next!.pid()]);
     await next!.release();
-  });
+  }, 30_000);
 
-  test("a keeper whose session dropped takes the lock again when nobody else holds it", async () => {
-    const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd2) });
-    const k = await take(key);
-    const before = k.pid();
-    const admin = postgres(t.url, { max: 1, onnotice: () => {} });
-    try {
-      await admin`select pg_terminate_backend(${before})`;
-    } finally {
-      await admin.end({ timeout: 5 });
+  test("a keeper whose session dropped takes the lock again when nobody else holds it (killed session not yet removed too)", async () => {
+    for (const wait of [true, false]) {
+      const key = keeperLockKey(46630, { ...DEP, crowd: A(wait ? 0xd2 : 0xd3) });
+      const k = await take(key, { queryTimeoutMs: 2_000 });
+      const before = k.pid();
+      if (wait) await kill(before);
+      else {
+        // no wait for the server to remove the session: postgres.js may reconnect while the old one still holds the lock
+        const admin = postgres(t.url, { max: 1, onnotice: () => {} });
+        await admin`select pg_terminate_backend(${before})`.finally(() => admin.end({ timeout: 5 }));
+      }
+      expect(await k.ensure()).toBe(true); // one call: no retry needed by the caller
+      expect(k.pid()).not.toBe(before);
+      expect(await holders(key)).toEqual([k.pid()]);
+      expect(await acquireKeeperLock(t.url, key).catch((e) => e)).toBeInstanceOf(KeeperLockHeld);
+      expect(await k.ensure()).toBe(true);
+      await k.release();
+      expect(await holders(key)).toEqual([]);
     }
-    const ok = await k.ensure().catch(() => k.ensure()); // the first query after the kill may see the dead socket
-    expect(ok).toBe(true);
+  }, 30_000);
+
+  test("a lock query that never answers (postgres.js after a dropped socket) times out; the next connection re-takes the lock", async () => {
+    const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd4) });
+    const f = flakyConnect();
+    const k = await take(key, { queryTimeoutMs: 300, connect: f.connect });
+    const before = k.pid();
+    await kill(before);
+    f.stick();
+    const t0 = Date.now();
+    expect(await k.ensure()).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(f.opens()).toBe(2);
     expect(k.pid()).not.toBe(before);
-    expect(await acquireKeeperLock(t.url, key).catch((e) => e)).toBeInstanceOf(KeeperLockHeld);
+    expect(await holders(key)).toEqual([k.pid()]);
     await k.release();
-  });
+    expect(await holders(key)).toEqual([]);
+  }, 30_000);
+
+  test("a stuck connection whose session is still alive: ensure drops it, waits for it to leave, never two holders", async () => {
+    const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd5) });
+    const f = flakyConnect({ lingerMs: 700 }); // the old session keeps the lock 700 ms after we give up on it
+    const k = await take(key, { queryTimeoutMs: 300, retakeWaitMs: 10_000, connect: f.connect });
+    const before = k.pid();
+    f.stick();
+    const t0 = Date.now();
+    expect(await k.ensure()).toBe(true); // not false: our own leaving session is not "another keeper"
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(700);
+    expect(k.pid()).not.toBe(before);
+    expect(await alive(before)).toBe(false);
+    expect(await holders(key)).toEqual([k.pid()]);
+    await k.release();
+  }, 30_000);
+
+  test("our old session outlives the re-take wait: ensure throws (the pass is skipped, the keeper keeps running) and recovers later", async () => {
+    const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd6) });
+    const f = flakyConnect({ lingerMs: 2_000 });
+    const k = await take(key, { queryTimeoutMs: 300, retakeWaitMs: 300, connect: f.connect });
+    const before = k.pid();
+    f.stick();
+    expect(await k.ensure().catch((e) => e)).toBeInstanceOf(Error);
+    expect(await holders(key)).toEqual([before]); // still only the old session; nobody runs beside it
+    await Bun.sleep(2_200);
+    expect(await k.ensure()).toBe(true);
+    expect(await holders(key)).toEqual([k.pid()]);
+    await k.release();
+  }, 30_000);
+
+  test("database unreachable while re-taking: ensure throws, then re-takes on a fresh connection once it is back", async () => {
+    const key = keeperLockKey(46630, { ...DEP, crowd: A(0xd7) });
+    const f = flakyConnect({ failOpens: 1 });
+    const k = await take(key, { queryTimeoutMs: 2_000, connect: f.connect });
+    const before = k.pid();
+    await kill(before);
+    f.stick();
+    const err = await k.ensure().catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(KeeperLockHeld);
+    expect(await k.ensure()).toBe(true);
+    expect(f.opens()).toBe(3);
+    expect(await holders(key)).toEqual([k.pid()]);
+    await k.release();
+  }, 30_000);
 });
 
 describe("confirmations", () => {

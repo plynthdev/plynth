@@ -10,10 +10,10 @@ test("public-guard rejects every forbidden thing and passes a clean repo", () =>
   if (r.exitCode !== 0) console.error(out);
   expect(out).toContain("0 failed");
   expect(r.exitCode).toBe(0);
-}, 60_000);
+}, 300_000);
 
 test("public-guard is clean on this repo", () => {
   const r = Bun.spawnSync(["bash", join(HOOKS, "public-guard.sh")], { stdout: "pipe", stderr: "pipe" });
   if (r.exitCode !== 0) console.error(r.stdout.toString());
   expect(r.exitCode).toBe(0);
-}, 120_000);
+}, 300_000); // one pass over every file; minutes on a loaded CI host (this Mac also runs the agents)

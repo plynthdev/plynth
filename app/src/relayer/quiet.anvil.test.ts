@@ -447,8 +447,13 @@ describe("Quiet delivery on anvil", () => {
     expect(rows.map((r) => r.payload.deliverTx!.hash).sort()).toEqual([...hashes].sort()); // the same transactions, nothing new signed
     await drained(); // anvil's automine mines the rebroadcast bytes right after accepting them
     for (const h of hashes) expect((await receipt(h))?.status).toBe("success"); // mined again on the new branch
-
-    res = await runDeliverQuiet(ctx); // mined, not yet confirmed
+    // Mined, not yet confirmed. How many blocks the keeper's own resends made depends on timing (both delivers in one
+    // block or two; book 2's reverted part resent in this pass or the next), so pick confirmations that put the
+    // confirmed block just below the earliest deliver: the tightest case of "mined above the confirmed block".
+    const firstDeliver = (await Promise.all(hashes.map(async (h) => (await receipt(h))!.blockNumber))).reduce((a, b) => (a < b ? a : b));
+    const head = await pub.getBlockNumber({ cacheTime: 0 });
+    const confirmations = Math.max(2, Number(head - firstDeliver) + 1);
+    res = await runDeliverQuiet({ ...ctx, confirmations } as Ctx);
     expect(res.notes.join(" ")).toContain("above the confirmed block");
     expect(await parts()).toHaveLength(0);
 

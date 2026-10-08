@@ -25,19 +25,22 @@ fi
 HEX_KEY='0x[0-9a-fA-F]{64}'
 # 12+ lowercase dictionary-like words (BIP-39 words are 3-8 letters) separated by single spaces.
 MNEMONIC='(^|[^a-z ])([a-z]{3,8} ){11,}[a-z]{3,8}([^a-z ]|$)'
+PRIVATE_PATH='(^|/)(docs|plans|todos)/|RESUME'
 
 while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue              # skip submodule gitlinks and deleted files
   [ "$f" = "$DENYLIST" ] && continue
   case "$f" in contracts/lib/*) continue ;; esac
   base="${f##*/}"
-  lower="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')"
 
-  # 1. Forbidden file types and private-material paths.
-  case "$lower" in
+  # 1. Forbidden file types (any case) and private-material paths (case-sensitive). Shell builtins only: the
+  #    guard runs on every file, and two forks per file made it minutes long on a loaded host.
+  shopt -s nocasematch
+  case "$f" in
     *.pdf|*.mp4|*.mov|*.docx|*.key|*.pem) hit "$f:0" "forbidden file type" ;;
   esac
-  if printf '%s' "$f" | grep -qE '(^|/)(docs|plans|todos)/|RESUME'; then
+  shopt -u nocasematch
+  if [[ "$f" =~ $PRIVATE_PATH ]]; then
     hit "$f:0" "forbidden path (docs/plans/todos/RESUME)"
   fi
 
