@@ -56,6 +56,13 @@ app/deployments/*
 !app/deployments/46630.json
 !app/deployments/46630-treasury.json
 app/data/
+web/node_modules/
+web/.output/
+web/dist/
+web/.env*.local
+web/test-results/
+web/playwright-report/
+.vercel/
 app/.fork/
 app/.fork-*/
 app/.testnet/
