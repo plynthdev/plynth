@@ -211,6 +211,29 @@ export function networkText(chainId: number): NetworkText {
   };
 }
 
+/** The dashboard's "not deployed yet" panel: no deployment file for the configured chain. */
+export function notDeployedText(chainId: number): { title: string; body: string } {
+  if (chainId === 4663)
+    return {
+      title: "Plynth is not live on Robinhood Chain yet",
+      body: "The closed beta contracts are not deployed on Robinhood Chain mainnet (chain id 4663) yet. This page connects to them once they are; until then nothing can be deposited or sent.",
+    };
+  if (chainId === 46630)
+    return {
+      title: "No testnet deployment found",
+      body: "There is no deployment file for Robinhood Chain testnet (chain id 46630): app/deployments/46630.json.",
+    };
+  if (chainId === 31337)
+    return {
+      title: "No fork deployment found",
+      body: "The local fork has no deployment yet: start the fork stack (app/scripts/fork/up.sh) and reload.",
+    };
+  return {
+    title: `Plynth is not deployed on chain ${chainId}`,
+    body: `There is no deployment file for chain id ${chainId}.`,
+  };
+}
+
 // ---------------------------------------------------------------- allocation bar
 
 export type AllocationSegment = {
@@ -327,8 +350,16 @@ export function recordProgress(entry: LogEntry, msg: string, hash?: string): voi
   entry.pending = hash;
 }
 
-/** The Transactions panel: one line per action, its confirmed transactions nested under it, each once. */
-export function renderTxLog(entries: LogEntry[], emptyText: string): string {
+/** The Transactions panel: one line per action, its confirmed transactions nested under it, each once. With an
+ *  explorer URL every confirmed hash links to its transaction page. */
+export function renderTxLog(entries: LogEntry[], emptyText: string, explorerUrl = ""): string {
+  const base = explorerUrl.replace(/\/+$/, "");
+  const hashHtml = (h: string) => {
+    const code = `<code title="${esc(h)}">${shortHash(h)}</code>`;
+    return base && /^0x[0-9a-fA-F]{64}$/.test(h)
+      ? `<a href="${esc(base)}/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${code}</a>`
+      : code;
+  };
   if (!entries.length)
     return `<p class="settings-status mono" id="fork-status" aria-live="polite">${esc(emptyText)}</p>`;
   return `<ol class="fork-log" id="fork-log" aria-live="polite">${entries
@@ -339,7 +370,7 @@ export function renderTxLog(entries: LogEntry[], emptyText: string): string {
         ? `<ul class="fork-txs">${l.txs
             .map(
               (t) =>
-                `<li data-tx-hash="${esc(t.hash)}">${esc(t.msg)} <code title="${esc(t.hash)}">${shortHash(t.hash)}</code></li>`,
+                `<li data-tx-hash="${esc(t.hash)}">${esc(t.msg)} ${hashHtml(t.hash)}</li>`,
             )
             .join("")}</ul>`
         : "";

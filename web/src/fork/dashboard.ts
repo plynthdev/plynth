@@ -14,6 +14,7 @@ import {
   type Statements,
 } from "./api";
 import { forkConfig, MAINNET_CHAIN_ID, TESTNET_CHAIN_ID } from "./config";
+import { deployment, deploymentMissing } from "./deployment";
 import {
   allocationSegments,
   bookTimingText,
@@ -22,6 +23,7 @@ import {
   joinGate,
   mixGate,
   networkText,
+  notDeployedText,
   recordProgress,
   renderTxLog,
   settingsMatch,
@@ -192,7 +194,7 @@ const disabled = () => (S.busy ? "disabled" : "");
 const net = () => networkText(forkConfig().chainId);
 
 function txLog(): string {
-  return renderTxLog(S.log, `${net().short} · NO TRANSACTIONS YET`);
+  return renderTxLog(S.log, `${net().short} · NO TRANSACTIONS YET`, forkConfig().explorerUrl);
 }
 
 /** Settings confirmed on-chain win over an API answer from a node that has not seen that block yet. */
@@ -466,10 +468,17 @@ function html(path: string, kit: DashboardKit): string {
   const dev = devWalletEnabled();
   const cfg = forkConfig();
   const nt = networkText(cfg.chainId);
-  const wallet = acct
+  // No contracts on this chain yet (mainnet before the beta deploy): say so instead of offering to connect.
+  const notDeployed = deploymentMissing();
+  const nd = notDeployedText(cfg.chainId);
+  const wallet = notDeployed
+    ? ""
+    : acct
     ? `<button class="solid-button" data-action="disconnect" title="${acct.address}">${shortHash(acct.address)} · DISCONNECT</button>`
     : `<button class="solid-button" data-action="connect">CONNECT WALLET</button>${dev ? `<button class="solid-button" data-action="connect-dev">DEV WALLET</button>` : ""}`;
-  const body = !acct
+  const body = notDeployed
+    ? `<section class="dash-panel" data-not-deployed><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId} · NOT DEPLOYED YET</p><h2>${esc(nd.title)}</h2><p class="panel-intro">${esc(nd.body)}</p></section>`
+    : !acct
     ? `<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
     : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE ${esc(nt.short)}…</p>` : ""}${tabHtml(tab)}`;
   return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono" data-network-badge="${nt.kind}">${esc(nt.badge)}</span>${
@@ -589,6 +598,10 @@ function setup(ctx: { rerender(): void; signal: AbortSignal }) {
       S.rerender();
     });
     document.body.dataset.forkLoading = "1";
+    // Learn early whether this chain has a deployment at all, so the page can say "not deployed yet" up front.
+    void deployment().catch(() => {
+      if (deploymentMissing()) S.rerender();
+    });
     void restoreConnection().then(() => {
       delete document.body.dataset.forkLoading;
       S.loadedFor = "";

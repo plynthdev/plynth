@@ -1,5 +1,7 @@
-// Local-fork wiring (branch local-fork-testing only). Reads the VITE_* settings once and decides whether the
-// dashboard talks to the local fork stack (app/scripts/fork/up.sh) instead of showing preview data.
+// Chain wiring. Reads the VITE_* settings once and decides whether the dashboard talks to a Plynth stack (the local
+// fork from app/scripts/fork/up.sh, Robinhood Chain testnet, or the mainnet closed beta) instead of showing preview
+// data. Profiles: `bun run dev` (fork, .env.local), `dev:testnet` (.env.testnet.local), `dev:mainnet` and the
+// production build (VITE_CHAIN_ID=4663; see the root README's Frontend section).
 
 export type ForkEnv = {
   VITE_FORK?: string;
@@ -10,11 +12,14 @@ export type ForkEnv = {
   VITE_DEV_WALLET?: string;
   /** Network name shown to the wallet: "Plynth fork" (31337) or "Robinhood Chain Testnet" (46630 profile). */
   VITE_CHAIN_NAME?: string;
+  /** Block explorer base URL; defaults per chain (none for the fork). */
+  VITE_EXPLORER_URL?: string;
   DEV?: boolean;
+  PROD?: boolean;
 };
 
 export type ForkConfig = {
-  /** Live dashboard on; VITE_FORK=0 brings the preview data back. */
+  /** Live dashboard on; VITE_FORK=0 (or a production build without VITE_CHAIN_ID) shows the preview data. */
   enabled: boolean;
   /** Where the browser sends API calls: the dev-server proxy path in `vite dev`, the URL itself otherwise. */
   apiBase: string;
@@ -25,7 +30,9 @@ export type ForkConfig = {
   rpcUrl: string;
   chainId: number;
   chainName: string;
-  /** VITE_DEV_WALLET=1: the anvil dev-key connector may be offered (still only on a localhost page). */
+  /** Block explorer base URL without a trailing slash, "" when there is none (the local fork). */
+  explorerUrl: string;
+  /** VITE_DEV_WALLET=1: the anvil dev-key connector may be offered (still only on a localhost page of 31337). */
   devWalletFlag: boolean;
 };
 
@@ -39,8 +46,22 @@ export const DEFAULTS = {
 
 /** Robinhood Chain testnet (the `vite dev --mode testnet` profile, .env.testnet.local). */
 export const TESTNET_CHAIN_ID = 46630;
-/** Robinhood Chain mainnet (the `vite dev --mode mainnet` profile, .env.mainnet.local): the closed beta, real funds. */
+/** Robinhood Chain mainnet (`vite dev --mode mainnet`, and the production build): the closed beta, real funds. */
 export const MAINNET_CHAIN_ID = 4663;
+
+/** Public defaults per Robinhood Chain network (same values as viem/chains robinhood and robinhoodTestnet). */
+export const CHAINS: Record<number, { name: string; rpcUrl: string; explorerUrl: string }> = {
+  [TESTNET_CHAIN_ID]: {
+    name: "Robinhood Chain Testnet",
+    rpcUrl: "https://rpc.testnet.chain.robinhood.com",
+    explorerUrl: "https://explorer.testnet.chain.robinhood.com",
+  },
+  [MAINNET_CHAIN_ID]: {
+    name: "Robinhood Chain",
+    rpcUrl: "https://rpc.mainnet.chain.robinhood.com",
+    explorerUrl: "https://robinhoodchain.blockscout.com",
+  },
+};
 
 /** Paths the Vite dev server proxies to the API and the relayer (vite.config.ts), so no CORS setup is needed. */
 export const PROXY = {
@@ -52,25 +73,23 @@ export const PROXY = {
 const strip = (u: string) => u.replace(/\/+$/, "");
 
 export function readForkConfig(env: ForkEnv): ForkConfig {
-  const apiUrl = strip(env.VITE_API_URL || DEFAULTS.apiUrl);
-  const relayerUrl = strip(env.VITE_RELAYER_URL || DEFAULTS.relayerUrl);
-  const rpcUrl = strip(env.VITE_RPC_URL || DEFAULTS.rpcUrl);
   const chainId = env.VITE_CHAIN_ID ? Number(env.VITE_CHAIN_ID) : DEFAULTS.chainId;
   if (!Number.isInteger(chainId) || chainId <= 0)
     throw new Error(`VITE_CHAIN_ID must be a positive integer (got ${env.VITE_CHAIN_ID})`);
+  const known = CHAINS[chainId];
+  const apiUrl = strip(env.VITE_API_URL || DEFAULTS.apiUrl);
+  const relayerUrl = strip(env.VITE_RELAYER_URL || DEFAULTS.relayerUrl);
+  const rpcUrl = strip(env.VITE_RPC_URL || known?.rpcUrl || DEFAULTS.rpcUrl);
   return {
-    enabled: env.VITE_FORK !== "0",
+    // A production build with no chain configured (e.g. a host with no env set) keeps the preview dashboard
+    // instead of pointing visitors at 127.0.0.1.
+    enabled: env.VITE_FORK !== "0" && !(env.PROD && !env.VITE_CHAIN_ID),
     apiUrl,
     relayerUrl,
     rpcUrl,
     chainId,
-    chainName:
-      env.VITE_CHAIN_NAME?.trim() ||
-      (chainId === TESTNET_CHAIN_ID
-        ? "Robinhood Chain Testnet"
-        : chainId === MAINNET_CHAIN_ID
-          ? "Robinhood Chain"
-          : DEFAULTS.chainName),
+    chainName: env.VITE_CHAIN_NAME?.trim() || known?.name || DEFAULTS.chainName,
+    explorerUrl: strip(env.VITE_EXPLORER_URL?.trim() || known?.explorerUrl || ""),
     apiBase: env.DEV ? PROXY.api : apiUrl,
     relayerBase: env.DEV ? PROXY.relayer : relayerUrl,
     devWalletFlag: env.VITE_DEV_WALLET === "1",
@@ -100,5 +119,6 @@ export function forkConfig(): ForkConfig {
   return (cached ??= readForkConfig({
     ...(import.meta.env as unknown as ForkEnv),
     DEV: Boolean(import.meta.env.DEV),
+    PROD: Boolean(import.meta.env.PROD),
   }));
 }

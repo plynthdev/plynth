@@ -1,24 +1,18 @@
-# plynth
+# plynth web
 
-Implement exactly the screenshot and nothing else
-
-This project was built with [Lovable](https://lovable.dev).
-
-## Build with Lovable
-
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/c3e4cacc-c58f-4bb0-a034-89f863b24a44).
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+The Plynth site and dashboard: TanStack Start (React 19, Vite 8, Tailwind 4), wagmi core + viem for the wallet,
+`@plynth/sdk` (`file:../sdk`) for stealth and shielded-vault proofs in the browser. Setup, profiles, environment
+and the Vercel settings are in the root README, section "Frontend (`web/`)".
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+bun install --cwd ../sdk && bun run --cwd ../sdk build   # the SDK is consumed from its dist/
+bun install
+bun run dev          # local fork (31337); dev:testnet / dev:mainnet for the other profiles
+bun run test         # vitest
+bun run build
 ```
+
+The marketing pages keep the imported static-site runtime (`src/site/runtime.js` plus the layered site CSS): enhance
+page-specific behaviour there rather than rewriting it in React, because the app mirrors that interaction model.
+The live dashboard is `src/fork/` (same markup and classes as the preview, data from the API, every action a real
+transaction simulated first).

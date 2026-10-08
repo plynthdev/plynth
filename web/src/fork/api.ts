@@ -1,6 +1,6 @@
-// Thin client for the dashboard API (REST mirror /v1/...), the relayer and the fork's deployment file.
+// Thin client for the dashboard API (REST mirror /v1/...) and the relayer; the deployment file is ./deployment.ts.
 import type { Address, Hex } from "viem";
-import { forkConfig, PROXY } from "./config";
+import { forkConfig } from "./config";
 
 export class ApiError extends Error {
   constructor(
@@ -136,26 +136,4 @@ export type ApiTx = { to: Address; data: Hex; value: string; chainId: number };
 
 // ---------------------------------------------------------------- deployment
 
-export type ForkDeployment = {
-  chainId: number;
-  deployBlock: number | string;
-  savingsVault: Address;
-  crowdBuy: Address;
-  usdg: Address;
-  eligibilityRegistry: Address;
-  erc5564Announcer: Address;
-  erc6538Registry: Address;
-  stealthClaims: Address;
-  shieldedPool: Address;
-  shieldedTrade?: Address;
-  stocks: Record<string, { token: Address }>;
-};
-
-let dep: Promise<ForkDeployment> | undefined;
-/** The fork's deployment file (served by the dev server from app/deployments/fork.json). */
-export function deployment(): Promise<ForkDeployment> {
-  return (dep ??= call<ForkDeployment>("", PROXY.deployment).catch((e) => {
-    dep = undefined;
-    throw e;
-  }));
-}
+export { deployment, type ForkDeployment } from "./deployment";

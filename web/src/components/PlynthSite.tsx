@@ -14,7 +14,7 @@ export default function PlynthSite({ pathname }: { pathname?: string }) {
   const runtime = useRef<SiteRuntime | null>(null);
   const previousPath = useRef(pathname);
   useEffect(() => {
-    // Local-fork branch: the dashboard reads the fork stack's API and signs with a real wallet (VITE_FORK=0: preview).
+    // Live dashboard: reads the configured stack's API and signs with a real wallet (VITE_FORK=0: preview).
     runtime.current = mountSite(forkConfig().enabled ? { dashboard: liveDashboard } : {});
     return () => {
       runtime.current?.dispose();

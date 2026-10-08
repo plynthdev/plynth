@@ -1,5 +1,6 @@
-// wagmi (core) + viem on the custom chain "Plynth fork" (31337): MetaMask through the injected connector, plus the
-// localhost-only dev wallet. The dashboard is plain DOM (src/site/runtime.js), so this uses @wagmi/core actions.
+// wagmi (core) + viem on the configured chain (fork 31337, testnet 46630 or mainnet 4663): MetaMask through the
+// injected connector, plus the localhost-only 31337 dev wallet. The dashboard is plain DOM (src/site/runtime.js),
+// so this uses @wagmi/core actions.
 import {
   connect,
   createConfig,
@@ -24,17 +25,22 @@ import {
   type PublicClient,
   type TransactionReceipt,
 } from "viem";
-import { devWalletAllowed, forkConfig, type ForkConfig } from "./config";
+import { devWalletAllowed, forkConfig, MAINNET_CHAIN_ID, type ForkConfig } from "./config";
 import { devWallet } from "./dev-wallet";
 import { simulateTx, type SimClient } from "./simulate";
 
-export function plynthForkChain(cfg: Pick<ForkConfig, "chainId" | "rpcUrl"> & { chainName?: string }) {
+export function plynthForkChain(
+  cfg: Pick<ForkConfig, "chainId" | "rpcUrl"> & { chainName?: string; explorerUrl?: string },
+) {
   return defineChain({
     id: cfg.chainId,
     name: cfg.chainName ?? "Plynth fork",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
-    testnet: true,
+    ...(cfg.explorerUrl
+      ? { blockExplorers: { default: { name: "Blockscout", url: cfg.explorerUrl } } }
+      : {}),
+    testnet: cfg.chainId !== MAINNET_CHAIN_ID,
   });
 }
 

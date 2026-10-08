@@ -461,3 +461,34 @@ describe("connect panel names the right wallet per network", () => {
   });
 });
 
+describe("mainnet before the beta deploy", () => {
+  afterEach(async () => (await import("./deployment"))._resetDeploymentForTests());
+
+  it("says not deployed yet instead of offering to connect a wallet", async () => {
+    const { _resetDeploymentForTests } = await import("./deployment");
+    _resetDeploymentForTests({ missing: true });
+    m.chainId = 4663;
+    m.devEnabled = false;
+    m.acct = null;
+    document.body.innerHTML = liveDashboard.html("/dashboard/", kit);
+    const panel = document.querySelector("[data-not-deployed]");
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toMatch(/NOT DEPLOYED YET/);
+    expect(panel!.textContent).toMatch(/not live on Robinhood Chain yet/);
+    expect(document.querySelector('[data-action="connect"]')).toBeNull();
+    expect(document.querySelector('[data-action="connect-dev"]')).toBeNull();
+    expect(document.querySelector("[data-network-badge]")!.textContent).toBe("ROBINHOOD CHAIN · 4663");
+  });
+
+  it("offers MetaMask (never the dev wallet) once the deployment exists", () => {
+    m.chainId = 4663;
+    m.devEnabled = false;
+    m.acct = null;
+    document.body.innerHTML = liveDashboard.html("/dashboard/", kit);
+    expect(document.querySelector("[data-not-deployed]")).toBeNull();
+    expect(document.querySelector('[data-action="connect"]')).not.toBeNull();
+    expect(document.querySelector('[data-action="connect-dev"]')).toBeNull();
+    expect(document.body.textContent).toMatch(/closed beta/);
+  });
+});
+
