@@ -1,7 +1,7 @@
 // Backend helper for the local-fork e2e (Node side of the Playwright run). It plays the parts a single browser
 // user cannot: two more savers so a Crowd Buy book reaches MIN_CROWD, and chain time (evm_increaseTime) so the
 // keeper's commit / reveal / execute and the Hidden Vault's pending delay happen in minutes. The keeper, indexer,
-// API and relayer that do the real work are the running fork services (backend/app/scripts/fork/up.sh).
+// API and relayer that do the real work are the running fork services (app/scripts/fork/up.sh).
 // Keys: anvil's PUBLIC dev mnemonic only (test-key). Talks to 127.0.0.1 only.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -57,7 +57,7 @@ export const dep: Dep = JSON.parse(
     resolve(
       process.env.FORK_HELPER_DEPLOYMENT ||
         process.env.FORK_DEPLOYMENT_JSON ||
-        "../backend/app/deployments/fork.json",
+        "../app/deployments/fork.json",
     ),
     "utf8",
   ),
@@ -311,7 +311,7 @@ export async function executeRound(asset: Address, log: (s: string) => void = ()
   );
   log(`beacon committed for window ${next}`);
   await warpTo(next + 60n);
-  // Since the beacon fix (backend todo 39, S5) the keeper can only reveal AT the jittered time, which only it knows:
+  // Since the jittered beacon the keeper can only reveal AT the jittered time, which only it knows:
   // step chain time through the window (staying before windowEnd - GRACE, the reveal deadline) until it reveals.
   const grace = await pub.readContract({ address: dep.jitterBeacon, abi: beaconAbi, functionName: "GRACE" });
   const deadline = next + window - grace - 120n;

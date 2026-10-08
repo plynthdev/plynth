@@ -183,9 +183,9 @@ describe("eligibility statement and round-up message (must match the backend byt
     expect(td.domain).toEqual({ name: "Plynth Eligibility", version: "1", chainId: 31337 });
     expect(td.message.statement).toBe(STATEMENT);
     expect(td.message.version).toBe(1);
-    // Digest computed with backend app/src/eligibility/statement.ts (same wallet/expiry): any drift breaks this.
+    // Digest computed with app/src/eligibility/statement.ts (same wallet/expiry): any drift breaks this.
     expect(hashTypedData(td)).toBe(
-      "0x9b2f320016bf00a2d9a7d674ef1c11983154b05b9fc4193da67eb14f9a22023c",
+      "0x9b2f320016bf00a2d9a7d674ef1c11983154b05b9fc4193da67eb14f9a22023c", // not-a-key (EIP-712 digest)
     );
   });
   it("round-up import message lines", () => {

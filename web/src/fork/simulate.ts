@@ -1,10 +1,10 @@
-// Simulate before sending (todo 41 item 4): every transaction is run as an eth_call first; a revert is decoded
+// Simulate before sending: every transaction is run as an eth_call first; a revert is decoded
 // against the custom errors of the contracts the dashboard talks to and shown as a sentence, and the wallet is
 // never opened (MetaMask would otherwise show "fee unavailable" for a call that can only revert).
 import { decodeErrorResult, parseAbi, type Hex } from "viem";
 
 /** Custom errors of SavingsVault, CrowdBuy, EligibilityRegistry, StealthClaims, ShieldedPool, MockUSDG (OZ ERC20)
- *  and StockRouter, from backend/contracts/out (regenerate when a contract's errors change). */
+ *  and StockRouter, from contracts/out (regenerate when a contract's errors change). */
 export const ERRORS_ABI = parseAbi([
   "error AlreadyAccrued(bytes32 sourceTx, uint32 logIndex)",
   "error BadSignature()",

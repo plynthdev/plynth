@@ -1,7 +1,7 @@
 // The `dev:testnet` profile against the running Robinhood Chain TESTNET (46630) stack, READ-ONLY.
 // A stub wallet (window.ethereum) answers accounts and chain id for a watched address and REFUSES every signature and
-// every send; reads go to the public testnet RPC and the testnet API on this Mac. Nothing is ever broadcast: the test
-// asserts the stub saw no send. Screenshots: docs/reports/frontend-fixes-<date>/testnet/.
+// every send; reads go to the public testnet RPC and the testnet API on this machine. Nothing is ever broadcast: the test
+// asserts the stub saw no send. Screenshots: test-results/screens-<date>/testnet/.
 // Addresses: a fresh random one (nothing attested, nothing held) and, when the testnet database has one, an attested
 // saver found at run time (TESTNET_VIEW_ADDRESS overrides), so no address is written into the repo.
 import { expect, test, type Page } from "@playwright/test";
@@ -19,14 +19,14 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 const DATE = new Date().toISOString().slice(0, 10);
-const OUT = resolve(process.env.TESTNET_REPORT_DIR || `../docs/reports/frontend-fixes-${DATE}/testnet`);
+const OUT = resolve(process.env.TESTNET_REPORT_DIR || `test-results/screens-${DATE}/testnet`);
 mkdirSync(OUT, { recursive: true });
 
 const RPC = "https://rpc.testnet.chain.robinhood.com";
 const CHAIN_ID = 46630;
 const pub = createPublicClient({ transport: http(RPC, { retryCount: 5 }) });
 const dep = JSON.parse(
-  readFileSync(resolve("../backend/app/deployments/46630.json"), "utf8"),
+  readFileSync(resolve("../app/deployments/46630.json"), "utf8"),
 ) as { usdg: Address; savingsVault: Address; eligibilityRegistry: Address; chainId: number };
 const abi = parseAbi([
   "function isEligible(address) view returns (bool)",

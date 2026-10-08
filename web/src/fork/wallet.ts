@@ -115,7 +115,7 @@ let lastReceiptBlock: bigint | undefined;
 
 /**
  * Simulates, then signs and sends an unsigned tx (as the API returns it), then waits for its receipt. A call that
- * would revert never reaches the wallet: it throws a SimulationRevert with the decoded reason (todo 41).
+ * would revert never reaches the wallet: it throws a SimulationRevert with the decoded reason.
  */
 export async function sendAndWait(
   tx: UnsignedTx,

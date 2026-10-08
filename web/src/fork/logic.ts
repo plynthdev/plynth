@@ -1,7 +1,7 @@
 // Pure helpers for the live dashboard (no network, no wallet): unit-tested in logic.test.ts.
 import type { Address } from "viem";
 
-// ---------------------------------------------------------------- eligibility (mirrors backend app/src/eligibility/statement.ts)
+// ---------------------------------------------------------------- eligibility (mirrors app/src/eligibility/statement.ts)
 
 export const STATEMENT_VERSION = 1;
 export const STATEMENT =
@@ -27,7 +27,7 @@ export function selfAttestationTypedData(chainId: number, wallet: Address, expir
 /** The statement may be signed for at most a year; 300 days leaves room for fork time warps. */
 export const ATTESTATION_TTL_S = 300 * 86_400;
 
-// ---------------------------------------------------------------- round-up sources (mirrors backend routes/roundups.ts)
+// ---------------------------------------------------------------- round-up sources (mirrors app/src/api/routes/roundups.ts)
 
 export function roundupMessage(m: {
   action: "import" | "link" | "unlink";
@@ -165,7 +165,7 @@ export function windowText(w: { start: string; end: string; next: string } | nul
   return `Window ${len} · next opens ${at}`;
 }
 
-// ---------------------------------------------------------------- network (todo 41: footer and badges never wrong)
+// ---------------------------------------------------------------- network (footer and badges never wrong)
 
 export type NetworkKind = "fork" | "testnet" | "mainnet" | "other";
 export type NetworkText = {
@@ -240,7 +240,7 @@ export function allocationSegments(a: {
   }));
 }
 
-// ---------------------------------------------------------------- action gates (todo 41 item 4)
+// ---------------------------------------------------------------- action gates
 
 export type Gate = { ok: true } | { ok: false; reason: string };
 
@@ -269,7 +269,7 @@ export function joinGate(eligible: boolean | undefined, pending: bigint | undefi
   return { ok: true };
 }
 
-// ---------------------------------------------------------------- crowd buy timing (todo 41 item 5)
+// ---------------------------------------------------------------- crowd buy timing
 
 export type BookTiming = {
   symbol: string;
@@ -301,7 +301,7 @@ export function bookTimingText(
     : "executes once the first window opens";
 }
 
-// ---------------------------------------------------------------- transactions panel (todo 41 item 6)
+// ---------------------------------------------------------------- transactions panel
 
 export type TxLine = { msg: string; hash: string };
 export type LogEntry = {
@@ -348,7 +348,7 @@ export function renderTxLog(entries: LogEntry[], emptyText: string): string {
     .join("")}</ol>`;
 }
 
-// ---------------------------------------------------------------- settings read-back (todo 41 item 8)
+// ---------------------------------------------------------------- settings read-back
 
 /** True once the API reports the settings that were just saved (a lagging RPC node can serve the old block). */
 export function settingsMatch(

@@ -58,7 +58,7 @@
 .fork-log code {
   font: 12px var(--mono);
 }
-/* Allocation bar (todo 41): one Lovable colour per part instead of nth-child (a lone USDG part was solid ink). */
+/* Allocation bar: one Lovable colour per part instead of nth-child (a lone USDG part was solid ink). */
 .allocation-bar.fork-allocation i {
   display: block;
   height: 100%;

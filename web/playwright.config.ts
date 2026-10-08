@@ -1,9 +1,9 @@
 // Local e2e (branch local-fork-testing only), `bunx playwright test e2e-local`:
-// - project "fork": the dashboard against the running fork stack (backend/app/scripts/fork/up.sh), clicked through
+// - project "fork": the dashboard against the running fork stack (app/scripts/fork/up.sh), clicked through
 //   with the dev wallet. FORK_PORT_OFFSET (default 0) matches the fork's PORT_OFFSET (1000 = beside the testnet stack).
 // - project "testnet": the `dev:testnet` profile against the running Robinhood Chain testnet stack, READ-ONLY: a stub
 //   wallet answers accounts and refuses every signature and send, so nothing is ever broadcast.
-// Dev servers: 8085 (fork) and 8086 (testnet); 8080 belongs to another project on this Mac.
+// Dev servers: 8085 (fork) and 8086 (testnet).
 import { defineConfig } from "@playwright/test";
 
 const off = Number(process.env.FORK_PORT_OFFSET || 0);
@@ -16,7 +16,7 @@ const forkEnv = {
   VITE_DEV_WALLET: "1",
   FORK_DEPLOYMENT_JSON:
     process.env.FORK_DEPLOYMENT_JSON ||
-    (off ? `../backend/app/.fork-${off}/deployments/31337.json` : "../backend/app/deployments/fork.json"),
+    (off ? `../app/.fork-${off}/deployments/31337.json` : "../app/deployments/fork.json"),
 };
 // The fork helper (Node side of the test) reads the same settings under its own names: VITE_* or
 // FORK_DEPLOYMENT_JSON in process.env would leak into the testnet dev server and override .env.testnet.local.

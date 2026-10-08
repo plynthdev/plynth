@@ -1,8 +1,8 @@
 // The whole consumer flow through the dashboard on the local fork, with the dev wallet:
 // connect -> eligibility -> deposit -> settings -> mix -> (round-ups accrue, crowd executes: keeper + helper)
 // -> claim (Open) -> switch to Quiet -> second round -> relayer claim -> Hidden deposit/withdraw -> withdraw all.
-// Every step takes a screenshot into docs/reports/frontend-fixes-<date>/fork/ (FORK_REPORT_DIR overrides).
-// Todo 41 checks ride along: wallet USDG + MAX, coloured allocation bar, dev badge only when connected, Save Mix /
+// Every step takes a screenshot into test-results/screens-<date>/fork/ (FORK_REPORT_DIR overrides).
+// Click-through review checks ride along: wallet USDG + MAX, coloured allocation bar, dev badge only when connected, Save Mix /
 // Join gated until eligibility, a reverting call decoded instead of sent, Crowd Buy explained, every tx listed once,
 // network-aware labels, and the weekly cap showing the saved value right after Save Settings.
 import { expect, test, type Page } from "@playwright/test";
@@ -13,7 +13,7 @@ import { bytesToHex, type Address } from "viem";
 import * as F from "./fork-helper";
 
 const DATE = new Date().toISOString().slice(0, 10);
-const OUT = resolve(process.env.FORK_REPORT_DIR || `../docs/reports/frontend-fixes-${DATE}/fork`);
+const OUT = resolve(process.env.FORK_REPORT_DIR || `test-results/screens-${DATE}/fork`);
 mkdirSync(OUT, { recursive: true });
 
 const USER = F.devAccount(20).address; // the dashboard's dev wallet (src/fork/dev-wallet.ts DEV_WALLET_INDEX)
@@ -68,7 +68,7 @@ async function act(
   const hashes = await entry
     .locator("[data-tx-hash]")
     .evaluateAll((els) => els.map((e) => e.getAttribute("data-tx-hash")!));
-  // Todo 41: every transaction is listed exactly once in the whole panel.
+  // Every transaction is listed exactly once in the whole panel.
   for (const h of hashes) expect(await page.locator(`#fork-log [data-tx-hash="${h}"]`).count()).toBe(1);
   expect(new Set(hashes).size).toBe(hashes.length);
   for (const h of hashes) expect(h).toMatch(/^0x[0-9a-f]{64}$/);
@@ -209,7 +209,7 @@ test("consumer flow on the local fork through the dashboard", async ({ page }) =
     await tab(page, "");
     await page.reload();
     await settled(page);
-    // JOIN is enabled only while something is pending (todo 41); the keeper may have joined in the meantime.
+    // JOIN is enabled only while something is pending; the keeper may have joined in the meantime.
     const byUi =
       joinedBy === "user" && (await page.locator('[data-action="join"]').isEnabled())
         ? (await act(page, "join", { allowError: /Nothing pending/ })).length > 0

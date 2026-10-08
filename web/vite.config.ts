@@ -24,7 +24,7 @@ const MODE =
 const env = loadEnv(MODE, process.cwd(), "");
 const API = (env.VITE_API_URL || "http://127.0.0.1:8789").replace(/\/+$/, "");
 const RELAYER = (env.VITE_RELAYER_URL || "http://127.0.0.1:8791").replace(/\/+$/, "");
-const DEPLOYMENT = resolve(env.FORK_DEPLOYMENT_JSON || "../backend/app/deployments/fork.json");
+const DEPLOYMENT = resolve(env.FORK_DEPLOYMENT_JSON || "../app/deployments/fork.json");
 
 // The proxied request is server-to-server: drop the browser Origin so the API's allow-list does not apply.
 const proxy = (target: string, prefix: string) => ({
@@ -52,7 +52,7 @@ function forkDeployment(): Plugin {
           res.setHeader("content-type", "application/json");
           res.end(
             JSON.stringify({
-              error: `no fork deployment at ${DEPLOYMENT} (run backend/app/scripts/fork/up.sh)`,
+              error: `no fork deployment at ${DEPLOYMENT} (run app/scripts/fork/up.sh)`,
             }),
           );
         }
@@ -70,8 +70,8 @@ export default defineConfig({
   plugins: [forkDeployment()],
   vite: {
     server: {
-      // @plynth/sdk is file:../backend/sdk; its WASM (Noir, Barretenberg) resolves to backend/sdk/node_modules.
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), resolve("../backend/sdk")] },
+      // @plynth/sdk is file:../sdk; its WASM (Noir, Barretenberg) resolves to sdk/node_modules.
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), resolve("../sdk")] },
       proxy: {
         "/__fork/api": proxy(API, "/__fork/api"),
         "/__fork/relayer": proxy(RELAYER, "/__fork/relayer"),

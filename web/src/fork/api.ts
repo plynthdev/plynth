@@ -55,7 +55,7 @@ export const relayer = {
   post: <T>(path: string, json: unknown) => call<T>(forkConfig().relayerBase, path, { json }),
 };
 
-// ---------------------------------------------------------------- response shapes (backend/app/src/api)
+// ---------------------------------------------------------------- response shapes (app/src/api)
 
 export type Holding = {
   token: Address;
@@ -152,7 +152,7 @@ export type ForkDeployment = {
 };
 
 let dep: Promise<ForkDeployment> | undefined;
-/** The fork's deployment file (served by the dev server from backend/app/deployments/fork.json). */
+/** The fork's deployment file (served by the dev server from app/deployments/fork.json). */
 export function deployment(): Promise<ForkDeployment> {
   return (dep ??= call<ForkDeployment>("", PROXY.deployment).catch((e) => {
     dep = undefined;

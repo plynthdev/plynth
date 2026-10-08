@@ -1,4 +1,4 @@
-// Todo 41: the fixes from Kal's click-throughs, one describe per item. The dashboard is rendered with the wallet,
+// The fixes from the dashboard click-through review, one describe per item. The dashboard is rendered with the wallet,
 // API and chain reads mocked (the same flows against a real stack: e2e-local/flows.spec.ts and testnet.spec.ts).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeErrorResult, type Address, type Hex } from "viem";

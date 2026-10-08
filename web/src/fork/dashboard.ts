@@ -158,7 +158,7 @@ async function run(label: string, f: (p: A.Progress) => Promise<unknown>) {
   S.busy = true;
   document.body.dataset.forkBusy = "1";
   S.rerender();
-  // Each confirmed transaction is listed once, nested under its action's line (todo 41: it was listed twice).
+  // Each confirmed transaction is listed once, nested under its action's line (it used to be listed twice).
   const progress: A.Progress = (msg, hash) => {
     recordProgress(entry, msg, hash);
     S.rerender();
@@ -473,7 +473,7 @@ function html(path: string, kit: DashboardKit): string {
     ? `<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
     : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE ${esc(nt.short)}…</p>` : ""}${tabHtml(tab)}`;
   return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono" data-network-badge="${nt.kind}">${esc(nt.badge)}</span>${
-    // Only when the dev wallet is the connected connector (todo 41), never just because it could be offered.
+    // Only when the dev wallet is the connected connector, never just because it could be offered.
     acct?.kind === "dev"
       ? `<span class="preview-badge mono fork-dev-badge" data-dev-wallet-badge>DEV WALLET — LOCAL FORK</span>`
       : ""

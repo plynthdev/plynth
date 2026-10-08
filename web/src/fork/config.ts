@@ -1,5 +1,5 @@
 // Local-fork wiring (branch local-fork-testing only). Reads the VITE_* settings once and decides whether the
-// dashboard talks to the local fork stack (backend/app/scripts/fork/up.sh) instead of showing preview data.
+// dashboard talks to the local fork stack (app/scripts/fork/up.sh) instead of showing preview data.
 
 export type ForkEnv = {
   VITE_FORK?: string;

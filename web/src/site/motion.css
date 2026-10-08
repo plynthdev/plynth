@@ -1,4 +1,4 @@
-/* Motion states sampled from the supplied Nudge Folio recording. */
+/* Motion states sampled from the supplied reference recording. */
 .reveal{transform:none;transition:opacity .55s ease;transition-delay:var(--reveal-delay,0s)}
 .reveal.in{transform:none}
 .stagger span{animation:letter-fade .32s both;animation-delay:calc(var(--i)*.035s)}
