@@ -450,3 +450,14 @@ describe("typed amounts survive a re-render", () => {
     expect((document.getElementById("deposit-amount") as HTMLInputElement).value).toBe("42");
   });
 });
+
+describe("connect panel names the right wallet per network", () => {
+  it("mainnet asks for the beta wallet, testnet and fork never a real one", async () => {
+    const { connectWho } = await import("./dashboard");
+    expect(connectWho(4663, false)).toMatch(/closed beta/);
+    expect(connectWho(4663, false)).not.toMatch(/Never import a real wallet/);
+    expect(connectWho(46630, false)).toMatch(/testnet-only.*Never import a real wallet/);
+    expect(connectWho(31337, true)).toMatch(/anvil dev account, or the dev wallet\. Never import a real wallet/);
+  });
+});
+

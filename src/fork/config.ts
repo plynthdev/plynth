@@ -39,6 +39,8 @@ export const DEFAULTS = {
 
 /** Robinhood Chain testnet (the `vite dev --mode testnet` profile, .env.testnet.local). */
 export const TESTNET_CHAIN_ID = 46630;
+/** Robinhood Chain mainnet (the `vite dev --mode mainnet` profile, .env.mainnet.local): the closed beta, real funds. */
+export const MAINNET_CHAIN_ID = 4663;
 
 /** Paths the Vite dev server proxies to the API and the relayer (vite.config.ts), so no CORS setup is needed. */
 export const PROXY = {
@@ -62,7 +64,13 @@ export function readForkConfig(env: ForkEnv): ForkConfig {
     relayerUrl,
     rpcUrl,
     chainId,
-    chainName: env.VITE_CHAIN_NAME?.trim() || (chainId === TESTNET_CHAIN_ID ? "Robinhood Chain Testnet" : DEFAULTS.chainName),
+    chainName:
+      env.VITE_CHAIN_NAME?.trim() ||
+      (chainId === TESTNET_CHAIN_ID
+        ? "Robinhood Chain Testnet"
+        : chainId === MAINNET_CHAIN_ID
+          ? "Robinhood Chain"
+          : DEFAULTS.chainName),
     apiBase: env.DEV ? PROXY.api : apiUrl,
     relayerBase: env.DEV ? PROXY.relayer : relayerUrl,
     devWalletFlag: env.VITE_DEV_WALLET === "1",
