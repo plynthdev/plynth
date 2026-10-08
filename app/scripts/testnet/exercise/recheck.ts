@@ -5,6 +5,7 @@
 // the report keeps the original failure text next to the re-check. Nothing is sent.
 import { decodeEventLog, getAddress, type Hex } from "viem";
 import { abiOf, revertReason, errorAbi, type Step } from "../../fork/exercise/core";
+import { PORTS } from "../lib";
 import { timers, type TCtx } from "./ctx";
 
 type Recheck = (x: TCtx, s: Step) => Promise<string>;
@@ -29,7 +30,39 @@ const retried = (x: TCtx, s: Step): string => {
   return `no transaction was sent (RPC error on the gas estimate); the retry passed: ${r.tx}`;
 };
 
+/**
+ * A timelock check that found the deploy-time proposal's timelock already over (the exercise started after it)
+ * passes when the same check later passed against a fresh proposal (timelocks area re-run, which re-proposes).
+ */
+export const freshTimelock = (x: Pick<TCtx, "st">, s: Step): string => {
+  if (s.detail !== "got did not revert") throw new Error(`first failure was ${s.detail}`);
+  const later = x.st.steps.find((o) => o !== s && o.status === "pass" && o.step === s.step);
+  if (!later) throw new Error("no passing check against a fresh proposal yet");
+  const fresh = x.st.steps.find((o) => o.status === "pass" && o.step.startsWith("deploy-time timelocks already over"));
+  return `the deploy-time proposal's timelock had already run out when the exercise started; against a fresh proposal${fresh?.tx ? ` (${fresh.tx})` : ""} the same check passed (${later.assertion})`;
+};
+
+/**
+ * The E1 replay's restart step failed in the exercise's own start helper (it launched the keeper without USER, so
+ * its Postgres queries failed, and its backgrounded subshell held the pipe). It passes on re-check when the keeper
+ * service answers healthy on testnet now and the replay's next step, which only a keeper with the fixed code can
+ * make pass (the plan marked skipped, "claimed openly"), passed after it.
+ */
+export const keeperRestarted = (x: Pick<TCtx, "st">, s: Step, health: { ok?: boolean; chainId?: number }): string => {
+  const i = x.st.steps.indexOf(s);
+  const next = x.st.steps.slice(i + 1).find((o) => o.status === "pass" && o.step.startsWith("E1 replay: the keeper's next pass marks the plan skipped"));
+  if (!next) throw new Error("no passing plan-skipped step after it");
+  if (health.ok !== true || health.chainId !== 46630) throw new Error(`keeper not healthy: ${JSON.stringify(health)}`);
+  return `the keeper service (restarted by hand with its full login environment) is healthy on 46630 and its next pass skipped the plan: ${next.assertion}`;
+};
+
 export const RECHECKS: [prefix: string, fn: Recheck][] = [
+  [
+    "E1 replay: the keeper service starts again",
+    async (x, s) => keeperRestarted(x, s, (await (await fetch(`http://127.0.0.1:${PORTS.keeper}/health`)).json()) as { ok?: boolean; chainId?: number }),
+  ],
+  ["Hidden Vault cap cannot apply before", async (x, s) => freshTimelock(x, s)],
+  ["park adapter cannot apply before", async (x, s) => freshTimelock(x, s)],
   [
     "open claims the ",
     async (x, s) => {

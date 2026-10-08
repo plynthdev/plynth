@@ -1,7 +1,7 @@
 // Scheduled steps of the testnet exercise: the ones that wait on real chain time. `exercise.ts --resume` runs
 // each one that is due; a handler returns done, "later" (with the next time to look), or failed.
 import { announcementEvent, decodeAnnouncementLog, generateKeys, KEY_DERIVATION_MESSAGE, keyForHit, scan, signClaim } from "@plynth/sdk/stealth";
-import { depositTx, deriveVaultKeys, destroyProver, initVault, myNotes, proveWithdraw, syncPool, VAULT_KEY_MESSAGE, withdrawRequest, type PoolState } from "@plynth/sdk/vault";
+import { depositTx, deriveVaultKeys, destroyProver, initVault, myNotes, proveTransfer, proveWithdraw, syncPool, transferTx, VAULT_KEY_MESSAGE, withdrawRequest, type PoolState } from "@plynth/sdk/vault";
 import { bytesToHex, getAddress, maxUint256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { abiOf, expect, j } from "../../fork/exercise/core";
@@ -55,6 +55,7 @@ const crowdExecution: Handler = async (x, item) => {
     }
   }
   const from = fromBlock(x);
+  let e1: { asset: Address; bookId: string } | undefined;
   for (const [a0, id] of Object.entries(books)) {
     const a = getAddress(a0);
     await r.external(`keeper executes the ${r.who(a)} book on the testnet v4 pool`, "keeper", async () => {
@@ -66,6 +67,11 @@ const crowdExecution: Handler = async (x, item) => {
       expect(fair * 10_000n >= usdIn * 9_800n, `filled ${fair} USD of tokens for ${usdIn}`);
       return { tx: e!.transactionHash, assertion: `${Number(e!.args.usdgTotal) / 1e6} mUSDG -> ${Number(e!.args.rawOut) / 1e18} ${r.who(a)}, within 2% of the (keeper-refreshed) feed` };
     });
+    // E1 replay (exercise/e1.ts): the Open saver's mSPY allocation stays unclaimed here; the replay turns it into
+    // a failed Quiet deliver followed by this open claim.
+    if (a === x.token("mSPY") && process.env.TESTNET_E1 !== "0") {
+      e1 = { asset: a, bookId: id };
+    } else {
     const alloc = await r.read<bigint>(crowd, C, "allocationOf", [a, BigInt(id), A.open.address]);
     const b0 = await r.read<bigint>(a, erc20Abi, "balanceOf", [A.open.address]);
     await r.send(`open claims the ${r.who(a)} allocation`, A.open, { address: crowd, abi: C, functionName: "claimOpen", args: [a, BigInt(id)] }, async () => {
@@ -78,11 +84,14 @@ const crowdExecution: Handler = async (x, item) => {
       return `${alloc} raw ${r.who(a)} received`;
     });
     await r.reverts(`open cannot claim ${r.who(a)} twice`, A.open, { address: crowd, abi: C, functionName: "claimOpen", args: [a, BigInt(id)] }, "AlreadySettled");
+    }
     await r.external(`keeper delivers quiet's ${r.who(a)} allocation to StealthClaims`, "keeper", async () => {
       const e = await r.until("Delivered quiet", async () => (await events(x, crowd, "CrowdBuy", "Delivered", from, { asset: a, bookId: BigInt(id), user: A.quiet.address }))[0], 600_000, 10_000);
       return { tx: e.transactionHash, assertion: `Delivered(${e.args.raw} raw)` };
     });
   }
+  // Before the Hidden checks (they expect every account of every book settled): due first.
+  if (e1) x.schedule({ id: "e1-replay", handler: "e1-replay", area: "quiet", title: "E1 on testnet: plan -> failed Quiet deliver -> open claim -> the keeper releases no stealth credit", dueAt: now - 1, args: e1 });
   // Hidden deliveries need the Hidden Vault caps (CAP_DELAY after deploy): checked on their own once those apply.
   x.schedule({ id: "hidden-delivery", handler: "hidden-delivery", area: "hidden", title: "keeper delivers the Hidden saver's crowd allocations as shielded notes (after the caps apply)", dueAt: now, args: { books } });
   x.schedule({ id: "quiet-claim", handler: "quiet-claim", area: "quiet", title: "relayer claims the Quiet saver's stealth parts gaslessly to fresh addresses", dueAt: now });
@@ -255,6 +264,27 @@ const hiddenWithdraw: Handler = async (x) => {
       expect(res.status >= 400, `relayer answered ${res.status} ${j(res.body)}`);
       return `HTTP ${res.status}: ${res.body.error}`;
     });
+    // Private transfer: 150 of the 400 change to another vault key holder (the Quiet saver's vault keys), a
+    // 2-in/2-out proof submitted by a third party (the deployer); only the two owners can read the notes.
+    const change = await r.until("the 400 mUSDG change note", async () => (await mine()).find((n) => n.asset === usdg && n.raw === 400n * U), 60_000, 3000).catch(() => undefined);
+    if (!change) {
+      await r.check("hidden finds its 400 mUSDG change note", () => {
+        throw new Error("no 400 mUSDG change note after the withdraw");
+      }, "hidden");
+    } else {
+      const qk = deriveVaultKeys(await r.wallet(A.quiet).signMessage({ message: VAULT_KEY_MESSAGE }));
+      const t = await proveTransfer({ keys: ks, tree: state!.tree, inputs: [change], to: qk, raw: 150n * U });
+      const tx = transferTx(pool, t);
+      await r.sendRaw("private transfer of 150 mUSDG from the Hidden saver to another vault key (submitted by a third party)", A.deployer, { to: tx.to, data: tx.data }, async () => {
+        const got = await r.until("the received note", async () => {
+          state = await syncPool(r.pub, pool, state, { fromBlock: BigInt(x.dep.deployBlock), trade: x.addr("shieldedTrade") });
+          return myNotes(state!, qk).find((n) => !n.spent && n.asset === usdg && n.raw === 150n * U);
+        }, 60_000, 3000);
+        const back = myNotes(state!, ks).find((n) => !n.spent && n.asset === usdg && n.raw === 250n * U);
+        expect(!!back, "no 250 mUSDG change note for the sender");
+        return `the receiver decrypts a 150 mUSDG note (leaf ${got.leafIndex}), the sender a 250 change note; nothing on-chain names either party`;
+      });
+    }
   } finally {
     await destroyProver().catch(() => undefined);
   }

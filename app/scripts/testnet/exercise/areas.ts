@@ -364,9 +364,20 @@ export async function timelocks(x: TCtx) {
     expect(cap > 0n, `no cap proposal for ${a}`);
     eta = Math.max(eta, Number(e));
   }
-  const [, adapterEta] = await r.read<[Address, bigint]>(x.addr("shieldedTrade"), T, "adapterProposal", [x.addr("cashVault")]);
-  eta = Math.max(eta, Number(adapterEta));
+  let [, adapterEta] = await r.read<[Address, bigint]>(x.addr("shieldedTrade"), T, "adapterProposal", [x.addr("cashVault")]);
   const tm = await timers(x);
+  // The deploy proposed every cap and the park adapter. If the exercise starts after their timelock already ran
+  // out (2026-10-07: deployed an hour before), propose the mUSDG cap and the adapter again, unchanged, so the
+  // TooEarly checks below run against a live timelock.
+  const now = await chainNow(x);
+  if (now >= eta - 60) {
+    const [usdgCap] = await r.read<[bigint, bigint]>(pool, P, "capProposal", [x.addr("usdg")]);
+    await r.send(`deploy-time timelocks already over: owner proposes the mUSDG cap again (unchanged, new ${dur(tm.capDelay)} timelock)`, A.deployer, { address: pool, abi: P, functionName: "proposeCap", args: [x.addr("usdg"), usdgCap] });
+    await r.send(`owner proposes the park adapter again (unchanged, new ${dur(tm.adapterDelay)} timelock)`, A.deployer, { address: x.addr("shieldedTrade"), abi: T, functionName: "proposeAdapter", args: [x.addr("parkAdapter")] });
+    eta = Number((await r.read<[bigint, bigint]>(pool, P, "capProposal", [x.addr("usdg")]))[1]);
+    adapterEta = (await r.read<[Address, bigint]>(x.addr("shieldedTrade"), T, "adapterProposal", [x.addr("cashVault")]))[1];
+  }
+  eta = Math.max(eta, Number(adapterEta));
   await r.reverts(`Hidden Vault cap cannot apply before its ${dur(tm.capDelay)} timelock`, A.deployer, { address: pool, abi: P, functionName: "applyCap", args: [x.addr("usdg")] }, "TooEarly");
   await r.reverts(`park adapter cannot apply before its ${dur(tm.adapterDelay)} timelock`, A.deployer, { address: x.addr("shieldedTrade"), abi: T, functionName: "applyAdapter", args: [x.addr("cashVault")] }, "TooEarly");
   await r.reverts("a Hidden Vault deposit is refused while the cap is 0", A.hidden, { address: pool, abi: P, functionName: "deposit", args: [x.addr("usdg"), 1n * U, `0x${"11".repeat(32)}`, `0x${"22".repeat(32)}`, "0x"] }, "CapExceeded");

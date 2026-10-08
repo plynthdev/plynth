@@ -3,7 +3,8 @@
 //
 //   bun run scripts/testnet/exercise.ts                 instant areas now; time-bound steps are scheduled
 //   bun run scripts/testnet/exercise.ts --resume        runs the scheduled steps that are due (re-run any time)
-//   bun run scripts/testnet/exercise.ts --report-only   re-renders the report from the saved state (no sends)
+//   bun run scripts/testnet/exercise.ts --report-only   re-renders the report from the saved state (no sends);
+//                                                       TESTNET_REPORT_DIR + TESTNET_REPORT_NAME copy it out under that name
 //   bun run scripts/testnet/exercise.ts --recheck       re-verifies (read-only) failed steps listed in exercise/recheck.ts
 //   ... --only area,area                                 (first form) only these areas
 //
@@ -15,7 +16,9 @@ import { getAddress } from "viem";
 import { assertTestnet, clients, log, PATHS, readDeployment, readLedger, role, RPC, TESTNET_CHAIN_ID, WALLETS, testers, type Role, type TestnetDeployment } from "./lib";
 import { makeCtx, type TCtx } from "./exercise/ctx";
 import { crowd, eligibility, network, perps, roundups, savings, timelocks, token, treasury } from "./exercise/areas";
-import { HANDLERS } from "./exercise/scheduled";
+import { HANDLERS as BASE_HANDLERS } from "./exercise/scheduled";
+import { close, insurance, issuer, liquidation } from "./exercise/more-areas";
+import { MORE_HANDLERS } from "./exercise/more-scheduled";
 import { applyOutcome, dueItems, emptyState, waiting, type ExerciseState } from "./exercise/state";
 import { exitCode, renderHtml, renderMarkdown, type TestnetMeta } from "./exercise/report";
 import { closeDb } from "./exercise/services";
@@ -31,9 +34,14 @@ export const AREAS: Area[] = [
   ["crowd", crowd],
   ["timelocks", timelocks],
   ["perps", perps],
+  ["liquidation", liquidation],
   ["token", token],
   ["treasury", treasury],
+  ["close", close],
+  ["insurance", insurance],
+  ["issuer", issuer],
 ];
+const HANDLERS = { ...BASE_HANDLERS, ...MORE_HANDLERS };
 
 function loadState(dep: TestnetDeployment): ExerciseState {
   const fresh = emptyState(TESTNET_CHAIN_ID, String(dep.savingsVault));
@@ -77,9 +85,12 @@ async function writeReport(dep: TestnetDeployment, s: ExerciseState): Promise<{ 
   writeFileSync(html, renderHtml(meta, s.steps, s.scheduled, ledger));
   const out = process.env.TESTNET_REPORT_DIR;
   if (out) {
+    // TESTNET_REPORT_NAME (e.g. testnet-run-2026-10-07-final): the copy's name, so a run that crosses midnight
+    // UTC or a final report never overwrites an earlier day's report.
+    const name = process.env.TESTNET_REPORT_NAME || `testnet-run-${date}`;
     mkdirSync(out, { recursive: true });
-    copyFileSync(md, join(out, `testnet-run-${date}.md`));
-    copyFileSync(html, join(out, `testnet-run-${date}.html`));
+    copyFileSync(md, join(out, `${name}.md`));
+    copyFileSync(html, join(out, `${name}.html`));
   }
   for (const a of summarize(s.steps)) log(`${a.area.padEnd(12)} ${a.passed}/${a.steps} passed, ${a.failed + a.known} failed, ${a.txs} txs`);
   const now = Math.floor(Date.now() / 1000);
