@@ -1,0 +1,126 @@
+/* Local-fork controls: built from the preview's own tokens so the dashboard keeps its look. */
+.fork-input {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  padding: 10px;
+  min-width: 170px;
+  font: 14px var(--mono);
+}
+.fork-textarea {
+  width: 100%;
+  min-height: 96px;
+  margin-top: 12px;
+  resize: vertical;
+}
+.fork-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.fork-actions .solid-button,
+.cap-control .solid-button {
+  margin-top: 0;
+}
+.settings-panel > .solid-button {
+  margin-top: 22px;
+}
+.solid-button[disabled] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.fork-dev-badge {
+  background: var(--cyan-light);
+  margin-left: 0;
+}
+.fork-error {
+  background: var(--pink);
+}
+.fork-log {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  font-size: 14px;
+  display: grid;
+  gap: 8px;
+}
+.fork-log li {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+.fork-log li[data-state="error"] {
+  background: var(--pink-light);
+}
+.fork-log li[data-state="ok"] {
+  background: var(--cyan-light);
+}
+.fork-log code {
+  font: 12px var(--mono);
+}
+/* Allocation bar: one Lovable colour per part instead of nth-child (a lone USDG part was solid ink). */
+.allocation-bar.fork-allocation i {
+  display: block;
+  height: 100%;
+  border-right: 1px solid var(--paper);
+}
+.allocation-bar.fork-allocation i:last-child {
+  border-right: 0;
+}
+.allocation-bar.fork-allocation i.alloc-stocks,
+.alloc-dot.alloc-stocks {
+  background: var(--cyan);
+}
+.allocation-bar.fork-allocation i.alloc-park,
+.alloc-dot.alloc-park {
+  background: var(--pink);
+}
+.allocation-bar.fork-allocation i.alloc-usdg,
+.alloc-dot.alloc-usdg {
+  background: var(--gold);
+}
+.fork-allocation-empty {
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--ink);
+  background: repeating-linear-gradient(45deg, transparent 0 8px, var(--grid) 8px 16px);
+}
+.fork-allocation-empty .mono {
+  font-size: 11px;
+  color: var(--muted);
+}
+.alloc-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 1px solid var(--ink);
+  vertical-align: baseline;
+}
+.fork-why {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.fork-howto {
+  margin-top: 8px;
+}
+.fork-txs {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.fork-txs li {
+  border-left: 2px solid var(--cyan);
+  padding-left: 8px;
+}
+.fork-log > li .fork-txs li {
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  background: transparent;
+}

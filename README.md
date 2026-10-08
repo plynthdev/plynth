@@ -1,6 +1,6 @@
 # Plynth Backend
 
-Smart contracts and backend services for Plynth: savings that buy stock tokens, and policy-enforced treasuries, on Robinhood Chain (chain ID `4663`; testnet `46630`).
+Smart contracts, backend services and the web app for Plynth: savings that buy stock tokens, and policy-enforced treasuries, on Robinhood Chain (chain ID `4663`; testnet `46630`).
 
 Consumer: savers top up USDG and add round-ups of their spending; the savings are pooled into Stock Token buys (Crowd Buy) and delivered openly, quietly to a stealth address (Quiet) or as shielded notes (Hidden Vault). Treasury: a board writes an investment policy, desk bots trade only inside it (every operation is checked against the policy on-chain and reverted on a breach), and each period ends with a NAV statement the chain recomputes from the holdings. No contract here has had an external audit.
 
@@ -11,6 +11,7 @@ contracts/   Solidity contracts (Foundry)
 circuits/    Noir circuits for the Hidden Vault and the private treasury sleeve (UltraHonk)
 app/         Bun services: API, indexer, keeper, relayer, eligibility, MCP, treasury services, migrations
 sdk/         @plynth/sdk: stealth delivery, crowd buys, shielded vault, statements, relayer client
+web/         The site and dashboard (TanStack Start), deployed on Vercel; see Frontend (`web/`)
 ```
 
 ### Contracts (`contracts/src`)
@@ -300,6 +301,51 @@ Never commit `.env` files or keys; they are ignored by `.gitignore`. Prefer Foun
 
 The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored (local and fork runs write the same chain ids) except the testnet files `46630.json` and `46630-treasury.json`, written by `TestnetStack.s.sol` and `app/scripts/testnet/setup.ts`.
 
+## Frontend (`web/`)
+
+The site and the dashboard. The dashboard reads the API, runs every transaction as an `eth_call` before the wallet sees it (a revert is decoded and shown, nothing is sent), and builds the Hidden Vault proofs in the browser with `@plynth/sdk`.
+
+| | |
+| --- | --- |
+| Stack | TanStack Start (React 19, Vite 8, Tailwind 4) with Nitro server output, wagmi core + viem, `@plynth/sdk` (`file:../sdk`) |
+| Install | `bun install --cwd sdk && bun run --cwd sdk build`, then `cd web && bun install` (the SDK is consumed from its `dist/`) |
+| Dev | `bun run dev` (fork), `bun run dev:testnet`, `bun run dev:mainnet` |
+| Test | `bun run test` (vitest). `bunx playwright test e2e-local` clicks through a running fork and testnet stack |
+| Build | `bun run build` (Cloudflare output by default, `NITRO_PRESET=vercel` for Vercel) |
+
+| Profile | Command | Env file | Chain | Deployment file |
+| --- | --- | --- | --- | --- |
+| Fork | `bun run dev` | `.env.local` | 31337 | `app/deployments/fork.json` (from `app/scripts/fork/up.sh`) |
+| Testnet | `bun run dev:testnet` | `.env.testnet.local` | 46630 | `app/deployments/46630.json` |
+| Mainnet | `bun run dev:mainnet` | `.env.mainnet.local` | 4663 | `app/deployments/4663.json`, else the raw `4663-beta.json` |
+| Production | `bun run build` | the host's environment | `VITE_CHAIN_ID` | the chain's file, inlined into the bundle at build time |
+
+`vite dev` proxies the API and the relayer under `/__fork/` (no CORS) and reads the deployment file on every request. A build inlines the file instead; when there is none (mainnet before the beta deploy) the build still succeeds and the dashboard says "not deployed yet" instead of offering to connect a wallet. A file for another chain, or a fork-mode run on 4663, is refused. `web/.env.example` lists every variable.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `VITE_CHAIN_ID` | `31337` | 4663 mainnet, 46630 testnet. A production build without it shows the preview dashboard |
+| `VITE_RPC_URL` | per chain | `https://rpc.mainnet.chain.robinhood.com`, `https://rpc.testnet.chain.robinhood.com`, fork `http://127.0.0.1:8545` |
+| `VITE_API_URL` | `http://127.0.0.1:8789` | A build calls it directly: the API's `CORS_ORIGINS` must list the site's origin |
+| `VITE_RELAYER_URL` | `http://127.0.0.1:8791` | Gasless Quiet claims and Hidden withdraws; a build calls it directly |
+| `VITE_DEV_WALLET` | `0` | `1` offers a wallet signing with anvil's public dev key, only on a localhost page of chain 31337. A build for any other chain with `1` fails. Always `0` in production |
+| `VITE_EXPLORER_URL` | per chain | `https://robinhoodchain.blockscout.com` on mainnet; transaction hashes link to it |
+| `VITE_CHAIN_NAME` | per chain | Network name shown to the wallet |
+| `VITE_FORK` | – | `0` shows the preview dashboard |
+| `FORK_DEPLOYMENT_JSON` | per chain | Build and dev server only: path of the deployment file |
+| `NITRO_PRESET` | `cloudflare` | `vercel` on Vercel (`web/vercel.json` sets it in the build command) |
+
+| Vercel setting | Value |
+| --- | --- |
+| Root Directory | `web` |
+| Framework Preset | Other (`web/vercel.json` sets `framework: null`; the build writes `.vercel/output`) |
+| Include files outside the root directory | On: the install builds `../sdk` and the build reads `../app/deployments` |
+| Install and build commands | From `web/vercel.json`: build `sdk/`, `bun install`, then `NITRO_PRESET=vercel bun run build` |
+| Ignored Build Step | `web/vercel.json` `ignoreCommand`: no deploy when nothing under `web/`, `sdk/`, `app/deployments/` or `app/src/chain/` changed |
+| Production environment | `VITE_CHAIN_ID=4663`, `VITE_RPC_URL=https://rpc.mainnet.chain.robinhood.com`, `VITE_API_URL`, `VITE_RELAYER_URL`, `VITE_DEV_WALLET=0`, `NITRO_PRESET=vercel` |
+
+`app/deployments/4663*.json` is gitignored, so a Vercel build shows "not deployed yet" until the mainnet file is committed (as `46630.json` is) or the build is given `FORK_DEPLOYMENT_JSON`.
+
 ## API
 
 Procedures are served by tRPC at `/trpc` and mirrored as REST under `/v1` with the same input names. The API holds no keys: every `tx` route returns an unsigned transaction (`{ to, data, value, chainId }`) for the user's own wallet or the board's Safe.
@@ -338,6 +384,7 @@ bun run e2e treasury          # mainnet fork: factory treasury, desks over a sim
 
 cd ../sdk && bun install && bun run build && bun test
 cd ../circuits && bun install --no-save && bun test && for c in */Nargo.toml; do (cd "${c%/*}" && nargo test); done
+cd ../web && bun install && bun run test && bun run build   # after the sdk build above
 cd .. && .githooks/public-guard.sh   # also the pre-commit hook (`bun install` in app/ sets core.hooksPath)
 ```
 
