@@ -65,3 +65,4 @@ sdk/.test-dist-*/
 # PLAN* above also matches these source files on case-insensitive file systems (macOS).
 !app/src/**/plan.ts
 !app/src/**/plan.test.ts
+.claude/
