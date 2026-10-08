@@ -32,12 +32,19 @@
 // releases nothing. Neither log yet (a lagging node) waits. Before any part goes out, the delivered raw must equal
 // plan.allocation and the parts must sum to it.
 //
+// Confirmations: every proof above (receipts, Delivered / Claimed / Credited logs, settled, the keeper's nonce) is
+// read at head - KEEPER_CONFIRMATIONS (ctx.confirmations). A receipt or log above that block is "not yet": a reorg
+// could still remove it, and a reorged-away Delivered must never release parts, nor a reorged-away Credited stop a
+// part for good. A transaction mined above it stays "sending" / "planned" and is decided by a later pass. Before a
+// plan's last part goes out, its proof is read again at the current confirmed block: if the Delivered is gone, the
+// part waits (and if the allocation is no longer settled at all, the plan goes back to the deliver phase).
+//
 // Privacy note: the plan row links user to stealth addresses; it is scrubbed to amounts once every part is out.
 import { computeStealthAddress } from "@plynth/sdk/stealth";
 import { sql } from "drizzle-orm";
 import { encodeAbiParameters, getAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from "viem";
 import { crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
-import { simulate, type Ctx, type JobResult } from "@/keeper/context";
+import { confirmedBlock, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { TxReverted, type SignedTx } from "@/keeper/sender";
 import { getJob, insertJobIfAbsent, setJob } from "@/keeper/jobstore";
 
@@ -182,16 +189,16 @@ async function logsIn(ctx: Ctx, q: { address: Address; event: any; args: Record<
 }
 
 /**
- * Proof of how (asset, bookId, user) was settled: our stored deliver's receipt first, else the settlement logs
- * from the book's execution up to `atBlock` (the block where settled was read true, so one of them is there; a node
- * without that block errors instead of answering from the past).
+ * Proof of how (asset, bookId, user) was settled: our stored deliver's receipt first (only when it is at or below
+ * `atBlock`, the confirmed block), else the settlement logs from the book's execution up to `atBlock` (the block where
+ * settled was read true, so one of them is there; a node without that block errors instead of answering from the past).
  */
 export async function proveSettlement(ctx: Ctx, plan: Plan, fromBlock: bigint, atBlock: bigint): Promise<Settlement> {
   const { asset, bookId, user } = plan;
   const sc = ctx.dep.stealthClaims!;
   if (plan.deliverTx?.hash) {
     const r = await ctx.sender.receiptOf(plan.deliverTx.hash);
-    if (r && r.status === "success") {
+    if (r && r.status === "success" && r.blockNumber <= atBlock) {
       const s = classifySettlement(parseEventLogs({ abi: settlementEvents, logs: r.logs }) as unknown as Ev[], ctx.dep.crowd, sc, asset, bookId, user);
       if (s?.kind === "quiet") return { ...s, via: "receipt" };
     }
@@ -250,8 +257,9 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
   const n = ctx.splitParts ?? DEFAULT_SPLIT_PARTS;
   const list = await candidates(ctx);
   if (list.length === 0) return;
-  // Every read of this phase is pinned to one block: settled and the settlement logs agree with each other.
-  const atBlock = await ctx.pub.getBlockNumber({ cacheTime: 0 }); // viem caches the head for its polling interval
+  // Every read of this phase is pinned to one confirmed block (head - confirmations): settled and the settlement logs
+  // agree with each other, and nothing a reorg can still remove counts.
+  const { at: atBlock } = await confirmedBlock(ctx);
   for (const { asset, bookId, user } of list) {
     const key = planKey(asset, bookId, user);
     const settled = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "settled", args: [asset, BigInt(bookId), user], blockNumber: atBlock })) as boolean;
@@ -291,6 +299,10 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
       // An earlier deliver of ours: while it may still mine, keep its bytes alive instead of signing another. A
       // second deliver could never pay twice (it reverts AlreadySettled) but it would only waste gas.
       const r = await ctx.sender.receiptOf(prior.hash);
+      if (r && r.blockNumber > atBlock) {
+        res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} mined at block ${r.blockNumber}, above the confirmed block ${atBlock}; proven once confirmed`);
+        continue;
+      }
       if (r?.status === "success") {
         res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} mined after block ${atBlock}; proven next pass`);
         continue;
@@ -320,6 +332,13 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
     } catch (err) {
       if (!(err instanceof TxReverted)) throw err; // TxUnconfirmed / transport: the next pass decides from the stored tx
       res.notes.push(`${user} ${asset} book ${bookId}: deliver ${err.hash} reverted; the next pass checks how it was settled`);
+      continue;
+    }
+    const confirmed = (await confirmedBlock(ctx)).at;
+    if (receipt.blockNumber > confirmed) {
+      // Mined, but a reorg can still remove it: a later pass proves it from the stored transaction once confirmed.
+      res.notes.push(`${user} ${asset} book ${bookId}: deliver ${receipt.transactionHash} mined at block ${receipt.blockNumber}; proven once confirmed`);
+      res.actions++;
       continue;
     }
     const s = classifySettlement(parseEventLogs({ abi: settlementEvents, logs: receipt.logs }) as unknown as Ev[], ctx.dep.crowd, ctx.dep.stealthClaims!, asset, bookId, user);
@@ -361,15 +380,22 @@ type SendingDecision = { kind: "done"; txHash?: string } | { kind: "wait"; note:
 /** What to do with a part whose earlier transaction may be out (see the header). */
 export async function decideSending(ctx: Ctx, asset: Address, stealth: Address, p: SendingPayload, opts: ReleaseOptions = {}): Promise<SendingDecision> {
   const fromBlock = BigInt(p.fromBlock ?? "0");
-  if (await alreadyCredited(ctx, asset, stealth, fromBlock)) return { kind: "done", ...(p.hash ? { txHash: p.hash } : {}) };
+  const { at } = await confirmedBlock(ctx);
+  const conf = ctx.confirmations ?? 0;
+  if (await alreadyCredited(ctx, asset, stealth, fromBlock)) {
+    // Credited at the head; done only once that credit is at or below the confirmed block.
+    if (conf === 0 || (await alreadyCredited(ctx, asset, stealth, fromBlock, at))) return { kind: "done", ...(p.hash ? { txHash: p.hash } : {}) };
+    return { kind: "wait", note: `stealth ${stealth}: credited above the confirmed block ${at}; done once confirmed` };
+  }
   if (p.stage === "signing") return { kind: "resend" }; // marked, but nothing was signed or broadcast
   if (p.stage !== "signed" || !p.hash || p.nonce === undefined) {
     return { kind: "wait", note: `stealth ${stealth}: "sending" without a recorded transaction (older keeper); check StealthClaims by hand, then mark it done or delete the row` };
   }
   const receipt = await ctx.sender.receiptOf(p.hash);
+  // A receipt above the confirmed block can still be reorged away (a success) or turn into a success (a revert).
+  if (receipt && receipt.blockNumber > at) return { kind: "wait", note: `stealth ${stealth}: tx ${p.hash} mined at block ${receipt.blockNumber}, above the confirmed block ${at}` };
   if (receipt) return receipt.status === "success" ? { kind: "done", txHash: p.hash } : { kind: "resend" };
-  const head = await ctx.pub.getBlockNumber();
-  const confirmed = await ctx.pub.getTransactionCount({ address: ctx.sender.address, blockNumber: head });
+  const confirmed = await ctx.pub.getTransactionCount({ address: ctx.sender.address, blockNumber: at });
   if (confirmed <= p.nonce) {
     if (p.raw) await ctx.sender.rebroadcast(p.raw);
     return { kind: "wait", note: `stealth ${stealth}: tx ${p.hash} (nonce ${p.nonce}) still pending`, ...(p.takenSeenAt ? { payload: { takenSeenAt: null } } : {}) };
@@ -378,9 +404,38 @@ export async function decideSending(ctx: Ctx, asset: Address, stealth: Address, 
   const now = (opts.now ?? Date.now)();
   if (!p.takenSeenAt) return { kind: "wait", note: `stealth ${stealth}: nonce ${p.nonce} used, no receipt for ${p.hash} yet; re-checking later`, payload: { takenSeenAt: now } };
   if (now - p.takenSeenAt < (opts.takenGraceMs ?? TAKEN_GRACE_MS)) return { kind: "wait", note: `stealth ${stealth}: nonce ${p.nonce} used, waiting out the grace period` };
-  // Pinned to `head`: a node that does not have that block errors instead of answering from the past.
-  if (await alreadyCredited(ctx, asset, stealth, fromBlock, head)) return { kind: "done", txHash: p.hash };
+  // Pinned to the confirmed block: a node that does not have that block errors instead of answering from the past.
+  if (await alreadyCredited(ctx, asset, stealth, fromBlock, at)) return { kind: "done", txHash: p.hash };
   return { kind: "resend" };
+}
+
+/**
+ * Before a plan's last part goes out: its delivery proof again, at the current confirmed block. True when the same
+ * Quiet delivery (same raw) is still there. A proof already read at this block or later is not read again.
+ */
+export async function recheckProof(ctx: Ctx, res: JobResult, key: string, plan: Plan, atBlock: bigint): Promise<boolean> {
+  const proof = plan.delivered!;
+  if (BigInt(proof.atBlock) >= atBlock) return true;
+  const s = await proveSettlement(ctx, plan, await executedAt(ctx, plan.asset, plan.bookId), atBlock);
+  if (s.kind === "quiet" && s.raw.toString() === proof.raw) {
+    const delivered: DeliveryProof = { raw: proof.raw, tx: s.tx, via: s.via, atBlock: atBlock.toString() };
+    await setJob(ctx, "quiet-plan", key, { status: "delivered", txHash: s.tx, payload: { delivered } });
+    plan.delivered = delivered;
+    return true;
+  }
+  if (s.kind === "unknown") {
+    const settled = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "settled", args: [plan.asset, BigInt(plan.bookId), plan.user], blockNumber: atBlock })) as boolean;
+    if (!settled) {
+      // The deliver that proved it was reorged away: back to the deliver phase, which re-sends or re-proves it.
+      await setJob(ctx, "quiet-plan", key, { status: "planned", payload: { delivered: null } });
+      res.notes.push(`plan ${key}: its Quiet deliver ${proof.tx} is no longer on the chain at the confirmed block ${atBlock} (reorg); last part held, plan back to the deliver phase`);
+      return false;
+    }
+    res.notes.push(`plan ${key}: ${s.note}; last part held`);
+    return false;
+  }
+  res.notes.push(`plan ${key}: the proof changed at block ${atBlock} (${s.kind}${s.kind === "quiet" ? ` raw ${s.raw}` : ""}, was our Quiet deliver ${proof.tx} raw ${proof.raw}); last part held for a manual check`);
+  return false;
 }
 
 export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, opts: ReleaseOptions = {}): Promise<void> {
@@ -394,7 +449,7 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
   for (const { job_key, payload: plan } of plans) {
     if (!plan.delivered) {
       // Promoted by an older keeper on "settled and a plan exists", which is no proof: prove it now.
-      atBlock ??= await ctx.pub.getBlockNumber({ cacheTime: 0 });
+      atBlock ??= (await confirmedBlock(ctx)).at;
       const s = await proveSettlement(ctx, plan, await executedAt(ctx, plan.asset, plan.bookId), atBlock);
       const anyPart = s.kind === "claimed" || s.kind === "other-route" ? ((await ctx.db.execute(sql`select 1 from keeper_jobs where chain_id = ${ctx.chainId} and kind = 'quiet-part' and job_key like ${`${job_key}:%`} limit 1`)) as unknown as unknown[]).length > 0 : false;
       if (anyPart) {
@@ -438,7 +493,16 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
     }
     doneByPlan.set(job_key, done);
     const skip = new Set([...done, ...held]);
-    for (const i of releasable(plan, execCount, skip)) due.push({ key: job_key, plan, i, fromBlock: resendFrom.get(i) });
+    const dueNow = releasable(plan, execCount, skip);
+    if (dueNow.length > 0 && done.size + dueNow.length === plan.parts.length) {
+      // This pass would release the plan's last part: read its proof once more at the current confirmed block.
+      atBlock ??= (await confirmedBlock(ctx)).at;
+      if (!(await recheckProof(ctx, res, job_key, plan, atBlock))) {
+        blocked.add(job_key);
+        continue;
+      }
+    }
+    for (const i of dueNow) due.push({ key: job_key, plan, i, fromBlock: resendFrom.get(i) });
   }
   for (const { key, plan, i, fromBlock: earlier } of shuffle(due)) {
     const p = plan.parts[i]!;
@@ -449,16 +513,22 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
       res.notes.push(`part ${i} of ${plan.asset}: deliverStealth reverts ${sim.errorName}`);
       continue;
     }
-    // Credited logs are searched from the earliest block any attempt for this part was sent from.
-    const fromBlock = earlier ?? (await ctx.pub.getBlockNumber()).toString();
+    // Credited logs are searched from the earliest block any attempt for this part was sent from (the confirmed block:
+    // after a reorg the transaction can mine below the head it was sent at).
+    const fromBlock = earlier ?? (await confirmedBlock(ctx)).at.toString();
     await setJob(ctx, "quiet-part", partKey, { status: "sending", payload: { fromBlock, stage: "signing", hash: null, nonce: null, raw: null, takenSeenAt: null } });
     const onSigned = async (tx: SignedTx) => {
       await setJob(ctx, "quiet-part", partKey, { status: "sending", payload: { stage: "signed", hash: tx.hash, nonce: tx.nonce, raw: tx.raw, takenSeenAt: null } });
     };
     const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliverStealth", args, "deliver-stealth", { onSigned });
+    res.actions++;
+    if (r.blockNumber > (await confirmedBlock(ctx)).at) {
+      // Mined but not confirmed: the row stays "sending" with its stored transaction; a later pass marks it done.
+      res.notes.push(`part ${i} of ${plan.asset}: tx ${r.transactionHash} mined at block ${r.blockNumber}; done once confirmed`);
+      continue;
+    }
     await setJob(ctx, "quiet-part", partKey, { status: "done", txHash: r.transactionHash, payload: { raw: null } });
     doneByPlan.get(key)!.add(i);
-    res.actions++;
   }
   for (const { job_key, payload: plan } of plans) {
     if (blocked.has(job_key)) continue;

@@ -74,7 +74,7 @@ class FakeCrowd {
   mode = new Map<string, number>();
   settledAt = new Map<string, bigint>();
   pooled = 0n;
-  credits: { stealth: string; raw: bigint }[] = [];
+  credits: { stealth: string; raw: bigint; block: bigint }[] = [];
   paidOpen = new Map<string, bigint>();
   logs: Log[] = [];
   /** Blocks the log node serving a by-hash query does not have (a load-balanced RPC behind on one backend). */
@@ -143,10 +143,34 @@ class FakeCrowd {
       const raw = args[2] as bigint;
       if (this.pooled < raw) return { ok: false, logs: [] }; // PoolTooSmall
       this.pooled -= raw;
-      this.credits.push({ stealth: String(args[1]).toLowerCase(), raw });
+      this.credits.push({ stealth: String(args[1]).toLowerCase(), raw, block: this.head });
       return { ok: true, logs: [this.emit(hash, CLAIMS, ev.Credited, { token: ASSET, stealth: args[1], raw }, 0)] };
     }
     throw new Error(`unexpected ${functionName}`);
+  }
+
+  /**
+   * A reorg deeper than the keeper's confirmations removes these mined transactions (a deliver and the credits of
+   * its parts): their receipts and logs vanish and their effects are undone. The nonces stay used (other keeper
+   * transactions took them on the new branch).
+   */
+  reorgOut(hashes: Hash[]) {
+    for (const hash of hashes) {
+      this.receipts.delete(hash);
+      const gone = this.logs.filter((l) => l.transactionHash === hash);
+      this.logs = this.logs.filter((l) => l.transactionHash !== hash);
+      for (const l of gone) {
+        if (l.eventName === "Delivered") {
+          this.settledAt.delete(String(l.args.user).toLowerCase());
+          this.pooled -= l.args.raw as bigint;
+        }
+        if (l.eventName === "Credited") {
+          const i = this.credits.findIndex((c) => c.stealth === String(l.args.stealth).toLowerCase() && c.raw === l.args.raw);
+          this.credits.splice(i, 1);
+          this.pooled += l.args.raw as bigint;
+        }
+      }
+    }
   }
 
   mine() {
@@ -228,7 +252,7 @@ class FakeCrowd {
           case "stealthMetaAddressOf":
             return META;
           case "balanceOf":
-            return this.credits.filter((c) => c.stealth === String(args[1]).toLowerCase()).reduce((a, c) => a + c.raw, 0n);
+            return this.credits.filter((c) => c.stealth === String(args[1]).toLowerCase() && c.block <= (blockNumber ?? this.head)).reduce((a, c) => a + c.raw, 0n);
         }
         throw new Error(`unexpected read ${functionName}`);
       },
@@ -268,6 +292,12 @@ async function pass(): Promise<{ res: JobResult; error?: unknown }> {
   } catch (error) {
     return { res: { job: "deliver-quiet", ok: false, actions: 0, notes: [] }, error };
   }
+}
+
+async function owedTo(user: Address): Promise<bigint> {
+  const p = (await plan(user)).payload as Plan;
+  const done = new Set(((await partRows(user)) as unknown as { job_key: string; status: string }[]).filter((x) => x.status === "done").map((x) => Number(x.job_key.split(":").pop())));
+  return p.parts.reduce((a, part, i) => a + (done.has(i) ? 0n : BigInt(part.raw)), 0n);
 }
 
 /** The pool always covers every part still owed to a proven Quiet delivery. */
@@ -515,5 +545,96 @@ describe("E1: a plan is delivered only on proof of OUR Quiet deliver", () => {
     r = await pass();
     expect(r.res.notes.join(" ")).toMatch(/parts sum \d+ != delivered raw 400/);
     expect(await partRows(USER)).toHaveLength(0);
+  });
+});
+
+describe("confirmations: proofs are read at head - KEEPER_CONFIRMATIONS", () => {
+  test("a deliver mined above the confirmed block is not proof yet: no part goes out until it has the confirmations", async () => {
+    (ctx as { confirmations?: number }).confirmations = 2;
+    let r = await pass();
+    expect(r.error).toBeUndefined();
+    expect(r.res.notes.join(" ")).toContain("proven once confirmed");
+    expect((await plan(VICTIM)).status).toBe("planned");
+    expect((await plan(USER)).status).toBe("planned");
+    expect(await partRows(VICTIM)).toHaveLength(0);
+    expect(chain.pooled).toBe(1000n); // both delivers mined (blocks 101, 102), head 102, confirmed 100
+
+    r = await pass(); // no new block: the stored deliver is still above the confirmed block; nothing new is signed
+    expect(r.res.notes.join(" ")).toContain("above the confirmed block");
+    expect(chain.deliversSigned()).toBe(2);
+    expect(await partRows(VICTIM)).toHaveLength(0);
+
+    chain.head += 2n; // two more blocks: both delivers confirmed
+    r = await pass();
+    expect(r.error).toBeUndefined();
+    expect((await plan(VICTIM)).status).toBe("delivered");
+    expect(((await plan(VICTIM)).payload as Plan).delivered).toMatchObject({ raw: "600", via: "receipt", atBlock: "102" });
+    // part 0 of each went out but is above the confirmed block: still "sending", never sent twice
+    expect((await partRows(VICTIM)).map((x) => x.status)).toEqual(["sending"]);
+    expect(r.res.notes.join(" ")).toContain("done once confirmed");
+    const signed = chain.signed.length;
+    r = await pass();
+    expect(chain.signed.length).toBe(signed);
+    expect((await partRows(VICTIM)).map((x) => x.status)).toEqual(["sending"]);
+    chain.head += 2n;
+    r = await pass();
+    expect((await partRows(VICTIM)).map((x) => x.status)).toEqual(["done"]);
+    expect((await partRows(USER)).map((x) => x.status)).toEqual(["done"]);
+    expect(chain.signed.length).toBe(signed);
+    expect(chain.pooled).toBe(await owed());
+  });
+
+  test("last part: the proof is re-read first; our deliver reorged away -> last part held, plan back to the deliver phase, re-delivered once", async () => {
+    let r = await pass(); // confirmations 0: both delivered, part 0 of each out
+    expect(r.error).toBeUndefined();
+    const victim = (await plan(VICTIM)).payload as Plan;
+    const deliverTx = victim.delivered!.tx;
+    const part0 = chain.logs.find((l) => l.eventName === "Credited" && String(l.args.stealth).toLowerCase() === victim.parts[0]!.stealth.toLowerCase())!;
+    chain.reorgOut([deliverTx, part0.transactionHash]); // deeper than any confirmation count
+    expect(chain.settled(VICTIM)).toBe(false);
+    expect(chain.pooled).toBe(await owedTo(USER)); // only the other user's allocation is left in the pool
+
+    await executed("1"); // both last parts are due
+    r = await pass();
+    expect(r.error).toBeUndefined();
+    expect(r.res.notes.join(" ")).toContain("no longer on the chain");
+    const row = await plan(VICTIM);
+    expect(row.status).toBe("planned");
+    expect((row.payload as Plan).delivered).toBeNull();
+    expect((await partRows(VICTIM)).map((x) => x.status)).toEqual(["done"]); // part 1 was never sent
+    expect((await plan(USER)).status).toBe("done"); // the other user's proof still holds: paid in full from their own allocation
+    expect(chain.credits.filter((c) => c.stealth !== victim.parts[1]!.stealth.toLowerCase()).reduce((a, c) => a + c.raw, 0n)).toBe(400n);
+    expect(chain.pooled).toBe(0n);
+
+    r = await pass(); // the deliver phase sends a new deliver (the old nonce is used), proves it, then releases the last part
+    expect(r.error).toBeUndefined();
+    expect(chain.deliversSigned()).toBe(3);
+    expect((await plan(VICTIM)).status).toBe("done");
+    expect(chain.pooled).toBeGreaterThanOrEqual(0n);
+    for (let i = 0; i < 3; i++) await pass();
+    expect(chain.deliversSigned()).toBe(3);
+  });
+
+  test("last part: the same proof at the newer confirmed block -> released, proof moved to that block", async () => {
+    await pass();
+    await executed("1");
+    chain.head += 5n;
+    const r = await pass();
+    expect(r.error).toBeUndefined();
+    expect((await plan(VICTIM)).status).toBe("done");
+    expect(chain.creditedTotal()).toBe(1000n);
+  });
+
+  test("last part: the user's settlement turned into an open claim on the new branch -> held for a manual check", async () => {
+    await pass();
+    const victim = (await plan(VICTIM)).payload as Plan;
+    chain.reorgOut([victim.delivered!.tx]);
+    chain.pooled += 600n; // keep the books simple: only the proof changes
+    chain.claimOpen(VICTIM);
+    await executed("1");
+    const r = await pass();
+    expect(r.res.notes.join(" ")).toContain("held for a manual check");
+    expect((await plan(VICTIM)).status).toBe("delivered");
+    expect((await partRows(VICTIM)).map((x) => x.status)).toEqual(["done"]);
   });
 });

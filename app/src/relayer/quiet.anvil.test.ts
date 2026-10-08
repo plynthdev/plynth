@@ -379,4 +379,92 @@ describe("Quiet delivery on anvil", () => {
     expect((await read(dep.stealthClaims, scAbi, "pooled", [tsla()])) as bigint).toBe(await owed());
     expect(await owed()).toBeGreaterThan(0n); // the other user's second part waits for the next execution
   }, 180_000);
+
+  test("reorg (anvil snapshot/revert): a Quiet Delivered seen at the head and then reorged away is never proof; the same bytes go out again and parts follow only once confirmed", async () => {
+    const bookId = await fillAndExecute(2_500_000n); // book 3; book 2's second part is due with this execution
+    cli("app/src/bin/indexer.ts", { INDEXER_CHAIN: "local", INDEXER_DEPLOYMENTS_DIR: dir });
+    const account = privateKeyToAccount(ANVIL_KEY_1);
+    const ctx = {
+      chainId: 31337,
+      db: t.db,
+      pub,
+      account: account.address,
+      sender: new Sender(viemSenderIO(pub, account, 31337), account.address, { pollMs: 50, waitMs: 5_000 }),
+      dep: keeperDeployment(dep as any, 31337),
+      lookahead: 2,
+      splitParts: 2,
+      confirmations: 2,
+      log: () => {},
+    } as unknown as Ctx;
+    const book = (k: string) => k.startsWith(`${tsla().toLowerCase()}:${bookId}:`);
+    const plans = async () => (await t.sql`select job_key, status, payload from keeper_jobs where kind = 'quiet-plan'`).filter((r) => book(String(r.job_key))) as unknown as { job_key: string; status: string; payload: Plan }[];
+    const parts = async () => (await t.sql`select job_key, status from keeper_jobs where kind = 'quiet-part' and job_key like ${`${tsla().toLowerCase()}:${bookId}:%`}`) as unknown as { status: string }[];
+    const receipt = (hash: Hex) => pub.getTransactionReceipt({ hash }).catch(() => null);
+    const mine = async (n: number) => {
+      for (let i = 0; i < n; i++) await rpc("evm_mine");
+    };
+    const quietUsers = users.slice(0, 2);
+    /** Waits until anvil has mined every keeper transaction it accepted (automine runs just after the send returns). */
+    const drained = async () => {
+      for (let i = 0; i < 200; i++) {
+        const [latest, pending] = await Promise.all([pub.getTransactionCount({ address: account.address }), pub.getTransactionCount({ address: account.address, blockTag: "pending" })]);
+        if (latest === pending) return;
+        await Bun.sleep(50);
+      }
+      throw new Error("anvil did not mine the keeper's pending transactions");
+    };
+    const owedAll = async () => {
+      const rows = (await t.sql`select job_key, payload from keeper_jobs where kind = 'quiet-plan' and status = 'delivered'`) as unknown as { job_key: string; payload: Plan }[];
+      let sum = 0n;
+      for (const p of rows) {
+        const done = new Set((await t.sql`select job_key from keeper_jobs where kind = 'quiet-part' and status = 'done' and job_key like ${`${p.job_key}:%`}`).map((r) => Number(String(r.job_key).split(":").pop())));
+        p.payload.parts.forEach((part, i) => (sum += done.has(i) ? 0n : BigInt(part.raw)));
+      }
+      return sum;
+    };
+
+    const snap = await rpc("evm_snapshot");
+    let res = await runDeliverQuiet(ctx);
+    // both delivers mined at the head and settled the users: seen, but not proof yet
+    for (const u of quietUsers) expect(await read(dep.crowdBuy, crowdAbi, "settled", [tsla(), bookId, u])).toBe(true);
+    expect(res.notes.join(" ")).toContain("proven once confirmed");
+    let rows = await plans();
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r.status).toBe("planned");
+    const hashes = rows.map((r) => r.payload.deliverTx!.hash);
+    for (const h of hashes) expect((await receipt(h))?.status).toBe("success");
+    expect(await parts()).toHaveLength(0); // nothing released for book 3
+
+    await rpc("evm_revert", [snap]); // the reorg: both delivers (and the part sent with them) are gone
+    for (const h of hashes) expect(await receipt(h)).toBeNull();
+    for (const u of quietUsers) expect(await read(dep.crowdBuy, crowdAbi, "settled", [tsla(), bookId, u])).toBe(false);
+    await mine(3); // the new branch moves on without them
+
+    res = await runDeliverQuiet(ctx); // not settled at the confirmed block, nonce free: the stored bytes are rebroadcast
+    expect(res.notes.join(" ")).toContain("still pending");
+    rows = await plans();
+    for (const r of rows) expect(r.status).toBe("planned");
+    expect(rows.map((r) => r.payload.deliverTx!.hash).sort()).toEqual([...hashes].sort()); // the same transactions, nothing new signed
+    await drained(); // anvil's automine mines the rebroadcast bytes right after accepting them
+    for (const h of hashes) expect((await receipt(h))?.status).toBe("success"); // mined again on the new branch
+
+    res = await runDeliverQuiet(ctx); // mined, not yet confirmed
+    expect(res.notes.join(" ")).toContain("above the confirmed block");
+    expect(await parts()).toHaveLength(0);
+
+    await mine(2);
+    res = await runDeliverQuiet(ctx); // confirmed: proven from the receipt; part 0 of each goes out (not yet confirmed)
+    rows = await plans();
+    for (const r of rows) {
+      expect(r.status).toBe("delivered");
+      expect(r.payload.delivered).toMatchObject({ via: "receipt" });
+      expect(hashes).toContain(r.payload.delivered!.tx);
+    }
+    expect((await parts()).map((p) => p.status)).toEqual(["sending", "sending"]);
+    await mine(2);
+    res = await runDeliverQuiet(ctx);
+    expect((await parts()).map((p) => p.status)).toEqual(["done", "done"]);
+    expect((await read(dep.stealthClaims, scAbi, "pooled", [tsla()])) as bigint).toBe(await owedAll());
+    expect(await owedAll()).toBeGreaterThan(0n); // book 3's second parts wait for the next execution
+  }, 240_000);
 });

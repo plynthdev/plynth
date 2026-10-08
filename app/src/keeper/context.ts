@@ -131,12 +131,32 @@ export type Ctx = {
   lookahead: number;
   /** Quiet delivery: parts per allocation, 1-3 (default 2), released across consecutive executions. */
   splitParts?: number;
+  /**
+   * Quiet delivery proofs (receipts, Delivered / Claimed / Credited logs, the nonce) are read at head minus this many
+   * blocks, so a transaction a reorg can still remove is never proof (KEEPER_CONFIRMATIONS; absent = 0).
+   */
+  confirmations?: number;
   /** Plaid client (PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV); absent = Plaid sources are not synced. */
   plaid?: PlaidLike | undefined;
   /** refresh-mock-feeds settings and its mainnet feed reader; absent = the job does nothing. */
   mockFeeds?: MockFeedOptions | undefined;
   log: (m: string) => void;
 };
+
+/** KEEPER_CONFIRMATIONS when set, else 2 on testnet/mainnet and 0 on a local anvil (which never reorgs by itself). */
+export function keeperConfirmations(chain: "local" | "testnet" | "mainnet", configured: number | undefined): number {
+  return configured ?? (chain === "local" ? 0 : 2);
+}
+
+/**
+ * The newest block a proof may rest on: head - confirmations (never below 0). The head is read uncached (viem
+ * caches it for its polling interval).
+ */
+export async function confirmedBlock(ctx: Pick<Ctx, "pub" | "confirmations">): Promise<{ head: bigint; at: bigint }> {
+  const head = await ctx.pub.getBlockNumber({ cacheTime: 0 });
+  const c = BigInt(ctx.confirmations ?? 0);
+  return { head, at: head > c ? head - c : 0n };
+}
 
 /** Chain time, not wall time: the latest block's timestamp (anvil tests warp it). */
 export async function chainNow(ctx: Pick<Ctx, "pub">): Promise<bigint> {

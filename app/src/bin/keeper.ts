@@ -8,15 +8,21 @@
 // deliver-hidden; default all), KEEPER_MOCK_FEED_* (refresh-mock-feeds on testnet kit deployments; mainnet feeds are
 // read over RHC_MAINNET_RPC_URL),
 // PLAID_CLIENT_ID + PLAID_SECRET (+ PLAID_ENV=sandbox|production, default sandbox) to sync linked Plaid items,
-// SPLIT_PARTS (Quiet delivery parts per allocation, 1-3, default 2).
+// SPLIT_PARTS (Quiet delivery parts per allocation, 1-3, default 2), KEEPER_CONFIRMATIONS (Quiet delivery proofs are read
+// at head minus this many blocks; default 2 on testnet/mainnet, 0 on local).
 // The signing key is never logged.
+//
+// One keeper per database + chain + deployment: a Postgres session advisory lock is taken before any job runs (in
+// --once mode too). A second keeper exits with status 75 and a clear error. The lock goes with the process (exit or
+// crash closes its session); if the session is lost while running, the keeper takes it again or exits.
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { connect, databaseUrl } from "@/db";
 import { readDeployment } from "@/indexer";
 import { createPublicClient, defineChain, http, type PublicClient } from "viem";
-import { keeperDeployment, type Ctx } from "@/keeper/context";
+import { keeperConfirmations, keeperDeployment, type Ctx } from "@/keeper/context";
 import { healthApp } from "@/keeper/health";
 import { JOBS, runPass, type PassReport } from "@/keeper/keeper";
+import { acquireKeeperLock, KeeperLockHeld, keeperLockKey, type KeeperLock } from "@/keeper/lock";
 import { mainnetFeedReader } from "@/keeper/jobs/mock-feeds";
 import { parseSecretKey, Sealer } from "@/keeper/seal";
 import { Sender, viemSenderIO } from "@/keeper/sender";
@@ -37,8 +43,17 @@ const chain = defineChain({ id: chainId, name: `chain-${chainId}`, nativeCurrenc
 const pub = createPublicClient({ chain, transport: http(rpcUrl, { retryCount: 0, timeout: 30_000 }), pollingInterval: chainName === "local" ? 50 : 1_000 }) as PublicClient;
 
 const dep = keeperDeployment(readDeployment(config.KEEPER_DEPLOYMENTS_DIR, chainId), chainId);
-const { db, close } = connect(databaseUrl());
 const log = (m: string) => console.log(`[keeper ${chainId}] ${m}`);
+let lock: KeeperLock;
+try {
+  lock = await acquireKeeperLock(databaseUrl(), keeperLockKey(chainId, dep));
+} catch (err) {
+  if (!(err instanceof KeeperLockHeld)) throw err;
+  console.error(`[keeper ${chainId}] refusing to start: ${err.message}`);
+  process.exit(75); // EX_TEMPFAIL
+}
+log(`holding the keeper lock ${lock.key} (database session ${lock.pid()})`);
+const { db, close } = connect(databaseUrl());
 const sender = new Sender(viemSenderIO(pub, account, chainId), account.address, { pollMs: chainName === "local" ? 50 : 1_000 });
 // Read only (refresh-mock-feeds): the real Chainlink feeds the testnet mock feeds track. Created lazily by viem,
 // so a keeper on a non-mock deployment never contacts mainnet.
@@ -50,7 +65,8 @@ const mockFeeds = {
   realStaleS: config.KEEPER_MOCK_FEED_REAL_STALE_S,
   alignBps: config.KEEPER_MOCK_FEED_ALIGN_BPS,
 };
-const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };
+const confirmations = keeperConfirmations(chainName, config.KEEPER_CONFIRMATIONS);
+const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, confirmations, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };
 
 const only = config.KEEPER_JOBS;
 for (const j of only) if (!JOBS.some(([n]) => n === j)) throw new Error(`unknown job in KEEPER_JOBS: ${j}`);
@@ -68,17 +84,32 @@ if (once) {
     ok = r.ok;
   } finally {
     await close();
+    await lock.release();
   }
   process.exit(ok ? 0 : 1);
+}
+
+/** Before every pass: still the only keeper? A lost session is re-taken when free; taken by another keeper -> exit. */
+async function stillLocked(): Promise<boolean> {
+  try {
+    if (await lock.ensure()) return true;
+  } catch (err) {
+    log(`keeper lock check failed (database unreachable?), skipping this pass: ${String((err as Error)?.message ?? err).split("\n")[0]}`);
+    return false;
+  }
+  console.error(`[keeper ${chainId}] lost the keeper lock ${lock.key} and another keeper holds it now: exiting`);
+  process.exit(75);
 }
 
 const intervalMs = config.KEEPER_INTERVAL_MS;
 let last: PassReport | undefined;
 const port = config.KEEPER_PORT;
 const server = Bun.serve({ port, fetch: healthApp({ chainId, keeper: account.address, last: () => last, head: () => pub.getBlockNumber(), intervalMs }).fetch });
-log(`keeper ${account.address}, ${dep.stocks.length} assets, every ${intervalMs} ms, /health on :${server.port} ${JSON.stringify(safeConfigSummary(config, keysFor("KEEPER_", "SPLIT_", "PLAID_", "LOG_")))}`);
+log(`keeper ${account.address}, ${dep.stocks.length} assets, every ${intervalMs} ms, ${confirmations} confirmations, /health on :${server.port} ${JSON.stringify(safeConfigSummary(config, keysFor("KEEPER_", "SPLIT_", "PLAID_", "LOG_")))}`);
 for (;;) {
-  last = await runPass(ctx, jobs);
-  print(last);
+  if (await stillLocked()) {
+    last = await runPass(ctx, jobs);
+    print(last);
+  }
   await Bun.sleep(intervalMs);
 }

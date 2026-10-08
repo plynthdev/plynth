@@ -177,7 +177,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `INDEXER_WALLETS` | – | Comma-separated linked spending wallets to index from the start. |
 | `INDEXER_STREAMS_FILE` | – | Optional JSON file of extra streams. |
 | **keeper (bin/keeper.ts)** | | |
-| `KEEPER_CHAIN` | `local` |  |
+| `KEEPER_CHAIN` | `local` | One keeper per database, chain and deployment: it takes a Postgres session advisory lock before any job (also with `--once`); a second keeper exits with status 75. The lock is released when the process exits or crashes. |
 | `KEEPER_PORT` | `8788` |  |
 | `KEEPER_INTERVAL_MS` | `30000` |  |
 | `KEEPER_DEPLOYMENTS_DIR` | `app/deployments` |  |
@@ -186,6 +186,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `KEEPER_KEYSTORE` | – |  |
 | `KEEPER_KEYSTORE_PASSWORD_FILE` | – |  |
 | `KEEPER_LOOKAHEAD` | `2` | Beacon windows committed ahead. |
+| `KEEPER_CONFIRMATIONS` | – | Quiet delivery proofs (receipts, Delivered/Claimed/Credited logs, the keeper's nonce) are read this many blocks below the head, so a reorg can never release or stop a part. Default 2 (0 on local). |
 | `KEEPER_JOBS` | – | Comma-separated subset of refresh-mock-feeds,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,deliver-hidden (blank = all). |
 | `SPLIT_PARTS` | `2` | Quiet delivery: parts per allocation (1-3), released across consecutive crowd executions. |
 | `KEEPER_MOCK_FEED_INTERVAL_S` | `600` | `refresh-mock-feeds` (deployment files with `mockFeeds: true`): a mock feed older than this is re-posted from the real mainnet Chainlink feed of the same stock, read over `RHC_MAINNET_RPC_URL`. The keeper must own the feeds. |

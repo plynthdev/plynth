@@ -86,6 +86,7 @@ const schema = z.object({
   KEEPER_KEYSTORE: opt,
   KEEPER_KEYSTORE_PASSWORD_FILE: opt,
   KEEPER_LOOKAHEAD: int(2, 1),
+  KEEPER_CONFIRMATIONS: optInt(),
   KEEPER_JOBS: list,
   SPLIT_PARTS: int(2, 1, 3),
   // keeper job refresh-mock-feeds (testnet kit deployments only)

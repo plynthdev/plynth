@@ -10,6 +10,7 @@ export * from "./jobs/sweep";
 export * from "./jobs/topups";
 export * from "./jobstore";
 export * from "./keeper";
+export * from "./lock";
 export * from "./seal";
 export * from "./sender";
 export * from "./signer";

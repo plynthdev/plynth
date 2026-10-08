@@ -4,7 +4,7 @@
 // it, let another transaction take its nonce, lag behind on reads, or kill the process between signing and
 // broadcasting.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { decodeFunctionData, hexToString, keccak256, toHex, type Address, type Hash, type Hex, type PublicClient, type TransactionReceipt } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, hexToString, keccak256, parseAbiItem, toHex, type Address, type Hash, type Hex, type PublicClient, type TransactionReceipt } from "viem";
 import { crowdAbi } from "@/abi/keeper";
 import type { Ctx, JobResult, KeeperDeployment } from "@/keeper/context";
 import { getJob, setJob } from "@/keeper/jobstore";
@@ -19,13 +19,28 @@ const CLAIMS = A(0xc1);
 const ASSET = A(0x7e);
 const STEALTH = A(0x5e);
 const RAW = 1_000n;
+const USER = A(0x11);
+const DELIVER_TX = `0x${"de".repeat(32)}` as Hash;
+
+/** Our Quiet deliver's receipt logs at block 99: StealthClaims Pooled(asset, raw) right before CrowdBuy Delivered. */
+function deliverLogs() {
+  const log = (address: Address, sig: string, args: Record<string, unknown>, data: Hex, logIndex: number) => {
+    const event = parseAbiItem(sig) as any;
+    return { address, topics: encodeEventTopics({ abi: [event], eventName: event.name, args } as any), data, logIndex, transactionHash: DELIVER_TX, blockNumber: 99n, blockHash: keccak256(toHex("block-99")) };
+  };
+  const raw = encodeAbiParameters([{ type: "uint256" }], [RAW]);
+  return [
+    log(CLAIMS, "event Pooled(address indexed token, uint256 raw)", { token: ASSET }, raw, 0),
+    log(CROWD, "event Delivered(address indexed asset, uint256 indexed bookId, address indexed user, uint256 raw)", { asset: ASSET, bookId: 0n, user: USER }, raw, 1),
+  ];
+}
 
 /** One keeper key's view of a chain. Everything a node can get wrong is a switch. */
 class FakeChain {
   head = 100n;
   nonce = 0; // the keeper's confirmed (latest) nonce
   pool = new Map<number, { raw: Hex; hash: Hash; data: Hex }>();
-  receipts = new Map<Hash, { status: "success" | "reverted"; blockNumber: bigint }>();
+  receipts = new Map<Hash, { status: "success" | "reverted"; blockNumber: bigint; logs?: unknown[] }>([[DELIVER_TX, { status: "success", blockNumber: 99n, logs: deliverLogs() }]]);
   credits: { stealth: Address; raw: bigint; block: bigint }[] = [];
   signed = new Set<Hash>();
   fee = 30n;
@@ -95,7 +110,7 @@ class FakeChain {
       getTransactionReceipt: async ({ hash }) => {
         const r = this.receipts.get(hash);
         if (!r || !this.visible(r.blockNumber)) return null;
-        return { transactionHash: hash, status: r.status, blockNumber: r.blockNumber, logs: [] } as unknown as TransactionReceipt;
+        return { transactionHash: hash, status: r.status, blockNumber: r.blockNumber, logs: r.logs ?? [] } as unknown as TransactionReceipt;
       },
     };
   }
@@ -125,16 +140,18 @@ let t: Awaited<ReturnType<typeof keeperTestDb>>;
 let chain: FakeChain;
 let ctx: Ctx;
 let clock = 1_000_000;
-const PLAN_KEY = `${ASSET.toLowerCase()}:0:${A(0x11).toLowerCase()}`;
+const PLAN_KEY = `${ASSET.toLowerCase()}:0:${USER.toLowerCase()}`;
 const PART_KEY = `${PLAN_KEY}:0`;
 
 const plan: Plan = {
   asset: ASSET,
   bookId: "0",
-  user: A(0x11),
+  user: USER,
   allocation: RAW.toString(),
   parts: [{ stealth: STEALTH, ephemeralPublicKey: `0x02${"ab".repeat(32)}` as Hex, viewTag: "0x7a" as Hex, raw: RAW.toString(), releaseAt: 0 }],
-  delivered: { raw: RAW.toString(), tx: `0x${"de".repeat(32)}` as Hex, via: "receipt", atBlock: "99" }, // our deliver, proven (quiet-proof.test.ts)
+  // our deliver, proven (quiet-proof.test.ts); its receipt is still there when the last part's proof is re-read
+  deliverTx: { hash: DELIVER_TX, nonce: 0, raw: null },
+  delivered: { raw: RAW.toString(), tx: DELIVER_TX, via: "receipt", atBlock: "99" },
 };
 
 const result = (): JobResult => ({ job: "deliver-quiet", ok: true, actions: 0, notes: [] });
