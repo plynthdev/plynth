@@ -29,7 +29,11 @@ export const PATHS = {
   treasury: join(FORK_DIR, "treasury"),
   results: join(FORK_DIR, "results.json"),
   exercised: join(FORK_DIR, "exercised"),
-  /** Written by ForkMainnet.s.sol (forge may only write under app/deployments). */
+  /** Which stack this fork runs: "full" (ForkMainnet.s.sol) or "beta" (MainnetBeta.s.sol in fork mode). */
+  stack: join(FORK_DIR, "stack"),
+  /** Gas of the deploy broadcast (beta stack): what the mainnet cost estimate starts from. */
+  deployGas: join(FORK_DIR, "deploy-gas.json"),
+  /** Written by ForkMainnet.s.sol / MainnetBeta.s.sol (forge may only write under app/deployments). */
   forgeOut: join(APP, "deployments", "fork.json"),
 };
 
@@ -74,6 +78,19 @@ export const ROLE = {
 } as const;
 /** Exercise actors beyond the ten defaults (savers, wallets, LPs, traders): indices 10..39. */
 export const EXTRA_ACCOUNTS = 30;
+/** Deployer of the beta stack when FORK_BETA_DEPLOYER is unset (no exercise actor uses it). */
+export const BETA_DEPLOYER_INDEX = 37;
+
+/**
+ * FORK_STACK=beta: the closed-beta deploy (MainnetBeta.s.sol, fork mode) instead of ForkMainnet.s.sol. Chosen on
+ * the first deploy and remembered in the fork dir, so a restart keeps the same stack.
+ */
+export function forkStack(env: Record<string, string | undefined> = process.env, remembered?: string): "full" | "beta" {
+  const r = remembered ?? (existsSync(PATHS.stack) ? readFileSync(PATHS.stack, "utf8").trim() : undefined);
+  const v = r || env.FORK_STACK || "full";
+  if (v !== "full" && v !== "beta") throw new Error(`FORK_STACK must be full or beta, got ${v}`);
+  return v;
+}
 
 export function devAccount(index: number): HDAccount {
   return mnemonicToAccount(DEV_MNEMONIC, { addressIndex: index });

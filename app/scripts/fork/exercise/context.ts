@@ -78,7 +78,9 @@ export type Ctx = {
 
 export function makeCtx(dep: ForkDeployment, r: Recorder): Ctx {
   const A = Object.fromEntries(Object.entries(ACTORS).map(([n, i]) => [n, devAccount(i)])) as Record<ActorName, HDAccount>;
-  for (const [n, a] of Object.entries(A)) r.names.set(a.address.toLowerCase(), n);
+  // MainnetBeta.s.sol makes OWNER (dev account 0 on the fork) the template and insurance committee too.
+  if (dep.beta) A.committee = A.deployer;
+  for (const [n, a] of Object.entries(A)) if (!r.names.has(a.address.toLowerCase())) r.names.set(a.address.toLowerCase(), n);
   for (const [k, v] of Object.entries(dep)) if (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) && !r.names.has(v.toLowerCase())) r.names.set(v.toLowerCase(), k);
   for (const [sym, s] of Object.entries(dep.stocks)) r.names.set(s.token.toLowerCase(), sym);
   return {

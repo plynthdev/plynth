@@ -59,6 +59,7 @@ app/data/
 app/.fork/
 app/.fork-*/
 app/.testnet/
+app/.mainnet/
 circuits/*/target/
 sdk/.test-dist-*/
 # PLAN* above also matches these source files on case-insensitive file systems (macOS).

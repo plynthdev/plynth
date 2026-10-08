@@ -26,6 +26,7 @@ import { treasury } from "./exercise/treasury";
 import { perps, perpsSetup } from "./exercise/perps";
 import { issuer, token, unbonding } from "./exercise/token";
 import { closeDb } from "./exercise/services";
+import { beta } from "./exercise/beta";
 
 type Area = [name: string, fn: (x: Ctx) => Promise<void>];
 
@@ -44,6 +45,7 @@ const AREAS: Area[] = [
   ["token", token],
   ["issuer", issuer],
   ["unbonding", unbonding],
+  ["beta", beta], // MainnetBeta deploys only (FORK_STACK=beta); moves time by 48h, so last
 ];
 
 async function main(): Promise<number> {

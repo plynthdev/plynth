@@ -4,8 +4,9 @@
 import { createDatabaseIfMissing, databaseUrl, runMigrations, withDatabase } from "@/db";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { clients, DB_NAME, devAccount, devKey, ensureDirs, FORK_CHAIN_ID, FORK_DIR, log, PATHS, PORTS, readForkDeployment, ROLE, ROOT, RPC, secrets, splitDeployment, waitForRpc } from "./lib";
-import { clearAccountCode, fund, giveEth, prefundDeployer } from "./fund";
+import { BETA_DEPLOYER_INDEX, clients, DB_NAME, devAccount, devKey, ensureDirs, FORK_CHAIN_ID, FORK_DIR, forkStack, log, PATHS, PORTS, readForkDeployment, ROLE, ROOT, RPC, secrets, splitDeployment, waitForRpc } from "./lib";
+import { clearAccountCode, fund, giveEth, giveUsdg, prefundDeployer, U, USDG } from "./fund";
+import { encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from "viem";
 import { warmPlynth, warmReal } from "./warm";
 
 async function deployed(): Promise<boolean> {
@@ -22,37 +23,121 @@ async function deployed(): Promise<boolean> {
 
 async function deploy() {
   const { pub } = clients();
+  const stack = forkStack();
   log(`stripped EIP-7702 code from ${await clearAccountCode()} dev accounts`);
   await giveEth();
   await prefundDeployer();
   // Warm first: the public RPC serves the fork block's state for ~10-15 minutes only.
   await warmReal();
   const startBlock = Number(await pub.getBlockNumber());
-  log("forge script ForkMainnet (broadcast to the local fork only)");
+  const script = stack === "beta" ? "MainnetBeta" : "ForkMainnet";
+  const beta = stack === "beta" ? await prepareBetaDeployer() : undefined;
+  log(`forge script ${script} (broadcast to the local fork only)`);
   const env = {
     ...process.env,
     FORK_KEEPER: devAccount(ROLE.keeper).address,
     FORK_ATTESTER: devAccount(ROLE.attester).address,
     FORK_COMMITTEE: devAccount(ROLE.committee).address,
+    ...(beta ? betaEnv(beta.token) : {}),
   };
+  const sender = beta ? beta.deployer : devAccount(ROLE.deployer).address;
   const r = Bun.spawnSync(
-    ["forge", "script", "script/ForkMainnet.s.sol:ForkMainnet", "--rpc-url", RPC, "--broadcast", "--unlocked", "--sender", devAccount(ROLE.deployer).address, "--non-interactive"],
+    // Beta: 2x gas limits, as on mainnet (runbook): forge simulates every call in one block, but a PerpMarket's
+    // setParams accrues the time since its constructor's block when broadcast and ran out of a 1.3x limit.
+    ["forge", "script", `script/${script}.s.sol:${script}`, "--rpc-url", RPC, "--broadcast", "--unlocked", "--sender", sender, "--non-interactive", ...(beta ? ["--gas-estimate-multiplier", "200"] : [])],
     { cwd: join(ROOT, "contracts"), env, stdout: "pipe", stderr: "pipe" },
   );
   const out = r.stdout.toString() + r.stderr.toString();
   writeFileSync(join(PATHS.logs, "deploy.log"), out);
+  if (beta) await clients().rpc("anvil_stopImpersonatingAccount", [beta.deployer]);
   if (r.exitCode !== 0) throw new Error(`forge script failed (exit ${r.exitCode}); see ${join(PATHS.logs, "deploy.log")}\n${out.slice(-3000)}`);
+  if (beta) recordDeployGas(script);
   // Forge's broadcast records for chain 31337 are fork output, not a deployment: keep them out of the repo tree.
-  for (const d of ["broadcast", "cache"]) rmSync(join(ROOT, "contracts", d, "ForkMainnet.s.sol", String(FORK_CHAIN_ID)), { recursive: true, force: true });
+  for (const d of ["broadcast", "cache"]) rmSync(join(ROOT, "contracts", d, `${script}.s.sol`, String(FORK_CHAIN_ID)), { recursive: true, force: true });
   const raw = JSON.parse(readFileSync(PATHS.forgeOut, "utf8"));
   const { main, treasury } = splitDeployment(raw, startBlock + 1);
   writeFileSync(join(PATHS.deployments, `${FORK_CHAIN_ID}.json`), JSON.stringify(main, null, 2));
   writeFileSync(join(PATHS.deployments, `${FORK_CHAIN_ID}-treasury.json`), JSON.stringify(treasury, null, 2));
   writeFileSync(PATHS.forgeOut, JSON.stringify(main, null, 2));
-  log(`deployed: ${Object.keys(main).length} entries in ${PATHS.forgeOut}`);
+  writeFileSync(PATHS.stack, stack);
+  log(`deployed (${stack} stack): ${Object.keys(main).length} entries in ${PATHS.forgeOut}`);
+  if (beta) await betaAfterDeploy(main);
   await warmPlynth();
   await fund();
   rmSync(PATHS.exercised, { force: true });
+}
+
+// ---------------------------------------------------------------- beta stack (MainnetBeta.s.sol, fork mode)
+
+/** Placeholder OWNER and bots on the fork: dev accounts, so the services and the exercise can sign. */
+export function betaEnv(token: boolean): Record<string, string> {
+  return {
+    BETA_FORK: "true",
+    BETA_OUT: "fork.json",
+    DEPLOY_TOKEN: token ? "true" : "false",
+    OWNER: devAccount(ROLE.deployer).address,
+    KEEPER: devAccount(ROLE.keeper).address,
+    ATTESTER: devAccount(ROLE.attester).address,
+    RELAYER: devAccount(ROLE.relayer).address,
+    CONTROLLER: devAccount(ROLE.controller).address,
+    CASH_DESK: devAccount(ROLE.cash).address,
+    EQUITY_DESK: devAccount(ROLE.equity).address,
+  };
+}
+
+/**
+ * The deployer acts by impersonation (no key): FORK_BETA_DEPLOYER (e.g. the real mainnet deployer's public
+ * address, so the fork predicts the real contract addresses) or dev account 37. Token mode needs its USDG.
+ */
+async function prepareBetaDeployer(): Promise<{ deployer: Address; token: boolean }> {
+  const { pub, rpc } = clients();
+  const deployer = getAddress(process.env.FORK_BETA_DEPLOYER || devAccount(BETA_DEPLOYER_INDEX).address);
+  const token = (process.env.FORK_BETA_TOKEN ?? "true") !== "false";
+  const code = await pub.getCode({ address: deployer });
+  if (code && code !== "0x") await rpc("anvil_setCode", [deployer, "0x"]);
+  await rpc("anvil_setBalance", [deployer, "0x56bc75e2d63100000"]); // 100 ETH
+  await rpc("anvil_impersonateAccount", [deployer]);
+  if (token) await giveUsdg(deployer, 60_000n * U);
+  log(`beta deployer ${deployer} (impersonated, nonce ${await pub.getTransactionCount({ address: deployer })}), DEPLOY_TOKEN=${token}`);
+  return { deployer, token };
+}
+
+/** Gas of every broadcast transaction (receipts), for the mainnet cost estimate. */
+function recordDeployGas(script: string) {
+  const f = join(ROOT, "contracts", "broadcast", `${script}.s.sol`, String(FORK_CHAIN_ID), "run-latest.json");
+  const run = JSON.parse(readFileSync(f, "utf8")) as { transactions: { transaction: { input?: Hex; data?: Hex; to?: string | null }; contractName?: string; transactionType?: string }[]; receipts: { gasUsed: Hex; transactionHash: Hex }[] };
+  const txs = run.transactions.map((t, i) => ({
+    contract: t.contractName ?? null,
+    type: t.transactionType ?? null,
+    to: t.transaction.to ?? null,
+    data: (t.transaction.input ?? t.transaction.data ?? "0x") as Hex,
+    gasUsed: String(BigInt(run.receipts[i]!.gasUsed)),
+  }));
+  writeFileSync(PATHS.deployGas, JSON.stringify({ script, txs }, null, 2));
+  log(`deploy gas: ${txs.length} txs, ${txs.reduce((a, t) => a + BigInt(t.gasUsed), 0n)} gas (${PATHS.deployGas})`);
+}
+
+const acceptAbi = parseAbi(["function acceptOwnership()", "function approve(address, uint256) returns (bool)", "function deposit(uint256 assets, address receiver) returns (uint256)"]);
+
+/** OWNER accepts every two-step ownership (what Kal does after the real deploy), then seeds the perp pool's LP side. */
+async function betaAfterDeploy(main: Record<string, unknown>) {
+  const { pub, wallet } = clients();
+  const owner = devAccount(ROLE.deployer);
+  const w = wallet(owner);
+  for (const a of (main.acceptOwnership ?? []) as Address[]) {
+    const rc = await pub.waitForTransactionReceipt({ hash: await w.sendTransaction({ to: getAddress(a), data: encodeFunctionData({ abi: acceptAbi, functionName: "acceptOwnership" }) }) });
+    if (rc.status !== "success") throw new Error(`acceptOwnership on ${a} reverted`);
+  }
+  log(`OWNER accepted ${(main.acceptOwnership as Address[] | undefined)?.length ?? 0} ownerships`);
+  const lp = 1_000_000n * U;
+  const pool = getAddress(main.perpPool as string);
+  for (const data of [encodeFunctionData({ abi: acceptAbi, functionName: "approve", args: [pool, lp] })]) {
+    const rc = await pub.waitForTransactionReceipt({ hash: await w.sendTransaction({ to: USDG, data }) });
+    if (rc.status !== "success") throw new Error("USDG approve for the perp pool reverted");
+  }
+  const rc = await pub.waitForTransactionReceipt({ hash: await w.sendTransaction({ to: pool, data: encodeFunctionData({ abi: acceptAbi, functionName: "deposit", args: [lp, owner.address] }) }) });
+  if (rc.status !== "success") throw new Error("perp pool LP seed reverted");
+  log("OWNER seeded the perp pool with 1,000,000 USDG");
 }
 
 function writeEnv(name: string, vars: Record<string, string | number | undefined>) {
@@ -126,5 +211,7 @@ async function main() {
   log(`env files in ${PATHS.env} (fork dir ${FORK_DIR})`);
 }
 
-await main();
-process.exit(0);
+if (import.meta.main) {
+  await main();
+  process.exit(0);
+}

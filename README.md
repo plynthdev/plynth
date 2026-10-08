@@ -369,6 +369,32 @@ bash scripts/fork/down.sh            # stop (state kept in app/.fork/state.json)
 pools and steakUSDG (Valuer staleness 7 days on the fork only). The fork runs as chain id 31337 so nothing signed
 on it can be replayed on mainnet. A caching proxy (`scripts/fork/rpc-cache.ts`) sits between anvil and the public
 RPC, which keeps only recent state. RPC on 127.0.0.1:8545, API on :8789; import only anvil's public dev accounts.
+`FORK_STACK=beta` deploys `MainnetBeta.s.sol` (below) in its fork mode instead, with dev accounts as the placeholder
+owner and bots (`FORK_BETA_DEPLOYER` = an address to act as by impersonation, `FORK_BETA_TOKEN=false` = no token);
+the exercise then also runs its `beta` area (owner hand-over, no caps, pause and cap-lowering levers).
+
+### Mainnet (closed beta)
+
+`contracts/script/MainnetBeta.s.sol` deploys the stack against the real mainnet contracts with mainnet timers (24 h
+crowd window, 1 h beacon grace, 48 h timelocks, 7 d unbonding, 14 d insurance delay, 24 h LP cooldown). It refuses
+every chain but 4663 (fork mode: 31337 only), needs `OWNER` and the bot addresses (`KEEPER`, `ATTESTER`, `RELAYER`,
+`CONTROLLER`, `CASH_DESK`, `EQUITY_DESK`; all distinct, none the deployer), hands every admin role to `OWNER` (two-step
+contracts wait for `acceptOwnership()` from `OWNER`; the list is in the output file) and checks the hand-over before
+anything is broadcast. No caps: Hidden Vault caps are proposed at the maximum (they apply after the 48 h timelock),
+perp open-interest caps at 100%; the owner keeps `setDepositsPaused` and immediate cap-lowering. The token (PLTH,
+staking, FeeRouter, insurance) only with `DEPLOY_TOKEN=true`.
+
+```sh
+cd contracts
+OWNER=<owner> KEEPER=<keeper> ATTESTER=<attester> RELAYER=<relayer> CONTROLLER=<controller> \
+CASH_DESK=<cash desk> EQUITY_DESK=<equity desk> \
+  forge script script/MainnetBeta.s.sol:MainnetBeta --account <keystore> --password-file <file> --sender <deployer> \
+  --rpc-url https://rpc.mainnet.chain.robinhood.com --gas-estimate-multiplier 200 --broadcast --slow
+cd ../app
+bun scripts/mainnet/dryrun.ts --addresses <public addresses.json>   # same deploy on a fresh local fork + its cost
+bash scripts/mainnet/up.sh     # chain id must be 4663; never deploys or funds; refuses until OWNER accepted everything
+bash scripts/mainnet/down.sh
+```
 
 ## License
 
