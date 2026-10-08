@@ -46,6 +46,9 @@ const app = relayerApp({
       ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: parseMinFees(config.RELAYER_WITHDRAW_MIN_FEES) })
       : undefined,
   log: (m) => console.log(`[relayer ${chainId}] ${m}`),
+  corsOrigins: config.CORS_ORIGINS
+    ? config.CORS_ORIGINS.split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean)
+    : undefined,
 });
 const server = Bun.serve({ port: config.RELAYER_PORT, fetch: app.fetch });
 console.log(`[relayer ${chainId}] ${account.address} on :${server.port} ${JSON.stringify(safeConfigSummary(config, keysFor("RELAYER_", "LOG_")))}`);

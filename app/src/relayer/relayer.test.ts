@@ -177,3 +177,26 @@ describe("parseClaim and health", () => {
     expect(await r.json()).toMatchObject({ ok: true, chainId: CHAIN, stealthClaims: SC });
   });
 });
+
+describe("CORS", () => {
+  const WEB = "https://plynthnetwork.com";
+  test("allowed origin gets CORS headers, preflight answers", async () => {
+    const { app } = setup({ corsOrigins: [WEB] });
+    const r = await app.request("/health", { headers: { origin: WEB } });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("access-control-allow-origin")).toBe(WEB);
+    const pre = await app.request("/claim", { method: "OPTIONS", headers: { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+    expect(pre.status).toBeLessThan(300);
+    expect(pre.headers.get("access-control-allow-origin")).toBe(WEB);
+  });
+  test("unknown origin is refused; no Origin header passes", async () => {
+    const { app } = setup({ corsOrigins: [WEB] });
+    expect((await app.request("/health", { headers: { origin: "https://evil.example" } })).status).toBe(403);
+    expect((await app.request("/health")).status).toBe(200);
+  });
+  test("without corsOrigins there are no CORS headers (old behaviour)", async () => {
+    const r = await setup().app.request("/health", { headers: { origin: WEB } });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});

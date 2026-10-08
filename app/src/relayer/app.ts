@@ -12,6 +12,7 @@
 import { claimDomain, claimTypes, type ClaimMessage } from "@plynth/sdk/stealth";
 import type { PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";
+import { cors } from "hono/cors";
 import { getAddress, isAddress, isHex, recoverTypedDataAddress, size, type Address, type Hex } from "viem";
 import { RateLimiter } from "./ratelimit";
 
@@ -48,6 +49,8 @@ export type RelayerDeps = {
   log?: (m: string) => void;
   /** Hidden Vault withdraws; absent = POST /withdraw answers 503. */
   withdraw?: WithdrawDeps | undefined;
+  /** Exact browser origins allowed to call the relayer (the web app). Absent = no CORS headers (server-to-server only). */
+  corsOrigins?: string[] | undefined;
 };
 
 const UINT256_MAX = (1n << 256n) - 1n;
@@ -114,6 +117,16 @@ export function relayerApp(d: RelayerDeps) {
   const log = d.log ?? (() => {});
 
   const app = new Hono();
+  if (d.corsOrigins) {
+    // Same rule as the API: unknown browser origins get 403; requests without an Origin header pass.
+    const allowed = new Set(d.corsOrigins);
+    app.use("*", async (c, next) => {
+      const origin = c.req.header("origin");
+      if (origin && !allowed.has(origin)) return c.json({ error: "origin not allowed" }, 403);
+      await next();
+    });
+    app.use("*", cors({ origin: (o) => (allowed.has(o) ? o : null), allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type"], maxAge: 600 }));
+  }
   app.get("/health", (c) => c.json({ ok: true, chainId: d.chainId, stealthClaims: d.stealthClaims, relayer: d.relayer }));
 
   app.post("/claim", async (c) => {
