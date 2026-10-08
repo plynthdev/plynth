@@ -1,0 +1,43 @@
+# Plynth treasury-risk: drawdown, exposure and funding watch.
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with plynth.target.
+# Optional, per treasury: deploy.sh does not enable it. Fill the per-treasury block in /etc/plynth/plynth.env
+# (or /etc/plynth/treasury-risk.env), then: systemctl enable --now plynth-treasury-risk.service
+
+[Unit]
+Description=Plynth treasury-risk (drawdown, exposure and funding watch)
+Documentation=file:/opt/plynth/current/app/scripts/server/README.md
+PartOf=plynth.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=plynth
+Group=plynth
+WorkingDirectory=/var/lib/plynth
+Environment=HOME=/var/lib/plynth
+EnvironmentFile=/etc/plynth/plynth.env
+EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=-/etc/plynth/treasury-risk.env
+ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/treasury-risk.ts
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plynth-treasury-risk
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plynth
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=plynth.target

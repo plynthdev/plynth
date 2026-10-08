@@ -1,0 +1,27 @@
+# Downloads DB-IP's free IP to Country Lite database (app/scripts/download-dbip.ts) to ELIGIBILITY_IP_DB, then
+# restarts the services that load it at startup (the eligibility service and the API, which mounts the same routes).
+# Run by plynth-ipdb.timer each month and by deploy.sh when the file is missing.
+[Unit]
+Description=Plynth IP country database refresh
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/plynth/current/app/scripts/download-dbip.ts
+
+[Service]
+Type=oneshot
+User=plynth
+Group=plynth
+WorkingDirectory=/var/lib/plynth
+Environment=HOME=/var/lib/plynth
+EnvironmentFile=/etc/plynth/plynth.env
+ExecStart=/usr/local/bin/bun /opt/plynth/current/app/scripts/download-dbip.ts
+ExecStartPost=+/usr/bin/systemctl try-restart plynth-eligibility.service plynth-api.service
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plynth-ipdb
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plynth

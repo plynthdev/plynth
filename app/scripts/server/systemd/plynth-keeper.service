@@ -1,0 +1,45 @@
+# Plynth keeper: jobs that send transactions.
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with plynth.target.
+# Exactly one keeper per database, chain and deployment. This is a plain (non-template) unit, so systemd never
+# runs two copies on this host; the keeper also takes a Postgres advisory lock and exits with status 75 while
+# another keeper (on any host) holds it. Restart=always then retries every RestartSec and takes over once the lock is
+# free. Never copy this unit to run a second keeper.
+
+[Unit]
+Description=Plynth keeper (jobs that send transactions)
+Documentation=file:/opt/plynth/current/app/scripts/server/README.md
+PartOf=plynth.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=plynth
+Group=plynth
+WorkingDirectory=/var/lib/plynth
+Environment=HOME=/var/lib/plynth
+EnvironmentFile=/etc/plynth/plynth.env
+EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=-/etc/plynth/keeper.env
+ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/keeper.ts
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plynth-keeper
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plynth
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=plynth.target

@@ -1,0 +1,56 @@
+# Template for /etc/caddy/Caddyfile, rendered by provision.sh: __API_DOMAIN__, __RELAYER_DOMAIN__ and
+# __ACME_EMAIL__ are replaced with API_DOMAIN, RELAYER_DOMAIN and ACME_EMAIL (see README.md). Edit the template and
+# re-run provision.sh rather than editing /etc/caddy/Caddyfile by hand.
+#
+# HTTPS is automatic: once each domain's DNS A/AAAA record points at this server and ports 80 and 443 are open,
+# Caddy gets the certificates from Let's Encrypt and renews them itself.
+#
+# Only the API (127.0.0.1:8789) and the relayer (127.0.0.1:8791) are public. Every other service port is closed by ufw.
+# The API's eligibility routes and the relayer trust the proxy headers (ELIGIBILITY_TRUST_PROXY and
+# RELAYER_TRUST_PROXY = 1), so Caddy passes the real client address and drops the Cloudflare headers a client could
+# forge to pick its own country. If Cloudflare's
+# proxy is ever put in front, read "Cloudflare" in README.md first.
+
+{
+	email __ACME_EMAIL__
+}
+
+(plynth_common) {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/{args[0]}.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}
+
+# X-Forwarded-For needs no line: with no trusted_proxies configured, Caddy discards the value a client sends and
+# sets it to the client's own address.
+(plynth_upstream_headers) {
+	header_up -CF-Connecting-IP
+	header_up -CF-IPCountry
+}
+
+__API_DOMAIN__ {
+	import plynth_common api
+	reverse_proxy 127.0.0.1:8789 {
+		import plynth_upstream_headers
+	}
+}
+
+__RELAYER_DOMAIN__ {
+	import plynth_common relayer
+	reverse_proxy 127.0.0.1:8791 {
+		import plynth_upstream_headers
+	}
+}

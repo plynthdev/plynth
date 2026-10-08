@@ -1,0 +1,11 @@
+# DB-IP publishes a new IP to Country Lite file each month; fetch it on the 3rd.
+[Unit]
+Description=Monthly Plynth IP country database refresh
+
+[Timer]
+OnCalendar=*-*-03 04:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

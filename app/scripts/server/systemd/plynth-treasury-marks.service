@@ -1,0 +1,41 @@
+# Plynth treasury-marks: NAV marks per treasury.
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with plynth.target.
+
+[Unit]
+Description=Plynth treasury-marks (NAV marks per treasury)
+Documentation=file:/opt/plynth/current/app/scripts/server/README.md
+PartOf=plynth.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=plynth
+Group=plynth
+WorkingDirectory=/var/lib/plynth
+Environment=HOME=/var/lib/plynth
+EnvironmentFile=/etc/plynth/plynth.env
+EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=-/etc/plynth/treasury-marks.env
+ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/treasury-marks.ts
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plynth-treasury-marks
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plynth
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=plynth.target

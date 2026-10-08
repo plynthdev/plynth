@@ -1,0 +1,16 @@
+# Nightly pg_dump of the Plynth database into /var/backups/plynth, 14 days kept (backup.sh, installed by
+# provision.sh and deploy.sh as /usr/local/sbin/plynth-backup). Run by plynth-backup.timer; by hand:
+#   systemctl start plynth-backup.service && journalctl -u plynth-backup -n 20
+[Unit]
+Description=Plynth database backup
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/plynth-backup
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plynth-backup
