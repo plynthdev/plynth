@@ -1,6 +1,6 @@
 // wagmi (core) + viem on the configured chain (fork 31337, testnet 46630 or mainnet 4663). Two ways to pick a wallet:
 // - VITE_WALLETCONNECT_PROJECT_ID set: the Reown AppKit modal (wallet-modal.ts, loaded on demand): installed browser
-//   wallets, Coinbase Wallet, and WalletConnect (QR on desktop, deep links on a phone) for Rainbow, Trust, MetaMask
+//   wallets and WalletConnect (QR on desktop, deep links on a phone) for Rainbow, Trust, MetaMask
 //   Mobile and the rest.
 // - not set: the dashboard lists every browser wallet that announced itself through EIP-6963 (name and icon), plus
 //   a plain window.ethereum wallet when none did. Never a modal that cannot work.

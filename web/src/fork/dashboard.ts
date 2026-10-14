@@ -487,7 +487,7 @@ function html(path: string, kit: DashboardKit): string {
   const body = notDeployed
     ? `<section class="dash-panel" data-not-deployed><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId} · NOT DEPLOYED YET</p><h2>${esc(nd.title)}</h2><p class="panel-intro">${esc(nd.body)}</p></section>`
     : !acct
-    ? `${S.picker ? walletPicker(dev) : ""}<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use a browser wallet (MetaMask, Rabby, Coinbase Wallet…)${walletModalEnabled() ? " or a phone wallet through WalletConnect" : ""} on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
+    ? `${S.picker ? walletPicker(dev) : ""}<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use a browser wallet (MetaMask, Rabby, Phantom…)${walletModalEnabled() ? " or a phone wallet through WalletConnect" : ""} on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
     : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE ${esc(nt.short)}…</p>` : ""}${tabHtml(tab)}`;
   return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono" data-network-badge="${nt.kind}">${esc(nt.badge)}</span>${
     // Only when the dev wallet is the connected connector, never just because it could be offered.
@@ -693,7 +693,7 @@ export function walletPicker(dev: boolean): string {
         `<li><button class="fork-wallet-option" data-action="connect-wallet" data-wallet="${esc(w.uid)}" data-wallet-name="${esc(w.name)}">${w.icon ? `<img src="${esc(w.icon)}" alt="" width="28" height="28">` : `<span class="fork-wallet-blank" aria-hidden="true"></span>`}<span>${esc(w.name)}</span></button></li>`,
     )
     .join("");
-  const none = `<p class="panel-intro" data-no-wallets>No browser wallet found on this device. Install a wallet extension (MetaMask, Rabby, Coinbase Wallet), or on a phone open this page in your wallet app’s own browser.${dev ? " Or use the DEV WALLET button." : ""}</p>`;
+  const none = `<p class="panel-intro" data-no-wallets>No browser wallet found on this device. Install a wallet extension (MetaMask, Rabby, Phantom), or on a phone open this page in your wallet app’s own browser.${dev ? " Or use the DEV WALLET button." : ""}</p>`;
   return `<section class="dash-panel fork-wallet-picker" role="dialog" aria-label="Choose a wallet" data-wallet-picker><div class="fork-picker-head"><p class="mono">CHOOSE A WALLET</p><button class="fork-picker-close mono" data-action="close-picker" aria-label="Close">CLOSE</button></div>${list.length ? `<ul class="fork-wallet-list">${items}</ul>` : none}</section>`;
 }
 

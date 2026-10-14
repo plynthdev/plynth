@@ -16,10 +16,12 @@ export type WalletModal = {
   onWalletInfo(fn: () => void): () => void;
 };
 
+/** Base (formerly Coinbase Wallet): hidden from every list on purpose. */
+export const HIDDEN_WALLETS = ["fd20dc426fb37566d803205b19bbc1d4096b248ac04548e3cfb6b3a38bd033aa"] as const;
+
 /** WalletConnect explorer ids shown first in the modal (installed browser wallets are listed above them anyway). */
 export const FEATURED_WALLETS = {
   metamask: "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96",
-  coinbase: "fd20dc426fb37566d803205b19bbc1d4096b248ac04548e3cfb6b3a38bd033aa",
   rabby: "18388be9ac2d02726dbac9777c96efaac06d744b2f6d580fccdd4127a6d01fd1",
   rainbow: "1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369",
   trust: "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0",
@@ -60,12 +62,11 @@ export async function createWalletModal(opts: {
   connectors: CreateConnectorFn[];
   origin: string;
 }): Promise<WalletModal> {
-  const [{ createAppKit }, { WagmiAdapter }, { coinbaseWallet }, { OptionsController }] =
+  const [{ createAppKit }, { WagmiAdapter }, { OptionsController }] =
     await Promise.all([
       // The full entry: "@reown/appkit/core" is the adapter-less WalletConnect-only build (no wallet list).
       import("@reown/appkit"),
       import("@reown/appkit-adapter-wagmi"),
-      import("@wagmi/connectors"),
       import("@reown/appkit-controllers"),
     ]);
   // AppKit 1.8.24 never copies the enableBaseAccount option into its state, so the adapter would still add the Base
@@ -75,12 +76,8 @@ export async function createWalletModal(opts: {
   const adapter = new WagmiAdapter({
     projectId,
     networks: [chain],
-    // Our own Coinbase Wallet connector (enableCoinbase: false below stops AppKit adding its default one): same
-    // wallet, but without the Coinbase SDK's telemetry script.
-    connectors: [
-      coinbaseWallet({ appName: "Plynth", preference: { options: "all", telemetry: false } }),
-      ...opts.connectors,
-    ],
+    // No Base/Coinbase connector (enableCoinbase: false below stops AppKit adding its default one).
+    connectors: [...opts.connectors],
     transports: { [chain.id]: http(opts.rpcUrl) },
   });
   const kit = createAppKit({
@@ -97,6 +94,7 @@ export async function createWalletModal(opts: {
       icons: [`${opts.origin}/favicon.png`],
     },
     featuredWalletIds: Object.values(FEATURED_WALLETS),
+    excludeWalletIds: [...HIDDEN_WALLETS],
     enableCoinbase: false,
     enableBaseAccount: false,
     enableWalletGuide: false,
