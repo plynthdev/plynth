@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "bun install --cwd ../sdk --frozen-lockfile && bun run --cwd ../sdk build && bun install --frozen-lockfile",
-  "buildCommand": "NITRO_PRESET=vercel bun run build",
+  "installCommand": "npx -y bun@1.4.2 install --cwd ../sdk --frozen-lockfile && npx -y bun@1.4.2 run --cwd ../sdk build && npx -y bun@1.4.2 install --frozen-lockfile",
+  "buildCommand": "NITRO_PRESET=vercel npx -y bun@1.4.2 run build",
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../sdk ../app/deployments ../app/src/chain"
 }
