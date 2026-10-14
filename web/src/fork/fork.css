@@ -124,3 +124,36 @@
   border-bottom: 0;
   background: transparent;
 }
+
+/* Phones: nothing may widen the page. Grid items default to min-width:auto, so the activity table's min-width
+   (590px) stretched the whole dashboard column; let them shrink and scroll the table inside its own box. */
+.dashboard-layout > *,
+.dashboard-content,
+.dashboard-stats > *,
+.dashboard-middle > *,
+.dash-panel {
+  min-width: 0;
+}
+.table-scroll {
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 640px) {
+  .setting-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .cap-control {
+    min-width: 0;
+    width: 100%;
+    align-items: stretch;
+  }
+  .fork-input {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .fork-actions > * {
+    flex: 1 1 auto;
+  }
+}
