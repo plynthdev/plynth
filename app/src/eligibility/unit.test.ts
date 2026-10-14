@@ -48,7 +48,7 @@ const SANCTIONED = "0x1111111111111111111111111111111111111111" as Address;
 // 203.0.113.0/24 and 198.51.100.0/24 are documentation ranges: the countries are fixture data.
 const MMDB = buildCountryMmdb({
   "203.0.113.0/24": "DE",
-  "198.51.100.0/25": "US",
+  "198.51.100.0/25": "CA",
   "198.51.100.128/25": "GB",
   "192.0.2.0/24": "CA",
   "100.64.0.0/16": "CH",
@@ -73,7 +73,8 @@ describe("countries", () => {
     expect(normCountry("T1")).toBeNull();
     expect(normCountry("XX")).toBeNull();
     expect(normCountry("USA")).toBeNull();
-    expect([...BLOCKED_COUNTRIES]).toEqual(["US", "GB", "CA", "CH"]);
+    expect([...BLOCKED_COUNTRIES]).toEqual(["GB", "CA", "CH"]);
+    expect(BLOCKED_COUNTRIES as readonly string[]).not.toContain("US");
   });
 });
 
@@ -102,22 +103,22 @@ describe("source 2: IP country (MMDB + CF-IPCountry)", () => {
   test("reads the MMDB fixture like the db-ip lite file (IPv4 inside an IPv6 tree)", () => {
     expect(geo.databaseType).toBe("DBIP-Country-Lite");
     expect(geo.country("203.0.113.7")).toBe("DE");
-    expect(geo.country("198.51.100.1")).toBe("US");
+    expect(geo.country("198.51.100.1")).toBe("CA");
     expect(geo.country("198.51.100.200")).toBe("GB");
     expect(geo.country("192.0.2.9")).toBe("CA");
     expect(geo.country("100.64.3.3")).toBe("CH");
     expect(geo.country("10.0.0.1")).toBeNull();
     expect(geo.country("not an ip")).toBeNull();
   });
-  test("US (and GB, CA, CH) IPs are refused", () => {
+  test("CA (and GB, CH) IPs are refused; US is allowed", () => {
     for (const ip of ["198.51.100.1", "198.51.100.200", "192.0.2.9", "100.64.3.3"]) {
       expect(checkIpCountry({ ip, cfCountry: null, lookup: geo })).toMatchObject({ ok: false, reason: "ip_country_restricted" });
     }
-    expect(checkIpCountry({ ip: "198.51.100.1", cfCountry: null, lookup: geo }).country).toBe("US");
+    expect(checkIpCountry({ ip: "198.51.100.1", cfCountry: null, lookup: geo }).country).toBe("CA");
   });
   test("a restricted CF-IPCountry refuses even if the database says otherwise, and vice versa", () => {
-    expect(checkIpCountry({ ip: "203.0.113.7", cfCountry: "US", lookup: geo })).toMatchObject({ ok: false, reason: "ip_country_restricted", country: "US" });
-    expect(checkIpCountry({ ip: "198.51.100.1", cfCountry: "DE", lookup: geo })).toMatchObject({ ok: false, reason: "ip_country_restricted", country: "US" });
+    expect(checkIpCountry({ ip: "203.0.113.7", cfCountry: "CA", lookup: geo })).toMatchObject({ ok: false, reason: "ip_country_restricted", country: "CA" });
+    expect(checkIpCountry({ ip: "198.51.100.1", cfCountry: "DE", lookup: geo })).toMatchObject({ ok: false, reason: "ip_country_restricted", country: "CA" });
     expect(checkIpCountry({ ip: null, cfCountry: "fr", lookup: null })).toEqual({ ok: true, country: "FR" });
   });
   test("unknown country (private IP, Tor, no database) fails closed unless allowUnknown", () => {
@@ -211,11 +212,11 @@ describe("service", () => {
     expect(ok).toBe(true);
     expect(store.rows).toEqual([{ chainId: CHAIN, address: user.address, allowed: true, reason: "ok", country: "DE", flags: 7, expiry: a.expiry, at: NOW }]);
   });
-  test("refusals: sanctioned address, US IP, bad statement; decisions never hold the IP", async () => {
+  test("refusals: sanctioned address, CA IP, bad statement; decisions never hold the IP", async () => {
     const store = new MemoryDecisionStore();
     const s = service(store);
     const sanctionedSig = await selfSig(user, BigInt(NOW + 3600)); // wrong signer for SANCTIONED -> statement fails first
-    expect(await s.check({ address: user.address, attestationSig: await selfSig(), statementExpiry: BigInt(NOW + 3600), ip: "198.51.100.1", cfCountry: null })).toMatchObject({ allowed: false, reason: "ip_country_restricted", country: "US" });
+    expect(await s.check({ address: user.address, attestationSig: await selfSig(), statementExpiry: BigInt(NOW + 3600), ip: "198.51.100.1", cfCountry: null })).toMatchObject({ allowed: false, reason: "ip_country_restricted", country: "CA" });
     expect(await s.check({ address: SANCTIONED, attestationSig: sanctionedSig, statementExpiry: BigInt(NOW + 3600), ip: "203.0.113.7", cfCountry: null })).toMatchObject({ allowed: false, reason: "self_attestation_invalid" });
     const noStatement = service(store, [sanctionsScreen(freshList()), ipCountryScreen(geo)]);
     expect(await noStatement.check({ address: SANCTIONED, attestationSig: "0x00", statementExpiry: 0n, ip: "203.0.113.7", cfCountry: null })).toMatchObject({ allowed: false, reason: "sanctioned" });
@@ -275,9 +276,9 @@ describe("HTTP route", () => {
   test("CF-IPCountry and forwarded IPs count only when the proxy is trusted", async () => {
     const body = { address: user.address, attestationSig: await selfSig(), expiry: NOW + 3600 };
     const untrusted = mk();
-    expect(((await (await post(untrusted, body, { "cf-ipcountry": "US" })).json()) as any).allowed).toBe(true);
+    expect(((await (await post(untrusted, body, { "cf-ipcountry": "CA" })).json()) as any).allowed).toBe(true);
     const trusted = mk({ trustProxy: true, clientIp: undefined });
-    expect(await (await post(trusted, body, { "cf-ipcountry": "US", "cf-connecting-ip": "203.0.113.7" })).json()).toEqual({ allowed: false, reason: "ip_country_restricted" });
+    expect(await (await post(trusted, body, { "cf-ipcountry": "CA", "cf-connecting-ip": "203.0.113.7" })).json()).toEqual({ allowed: false, reason: "ip_country_restricted" });
     expect(await (await post(trusted, body, { "x-forwarded-for": "198.51.100.1, 10.0.0.1" })).json()).toEqual({ allowed: false, reason: "ip_country_restricted" });
     expect(((await (await post(trusted, body, { "cf-connecting-ip": "203.0.113.7", "cf-ipcountry": "DE" })).json()) as any).allowed).toBe(true);
   });

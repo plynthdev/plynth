@@ -2,11 +2,11 @@
 //   x-plynth-residency  the user's self-attested country of residence (ISO 3166-1 alpha-2), set by the frontend
 //                       after the user ticks the attestation box;
 //   cf-ipcountry        the country a proxy such as Cloudflare derived from the IP, if a proxy set it.
-// Stock Tokens are not offered to US, UK, Canadian or Swiss persons, so those four are blocked either way.
+// Stock Tokens are not offered to UK, Canadian or Swiss persons, so those three are blocked either way.
 // Real screening (signed self-attestation, IP database, OFAC list) is POST /v1/eligibility/check from
 // @plynth/eligibility; it signs an attestation for the on-chain EligibilityRegistry that gates buying.
 
-export const BLOCKED_COUNTRIES = ["US", "GB", "CA", "CH"] as const;
+export const BLOCKED_COUNTRIES = ["GB", "CA", "CH"] as const;
 
 export type Eligibility = {
   allowed: boolean;

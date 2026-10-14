@@ -182,10 +182,10 @@ describe("eligibility statement and round-up message (must match the backend byt
     const td = selfAttestationTypedData(31337, A, 1n);
     expect(td.domain).toEqual({ name: "Plynth Eligibility", version: "1", chainId: 31337 });
     expect(td.message.statement).toBe(STATEMENT);
-    expect(td.message.version).toBe(1);
+    expect(td.message.version).toBe(2);
     // Digest computed with app/src/eligibility/statement.ts (same wallet/expiry): any drift breaks this.
     expect(hashTypedData(td)).toBe(
-      "0x9b2f320016bf00a2d9a7d674ef1c11983154b05b9fc4193da67eb14f9a22023c", // not-a-key (EIP-712 digest)
+      "0x9b947349744c5dd854317ebe6b1394477a97d9940ee434c70d3301b4e7651089", // not-a-key (EIP-712 digest)
     );
   });
   it("round-up import message lines", () => {

@@ -3,10 +3,10 @@
 // counterfactual accounts), otherwise plain ECDSA recovery (EOA only).
 import { verifyTypedData, type Address, type Hex, type PublicClient } from "viem";
 
-export const STATEMENT_VERSION = 1;
+export const STATEMENT_VERSION = 2;
 export const STATEMENT =
-  "I am not a person of the United States, the United Kingdom, Canada or Switzerland (not a resident, " +
-  "citizen or entity there) and I do not act for one. I understand Stock Tokens are not offered to them.";
+  "I am not a person of the United Kingdom, Canada or Switzerland (not a resident, citizen or entity " +
+  "there) and I do not act for one. I understand Stock Tokens are not offered to them.";
 /** A self-attestation may be signed for at most a year ahead. */
 export const MAX_STATEMENT_TTL_S = 365 * 24 * 3600;
 

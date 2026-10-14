@@ -3,10 +3,10 @@ import type { Address } from "viem";
 
 // ---------------------------------------------------------------- eligibility (mirrors app/src/eligibility/statement.ts)
 
-export const STATEMENT_VERSION = 1;
+export const STATEMENT_VERSION = 2;
 export const STATEMENT =
-  "I am not a person of the United States, the United Kingdom, Canada or Switzerland (not a resident, " +
-  "citizen or entity there) and I do not act for one. I understand Stock Tokens are not offered to them.";
+  "I am not a person of the United Kingdom, Canada or Switzerland (not a resident, citizen or entity " +
+  "there) and I do not act for one. I understand Stock Tokens are not offered to them.";
 
 export function selfAttestationTypedData(chainId: number, wallet: Address, expiry: bigint) {
   return {

@@ -64,7 +64,7 @@ describe("meta.eligibility (stub, not KYC)", () => {
     for (const c of BLOCKED_COUNTRIES) expect(e({ "cf-ipcountry": c, "x-plynth-residency": "DE" })).toMatchObject({ allowed: false, reason: "ip_country_restricted" });
   });
   test("blocks a self-attested residency in a restricted country (UK alias included)", () => {
-    for (const c of [...BLOCKED_COUNTRIES, "UK", "us"]) expect(e({ "x-plynth-residency": c })).toMatchObject({ allowed: false, reason: "residency_restricted" });
+    for (const c of [...BLOCKED_COUNTRIES, "UK", "ca"]) expect(e({ "x-plynth-residency": c })).toMatchObject({ allowed: false, reason: "residency_restricted" });
   });
   test("requires a self-attestation", () => {
     expect(e({})).toMatchObject({ allowed: false, reason: "self_attestation_required" });

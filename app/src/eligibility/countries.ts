@@ -1,6 +1,6 @@
-// Stock Tokens are not offered to US, UK, Canadian or Swiss persons. Those four are refused by every source.
+// Stock Tokens are not offered to UK, Canadian or Swiss persons. Those three are refused by every source.
 
-export const BLOCKED_COUNTRIES = ["US", "GB", "CA", "CH"] as const;
+export const BLOCKED_COUNTRIES = ["GB", "CA", "CH"] as const;
 
 /** Cloudflare's codes that are not countries: T1 = Tor exit, XX = unknown. Treated as "no country". */
 const NOT_A_COUNTRY = new Set(["T1", "XX"]);
