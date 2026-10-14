@@ -55,6 +55,8 @@ app/deployments/*
 # Robinhood Chain testnet (46630) addresses are public: committed for anyone running the stack against them.
 !app/deployments/46630.json
 !app/deployments/46630-treasury.json
+!app/deployments/4663.json
+!app/deployments/4663-treasury.json
 app/data/
 web/node_modules/
 web/.output/
