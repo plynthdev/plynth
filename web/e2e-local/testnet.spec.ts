@@ -135,6 +135,8 @@ async function connect(page: Page, address: Address) {
   await page.goto("/dashboard/");
   await settled(page);
   await page.locator('[data-action="connect"]').click();
+  // No WalletConnect project id in the e2e env: the browser-wallet list; the stub is the plain injected wallet.
+  await page.locator('[data-action="connect-wallet"]').first().click();
   await expect(page.locator("[data-fork-dashboard]")).toHaveAttribute("data-account", address);
   await settled(page);
   await expect(page.locator('[data-field="total"]')).toBeVisible();

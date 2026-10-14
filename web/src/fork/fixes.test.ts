@@ -34,12 +34,17 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("./wallet", () => ({
-  currentAccount: () => m.acct,
+  currentAccount: () =>
+    m.acct && { wallet: "MetaMask", chainId: m.chainId, chainOk: true, ...m.acct },
   devWalletEnabled: () => m.devEnabled,
   connectWallet: vi.fn(),
   disconnectWallet: vi.fn(async () => {}),
   onAccountChange: () => () => {},
   restoreConnection: async () => {},
+  browserWallets: () => [],
+  openWalletModal: async () => false,
+  switchToProfileChain: vi.fn(async () => {}),
+  walletModalEnabled: () => false,
 }));
 vi.mock("./config", async (orig) => {
   const real = await orig<typeof import("./config")>();

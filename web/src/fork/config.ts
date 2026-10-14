@@ -14,6 +14,8 @@ export type ForkEnv = {
   VITE_CHAIN_NAME?: string;
   /** Block explorer base URL; defaults per chain (none for the fork). */
   VITE_EXPLORER_URL?: string;
+  /** Reown (WalletConnect) Cloud project id: public, not a secret. Empty: the EIP-6963 browser-wallet list instead. */
+  VITE_WALLETCONNECT_PROJECT_ID?: string;
   DEV?: boolean;
   PROD?: boolean;
 };
@@ -34,6 +36,8 @@ export type ForkConfig = {
   explorerUrl: string;
   /** VITE_DEV_WALLET=1: the anvil dev-key connector may be offered (still only on a localhost page of 31337). */
   devWalletFlag: boolean;
+  /** Reown project id (32 hex) when set and well formed, "" otherwise (wallet.ts then uses the injected-wallet list). */
+  walletConnectProjectId: string;
 };
 
 export const DEFAULTS = {
@@ -72,6 +76,12 @@ export const PROXY = {
 
 const strip = (u: string) => u.replace(/\/+$/, "");
 
+/** A Reown Cloud project id is 32 hex characters; anything else (a placeholder, a typo) counts as unset. */
+export function walletConnectProjectId(raw: string | undefined): string {
+  const v = raw?.trim() ?? "";
+  return /^[0-9a-f]{32}$/i.test(v) ? v : "";
+}
+
 export function readForkConfig(env: ForkEnv): ForkConfig {
   const chainId = env.VITE_CHAIN_ID ? Number(env.VITE_CHAIN_ID) : DEFAULTS.chainId;
   if (!Number.isInteger(chainId) || chainId <= 0)
@@ -93,6 +103,7 @@ export function readForkConfig(env: ForkEnv): ForkConfig {
     apiBase: env.DEV ? PROXY.api : apiUrl,
     relayerBase: env.DEV ? PROXY.relayer : relayerUrl,
     devWalletFlag: env.VITE_DEV_WALLET === "1",
+    walletConnectProjectId: walletConnectProjectId(env.VITE_WALLETCONNECT_PROJECT_ID),
   };
 }
 

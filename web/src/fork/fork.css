@@ -157,3 +157,98 @@
     flex: 1 1 auto;
   }
 }
+
+/* Wallet: the connected wallet's chip, the connect buttons, and the browser-wallet list (no WalletConnect id). */
+.fork-wallet-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  align-self: flex-end;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.dashboard-heading .fork-wallet-bar .solid-button,
+.dashboard-heading .fork-wallet-bar .preview-badge {
+  margin: 0;
+  align-self: auto;
+}
+.fork-wallet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--cyan-light);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.fork-wallet-chip img,
+.fork-wallet-option img {
+  flex: none;
+  image-rendering: auto;
+}
+.fork-wrong-chain {
+  background: var(--pink);
+  color: var(--ink);
+}
+.fork-wallet-picker {
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 6px 6px 0 var(--ink);
+}
+.fork-picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.fork-picker-close {
+  background: transparent;
+  border: 1px solid var(--ink);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fork-wallet-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
+  gap: 10px;
+}
+.fork-wallet-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font: 14px var(--mono);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.fork-wallet-option:hover,
+.fork-wallet-option:focus-visible {
+  transform: translate(-2px, -2px);
+  box-shadow: 3px 3px 0 var(--cyan);
+}
+.fork-wallet-blank {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px dashed var(--ink);
+}
+@media (max-width: 640px) {
+  .fork-wallet-bar {
+    width: 100%;
+    align-self: stretch;
+  }
+  .fork-wallet-bar > * {
+    flex: 1 1 auto;
+  }
+}

@@ -40,12 +40,16 @@ import {
   type ModeKey,
 } from "./logic";
 import {
+  browserWallets,
   connectWallet,
   currentAccount,
   devWalletEnabled,
   disconnectWallet,
   onAccountChange,
+  openWalletModal,
   restoreConnection,
+  switchToProfileChain,
+  walletModalEnabled,
 } from "./wallet";
 
 type Data = {
@@ -76,6 +80,10 @@ const S = {
   seq: 0,
   rerender: () => {},
   watching: false,
+  /** The browser-wallet list is open (no WalletConnect project id, so no AppKit modal). */
+  picker: false,
+  /** CONNECT WALLET clicked, the modal is loading (first time: it is fetched on demand). */
+  opening: false,
   /** Settings just confirmed on-chain: shown until the API reads them back (lagging public RPC node). */
   expect: undefined as { form: A.SettingsForm; until: number } | undefined,
 };
@@ -474,12 +482,12 @@ function html(path: string, kit: DashboardKit): string {
   const wallet = notDeployed
     ? ""
     : acct
-    ? `<button class="solid-button" data-action="disconnect" title="${acct.address}">${shortHash(acct.address)} · DISCONNECT</button>`
-    : `<button class="solid-button" data-action="connect">CONNECT WALLET</button>${dev ? `<button class="solid-button" data-action="connect-dev">DEV WALLET</button>` : ""}`;
+    ? `<div class="fork-wallet-bar"><span class="preview-badge mono fork-wallet-chip" data-connected-wallet="${esc(acct.wallet)}" title="${acct.address}">${acct.icon ? `<img src="${esc(acct.icon)}" alt="" width="16" height="16">` : ""}${esc(acct.wallet)} · ${shortHash(acct.address)}</span>${acct.chainOk ? "" : `<button class="solid-button fork-wrong-chain" data-action="switch-network">SWITCH TO ${esc(cfg.chainName)}</button>`}<button class="solid-button" data-action="disconnect" title="${acct.address}">DISCONNECT</button></div>`
+    : `<div class="fork-wallet-bar"><button class="solid-button" data-action="connect" aria-haspopup="dialog" ${S.opening ? "disabled" : ""}>${S.opening ? "OPENING…" : "CONNECT WALLET"}</button>${dev ? `<button class="solid-button" data-action="connect-dev">DEV WALLET</button>` : ""}</div>`;
   const body = notDeployed
     ? `<section class="dash-panel" data-not-deployed><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId} · NOT DEPLOYED YET</p><h2>${esc(nd.title)}</h2><p class="panel-intro">${esc(nd.body)}</p></section>`
     : !acct
-    ? `<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use MetaMask on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
+    ? `${S.picker ? walletPicker(dev) : ""}<section class="dash-panel"><p class="mono">${esc(nt.short)} · CHAIN ${cfg.chainId}</p><h2>Connect a wallet</h2><p class="panel-intro">Use a browser wallet (MetaMask, Rabby, Coinbase Wallet…)${walletModalEnabled() ? " or a phone wallet through WalletConnect" : ""} on the “${esc(cfg.chainName)}” network (RPC ${esc(cfg.rpcUrl)}, chain id ${cfg.chainId}) with ${connectWho(cfg.chainId, dev)}</p></section>`
     : `${S.error ? `<p class="settings-status mono fork-error" role="alert">COULD NOT LOAD: ${esc(S.error)}</p>` : ""}${S.loading && !S.data.overview ? `<p class="settings-status mono" data-field="loading">LOADING FROM THE ${esc(nt.short)}…</p>` : ""}${tabHtml(tab)}`;
   return `<section class="dashboard-shell wrap" data-fork-dashboard data-account="${acct?.address ?? ""}"><div class="dashboard-heading"><div><p class="hand">your private foundation</p><h1 class="pixel">DASHBOARD</h1></div><span class="preview-badge mono" data-network-badge="${nt.kind}">${esc(nt.badge)}</span>${
     // Only when the dev wallet is the connected connector, never just because it could be offered.
@@ -498,10 +506,36 @@ function html(path: string, kit: DashboardKit): string {
 
 // ---------------------------------------------------------------- events
 
-const handlers: Record<string, () => void> = {
-  connect: () => void run("Connect MetaMask", async () => void (await connectWallet("injected"))),
+const handlers: Record<string, (el: HTMLElement) => void> = {
+  // The AppKit modal when a WalletConnect project id is set, the browser-wallet list otherwise (or if it fails).
+  connect: () => {
+    S.opening = true;
+    S.rerender();
+    void openWalletModal().then(
+      (opened) => {
+        S.opening = false;
+        if (!opened) S.picker = !S.picker;
+        S.rerender();
+      },
+      () => {
+        S.opening = false;
+        S.picker = true;
+        S.rerender();
+      },
+    );
+  },
+  "connect-wallet": (el) => {
+    const uid = el.dataset["wallet"] ?? "";
+    void run(`Connect ${el.dataset["walletName"] ?? "wallet"}`, async () => {
+      await connectWallet(uid);
+      S.picker = false;
+    });
+  },
+  "close-picker": () => ((S.picker = false), S.rerender()),
   "connect-dev": () =>
     void run("Connect dev wallet", async () => void (await connectWallet("dev"))),
+  "switch-network": () =>
+    void run(`Switch to ${forkConfig().chainName}`, () => switchToProfileChain()),
   disconnect: () =>
     void disconnectWallet().then(() => ((S.data = {}), (S.loadedFor = ""), S.rerender())),
   attest: () => void run("Eligibility", (p) => A.attestEligibility(p)),
@@ -593,6 +627,7 @@ function setup(ctx: { rerender(): void; signal: AbortSignal }) {
   if (!S.watching) {
     S.watching = true;
     onAccountChange(() => {
+      if (currentAccount()) S.picker = false;
       S.loadedFor = "";
       S.data = {};
       S.rerender();
@@ -615,7 +650,7 @@ function setup(ctx: { rerender(): void; signal: AbortSignal }) {
     (e) => {
       const t = e.target as HTMLElement;
       const a = t.closest<HTMLElement>("[data-action]");
-      if (a && !a.hasAttribute("disabled")) return handlers[a.dataset.action!]?.();
+      if (a && !a.hasAttribute("disabled")) return handlers[a.dataset.action!]?.(a);
       const m = t.closest<HTMLElement>("[data-live-mode]");
       if (m && !m.hasAttribute("disabled")) {
         const mode = modeKey(m.dataset.liveMode!);
@@ -646,6 +681,22 @@ export const liveDashboard: LiveDashboard = { html, setup };
 
 /** Test hook: reset the module state. */
 
+/**
+ * The browser-wallet list shown when there is no WalletConnect project id: one button per EIP-6963 wallet (its own
+ * name and icon), or the plain injected wallet, or how to get one.
+ */
+export function walletPicker(dev: boolean): string {
+  const list = browserWallets();
+  const items = list
+    .map(
+      (w) =>
+        `<li><button class="fork-wallet-option" data-action="connect-wallet" data-wallet="${esc(w.uid)}" data-wallet-name="${esc(w.name)}">${w.icon ? `<img src="${esc(w.icon)}" alt="" width="28" height="28">` : `<span class="fork-wallet-blank" aria-hidden="true"></span>`}<span>${esc(w.name)}</span></button></li>`,
+    )
+    .join("");
+  const none = `<p class="panel-intro" data-no-wallets>No browser wallet found on this device. Install a wallet extension (MetaMask, Rabby, Coinbase Wallet), or on a phone open this page in your wallet app’s own browser.${dev ? " Or use the DEV WALLET button." : ""}</p>`;
+  return `<section class="dash-panel fork-wallet-picker" role="dialog" aria-label="Choose a wallet" data-wallet-picker><div class="fork-picker-head"><p class="mono">CHOOSE A WALLET</p><button class="fork-picker-close mono" data-action="close-picker" aria-label="Close">CLOSE</button></div>${list.length ? `<ul class="fork-wallet-list">${items}</ul>` : none}</section>`;
+}
+
 /** Who connects on each network: the beta's real wallet on mainnet, a testnet-only account, or an anvil dev account. */
 export function connectWho(chainId: number, dev: boolean): string {
   if (chainId === MAINNET_CHAIN_ID)
@@ -666,6 +717,8 @@ export function _resetForTests() {
     log: [],
     seq: 0,
     watching: false,
+    picker: false,
+    opening: false,
     expect: undefined,
   });
 }
