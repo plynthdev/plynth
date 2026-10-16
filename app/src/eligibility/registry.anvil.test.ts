@@ -64,7 +64,7 @@ describe("eligibility e2e (anvil + postgres)", () => {
       chainId,
       registry,
       attester: privateKeyToAccount(ATTESTER_KEY),
-      screens: [selfAttestationScreen(chainId, pub), sanctionsScreen(list), ipCountryScreen(new MmdbCountry(buildCountryMmdb({ "203.0.113.0/24": "DE", "198.51.100.0/24": "US" })))],
+      screens: [selfAttestationScreen(chainId, pub), sanctionsScreen(list), ipCountryScreen(new MmdbCountry(buildCountryMmdb({ "203.0.113.0/24": "DE", "198.51.100.0/24": "CA" })))],
       store: new DbDecisionStore(db.db),
       nowS: () => now,
     });
@@ -88,7 +88,7 @@ describe("eligibility e2e (anvil + postgres)", () => {
 
     const rows = await db.db.select().from(eligibilityDecisions);
     expect(rows.map((r) => [r.address, r.allowed, r.reason, r.country])).toEqual([
-      [user.address.toLowerCase(), false, "ip_country_restricted", "US"],
+      [user.address.toLowerCase(), false, "ip_country_restricted", "CA"],
       [user.address.toLowerCase(), true, "ok", "DE"],
     ]);
     expect(Object.keys(rows[0]!).sort()).toEqual(["address", "allowed", "chainId", "country", "createdAt", "expiry", "flags", "id", "reason"]);
