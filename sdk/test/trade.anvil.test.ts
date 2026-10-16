@@ -6,6 +6,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, getAddress, http, parseAbi, type Address, type Hex, type PublicClient } from "viem";
 import { ANVIL_ADDR_1, ANVIL_KEY_0, ROOT, hasBinary, permit2Runtime, startAnvil } from "../../app/src/testing/keeper-helpers";
+import { relayerApp } from "../../app/src/relayer/app";
+import { tradeDeps } from "../../app/src/relayer/chain";
+import { relayerClient } from "../src/relayer";
 import {
   VAULT_KEY_MESSAGE,
   approveTx,
@@ -203,5 +206,39 @@ describe.skipIf(!tools)("private sell / buy / park on anvil (real verifiers)", (
     const back = await find(usdg(), (n) => n.version === 2 && n.raw === value);
     expect(back.raw).toBe(value);
     expect(await shielded(vault())).toBe(0n);
+  }, 180_000);
+
+  // Audit SDK lead: a private sell sent from the user's own wallet is public as theirs. Through the relayer app and
+  // the SDK client the chain sees only the relayer as sender, which keeps the proven fee.
+  test("a private sell relayed by the real relayer app: the relayer is the sender and is paid the proven fee", async () => {
+    await deposit(tsla(), 2n * E18);
+    const note = await find(tsla(), (n) => n.raw === 2n * E18);
+    const s = await proveSwap({ keys: ka, tree: state!.tree, note, amountIn: E18, relayerFee: E18 / 50n, assetOut: usdg(), minOut: 200n * U, deadline: await deadline() });
+    const app = relayerApp({
+      chainId: 31337,
+      stealthClaims: "0x00000000000000000000000000000000000005c0",
+      plynth: [],
+      relayer,
+      nonceOf: async () => 0n,
+      balanceOf: async () => 0n,
+      simulate: async () => ({ ok: true }),
+      send: async () => "0x",
+      now: () => Math.floor(Date.now() / 1000),
+      trade: tradeDeps({ pub, wallet: wc, account: { address: relayer, type: "json-rpc" } as any, chain: pub.chain!, trade: trade(), pool: pool(), minFee: () => E18 / 100n }),
+    });
+    const fetchImpl = ((url: string, init?: RequestInit) => app.request(new URL(url).pathname, init)) as unknown as typeof fetch;
+    const feeBefore = (await read(tsla(), tokenAbi, "balanceOf", [relayer])) as bigint;
+    const hash = await relayerClient("http://relayer.test", fetchImpl).swap(s, 100);
+    const tx = await pub.getTransaction({ hash });
+    expect(tx.from.toLowerCase()).toBe(relayer.toLowerCase());
+    expect(tx.from.toLowerCase()).not.toBe(alice.toLowerCase());
+    expect(await spent(s.pub.nullifier)).toBe(true);
+    expect((await read(tsla(), tokenAbi, "balanceOf", [relayer])) - feeBefore).toBe(E18 / 50n);
+    // settle the v2 output through the relayer too
+    const out = await find(usdg(), (n) => n.version === 2 && n.raw >= 200n * U && n.raw < 260n * U);
+    const st = await proveSettle({ keys: ka, tree: state!.tree, note: out });
+    const h2 = await relayerClient("http://relayer.test", fetchImpl).settle(st);
+    expect((await pub.getTransaction({ hash: h2 })).from.toLowerCase()).toBe(relayer.toLowerCase());
+    expect((await find(usdg(), (n) => n.version === 1 && n.raw === out.raw)).raw).toBe(out.raw);
   }, 180_000);
 });

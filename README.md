@@ -99,7 +99,7 @@ The deploy scripts in `contracts/script` write every address to `app/deployments
 | API | `bin/api.ts` | Read API (Hono, tRPC at `/trpc`, REST mirror at `/v1`). Returns unsigned transactions and holds no keys |
 | Indexer | `bin/indexer.ts` | The only process that polls the chain for logs. Writes events to Postgres |
 | Keeper | `bin/keeper.ts` | Jobs that send transactions: `refresh-mock-feeds` (testnet kit only), `topups`, `roundups`, `spends`, `sweep`, `beacon`, `execute`, `deliver-quiet`, `deliver-hidden` |
-| Relayer | `bin/relayer.ts` | Gasless Quiet claims and Hidden Vault withdraws from its own wallet, rate-limited |
+| Relayer | `bin/relayer.ts` | Gasless Quiet claims, Hidden Vault withdraws and private sells / buys / parks (`POST /claim`, `/withdraw`, `/swap`, `/settle`) from its own wallet, so the user's wallet never appears; rate-limited, minimum fees |
 | Eligibility | `bin/eligibility.ts` | Screens a wallet (signed self-attestation, IP country, sanctions list) and signs a registry attestation |
 | MCP | `bin/mcp.ts` | Read-only treasury tools and exception requests over MCP (stdio or HTTP), per-treasury tokens |
 | Migrate | `bin/migrate.ts` | Applies Drizzle migrations from `app/drizzle` |
@@ -197,7 +197,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `KEEPER_MOCK_FEED_REAL_STALE_S` | `86400` | Age (s) after which a real feed counts as stale. |
 | `KEEPER_MOCK_FEED_ALIGN_BPS` | `50` | Swap the testnet kit's v4 pool back to the oracle price when it is further off than this (bps; 0 = never). |
 | **relayer (bin/relayer.ts)** | | |
-| `RELAYER_CHAIN` | `local` | Gasless Quiet claims and Hidden Vault withdraws. Its wallet pays gas. |
+| `RELAYER_CHAIN` | `local` | Gasless Quiet claims, Hidden Vault withdraws and private trades. Its wallet pays gas. |
 | `RELAYER_PORT` | `8791` |  |
 | `RELAYER_DEPLOYMENTS_DIR` | `app/deployments` |  |
 | `RELAYER_PRIVATE_KEY` | – |  |
@@ -206,7 +206,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `RELAYER_TRUST_PROXY` | `0` | 1 = rate-limit by X-Forwarded-For (only behind your own reverse proxy). IPv6 clients are limited per /64. |
 | `RELAYER_IP_LIMIT` | `20` |  |
 | `RELAYER_STEALTH_LIMIT` | `3` |  |
-| `RELAYER_WITHDRAW_MIN_FEES` | – | Minimum withdraw fee per asset, "0xasset:raw,0xasset:raw" in raw token units. Required on mainnet; an unlisted asset is not relayed; amount 0 and fee 0 are always refused. Blank on local/testnet = 0.25 USDG and 0.001 of each Stock Token of the deployment. |
+| `RELAYER_WITHDRAW_MIN_FEES` | – | Minimum withdraw and private-trade fee per asset (the trade's input asset), "0xasset:raw,0xasset:raw" in raw token units. Required on mainnet; an unlisted asset is not relayed; amount 0 and fee 0 are always refused. Blank on local/testnet = 0.25 USDG and 0.001 of each Stock Token of the deployment. |
 | `RELAYER_CLAIM_MIN_RAW` | – | Smallest Quiet claim the relayer pays gas for, per token (same format). Required on mainnet. Blank on local/testnet = 1 USDG and 0.001 of each Stock Token. |
 | **api (bin/api.ts)** | | |
 | `API_CHAIN` | `local` | Read-only dashboard API; holds no keys (except the optional eligibility attester below). |

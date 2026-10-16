@@ -2,8 +2,8 @@
 // exactly what the server parses, and every error comes back as a RelayerError with the HTTP status.
 import { describe, expect, test } from "bun:test";
 import { getAddress, type Address, type Hex } from "viem";
-import { relayerApp, type ClaimArgs, type WithdrawArgs } from "../../app/src/relayer/app";
-import { RelayerError, claimRequest, relayerClient, relayerHealth, submitClaim, submitWithdraw, withdrawRequest, type RelayedWithdraw } from "../src/relayer";
+import { relayerApp, type ClaimArgs, type SettleArgs, type SwapArgs, type WithdrawArgs } from "../../app/src/relayer/app";
+import { RelayerError, claimRequest, relayerClient, relayerHealth, submitClaim, submitSettle, submitSwap, submitWithdraw, withdrawRequest, type RelayedSwap, type RelayedWithdraw } from "../src/relayer";
 import { signClaim } from "../src/stealth";
 import { submitWithdraw as vaultSubmitWithdraw, withdrawRequest as vaultWithdrawRequest } from "../src/vault";
 
@@ -18,6 +18,8 @@ const word = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex;
 function server() {
   const claims: ClaimArgs[] = [];
   const withdraws: WithdrawArgs[] = [];
+  const swaps: SwapArgs[] = [];
+  const settles: SettleArgs[] = [];
   const app = relayerApp({
     chainId: 31337,
     stealthClaims: SC,
@@ -36,11 +38,28 @@ function server() {
       simulate: async () => ({ ok: true }),
       send: async (a) => (withdraws.push(a), `0x${"ee".repeat(32)}` as Hex),
     },
+    trade: {
+      trade: "0x0000000000000000000000000000000000000901",
+      minFee: (a) => (a.toLowerCase() === TOKEN.toLowerCase() ? 5n : undefined),
+      nullifierSpent: async () => false,
+      isKnownRoot: async (r) => r === word(1),
+      simulateSwap: async () => ({ ok: true }),
+      sendSwap: async (a) => (swaps.push(a), `0x${"5a".repeat(32)}` as Hex),
+      simulateSettle: async () => ({ ok: true }),
+      sendSettle: async (a) => (settles.push(a), `0x${"5e".repeat(32)}` as Hex),
+    },
   });
   // A fetch that never leaves the process: routes the request into the Hono app.
   const fetchImpl = ((url: string, init?: RequestInit) => app.request(new URL(url).pathname, init)) as unknown as typeof fetch;
-  return { fetchImpl, claims, withdraws };
+  return { fetchImpl, claims, withdraws, swaps, settles };
 }
+
+const swap = (o: Partial<RelayedSwap["pub"]> = {}): RelayedSwap => ({
+  proof: "0x1234",
+  pub: { root: word(1), nullifier: word(7), changeCommitment: word(3), assetIn: TOKEN, amountIn: 1000n, relayerFee: 10n, assetOut: DEST, minOut: 900n, outPartial: word(4), deadline: BigInt(NOW + 600), ...o },
+  encryptedChange: "0x",
+  encryptedOut: "0xabcd",
+});
 
 const withdraw = (o: Partial<RelayedWithdraw["pub"]> = {}): RelayedWithdraw => ({
   proof: "0x1234",
@@ -95,6 +114,31 @@ describe("relayer client", () => {
     await c.health();
     await c.withdraw(withdraw());
     expect(seen).toEqual(["http://relayer.test/health", "http://relayer.test/withdraw"]);
+  });
+
+  // Audit SDK lead: private sells were sent from the user's own wallet, so the trade was public as theirs. They go
+  // through the relayer now; the request is exactly what the relayer parses.
+  test("private trades: submitSwap / submitSettle are accepted as-is and forwarded exactly; the relayer's rules apply", async () => {
+    const s = server();
+    expect(await submitSwap("http://relayer.test", swap(), 150, s.fetchImpl)).toBe(`0x${"5a".repeat(32)}`);
+    expect(s.swaps[0]).toMatchObject({ maxSlippageBps: 150, pub: { amountIn: 1000n, relayerFee: 10n, minOut: 900n, deadline: BigInt(NOW + 600), assetOut: getAddress(DEST) }, encryptedOut: "0xabcd" });
+    const st = { proof: "0x1234" as Hex, root: word(1), nullifier: word(8), outCommitment: word(9), encryptedOut: "0xabcd" as Hex };
+    expect(await relayerClient("http://relayer.test", s.fetchImpl).settle(st)).toBe(`0x${"5e".repeat(32)}`);
+    expect(s.settles[0]).toEqual(st);
+    // a fee below the minimum, a zero fee, an asset without a fee, an expired deadline, slippage above 500 bps
+    for (const [bad, slip, why] of [
+      [swap({ relayerFee: 4n }), 100, /minimum/],
+      [swap({ relayerFee: 0n }), 100, /relayerFee must be a positive/],
+      [swap({ assetIn: DEST, assetOut: TOKEN }), 100, /not relayed/],
+      [swap({ deadline: BigInt(NOW - 1) }), 100, /expired/],
+      [swap(), 501, /maxSlippageBps/],
+    ] as const) {
+      const err = await submitSwap("http://relayer.test", bad, slip, s.fetchImpl).catch((e) => e);
+      expect(err).toBeInstanceOf(RelayerError);
+      expect(err.message).toMatch(why);
+    }
+    expect(s.swaps).toHaveLength(1);
+    await expect(submitSettle("http://relayer.test", { ...st, outCommitment: word(0) }, s.fetchImpl)).rejects.toThrow(/outCommitment/);
   });
 
   test("the vault module re-exports the same withdraw client (one implementation)", () => {

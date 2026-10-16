@@ -144,7 +144,15 @@ export async function proveSettle(p: { keys: VaultKeys; tree: NoteTree; note: Ow
   };
 }
 
-/** ShieldedTrade.swap. `maxSlippageBps` is StockRouter's oracle guard for buy/sell (max 500); the proof's minOut always binds. */
+/**
+ * ShieldedTrade.swap as an unsigned transaction. `maxSlippageBps` is StockRouter's oracle guard for buy/sell (max 500);
+ * the proof's minOut always binds.
+ *
+ * PRIVACY: whoever sends this transaction is public as its sender. Sent from the user's own wallet it links that
+ * wallet to the trade (asset, amount, timing), which defeats the point of a private sell. Submit it through a
+ * relayer instead (`submitSwap` / `relayerClient(url).swap` in `@plynth/sdk/relayer`); the proof's relayerFee pays
+ * it. Use this builder only to hand the call to a relayer or for tests.
+ */
 export function swapTx(trade: Address, s: SwapProof, maxSlippageBps = 100): UnsignedTx {
   return {
     to: getAddress(trade),
@@ -152,6 +160,7 @@ export function swapTx(trade: Address, s: SwapProof, maxSlippageBps = 100): Unsi
   };
 }
 
+/** ShieldedTrade.settle as an unsigned transaction. Same privacy rule as `swapTx`: submit it through a relayer (`submitSettle`). */
 export function settleTx(trade: Address, s: SettleProof): UnsignedTx {
   return {
     to: getAddress(trade),

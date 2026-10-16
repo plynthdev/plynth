@@ -221,3 +221,57 @@ describe("relayer nonce manager", () => {
     expect(used).toEqual([7, 8, 9, 10]);
   });
 });
+
+// Audit SDK lead: private sells go through the relayer (POST /swap, /settle) so the user's wallet never sends them.
+describe("POST /swap and /settle", () => {
+  const swapBody = (o: Record<string, unknown> = {}) => ({
+    proof: "0x" + "ab".repeat(100),
+    pub: { root: word(1), nullifier: word(40), changeCommitment: word(3), assetIn: ASSET, amountIn: "1000", relayerFee: "10", assetOut: DEST, minOut: "900", outPartial: word(4), deadline: String(2_000_000_000), ...o },
+    maxSlippageBps: 100,
+    encryptedChange: "0x",
+    encryptedOut: "0x" + "cd".repeat(141),
+  });
+  function tradeSetup(spent = new Set<string>()) {
+    const sent: string[] = [];
+    const app = relayerApp({
+      chainId: 31337,
+      stealthClaims: "0x00000000000000000000000000000000000005c0",
+      plynth: [VAULT],
+      relayer: "0x0000000000000000000000000000000000000001",
+      nonceOf: async () => 0n,
+      balanceOf: async () => 0n,
+      simulate: async () => ({ ok: true }),
+      send: async () => "0x",
+      now: () => 1_900_000_000,
+      ipOf: () => "1.1.1.1",
+      trade: {
+        trade: POOL,
+        minFee: (a) => (a.toLowerCase() === ASSET.toLowerCase() ? 5n : undefined),
+        nullifierSpent: async (n) => spent.has(n),
+        isKnownRoot: async (r) => r === word(1),
+        simulateSwap: async () => ({ ok: true }),
+        sendSwap: async (a) => (sent.push(`swap:${a.pub.nullifier}`), `0x${"5a".repeat(32)}` as Hex),
+        simulateSettle: async () => ({ ok: true }),
+        sendSettle: async (a) => (sent.push(`settle:${a.nullifier}`), `0x${"5e".repeat(32)}` as Hex),
+      },
+    });
+    const post = (path: string, body: unknown) => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { post, sent };
+  }
+
+  test("valid swap and settle are sent; spent notes, unknown roots and bad shapes are refused", async () => {
+    const t = tradeSetup(new Set([word(41)]));
+    expect((await t.post("/swap", swapBody())).status).toBe(200);
+    expect((await t.post("/swap", swapBody({ nullifier: word(41) }))).status).toBe(409);
+    expect((await t.post("/swap", swapBody({ root: word(9), nullifier: word(42) }))).status).toBe(400);
+    expect((await t.post("/swap", { ...swapBody(), encryptedOut: "0x" })).status).toBe(400);
+    expect((await t.post("/settle", { proof: "0x12", root: word(1), nullifier: word(43), outCommitment: word(5), encryptedOut: "0xab" })).status).toBe(200);
+    expect(t.sent).toEqual([`swap:${word(40)}`, `settle:${word(43)}`]);
+  });
+
+  test("not configured: 503", async () => {
+    const app = relayerApp({ chainId: 1, stealthClaims: POOL, plynth: [], relayer: POOL, nonceOf: async () => 0n, balanceOf: async () => 0n, simulate: async () => ({ ok: true }), send: async () => "0x" });
+    expect((await app.request("/swap", { method: "POST", body: "{}" })).status).toBe(503);
+    expect((await app.request("/settle", { method: "POST", body: "{}" })).status).toBe(503);
+  });
+});

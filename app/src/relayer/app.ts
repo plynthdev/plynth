@@ -13,7 +13,7 @@
 // The proof binds recipient, amount, fee and the encrypted change (ext_hash), so the relayer cannot redirect
 // funds or strand the change note by swapping its ciphertext; it keeps pub.relayerFee.
 import { claimDomain, claimTypes, type ClaimMessage } from "@plynth/sdk/stealth";
-import type { PublicWithdraw } from "@plynth/sdk/vault";
+import type { PublicSwap, PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { getAddress, isAddress, isHex, recoverTypedDataAddress, size, type Address, type Hex } from "viem";
@@ -34,6 +34,26 @@ export type WithdrawDeps = {
   send: (w: WithdrawArgs) => Promise<Hex>;
 };
 
+export type SwapArgs = { proof: Hex; pub: PublicSwap; maxSlippageBps: number; encryptedChange: Hex; encryptedOut: Hex };
+export type SettleArgs = { proof: Hex; root: Hex; nullifier: Hex; outCommitment: Hex; encryptedOut: Hex };
+
+/**
+ * Private sell / buy / park through ShieldedTrade (SDK lead from the audit): sent from the user's own wallet a swap
+ * names that wallet as the trader, so the relayer submits it and keeps the proven relayerFee. Settle (a swap output
+ * into a v1 note) carries no fee; it is relayed so that step does not link the wallet either.
+ */
+export type TradeDeps = {
+  trade: Address;
+  /** Same table as withdraws: minimum fee in raw units of the input asset; undefined = not relayed. */
+  minFee: (asset: Address) => bigint | undefined;
+  nullifierSpent: (nullifier: Hex) => Promise<boolean>;
+  isKnownRoot: (root: Hex) => Promise<boolean>;
+  simulateSwap: (s: SwapArgs) => Promise<SimOutcome>;
+  sendSwap: (s: SwapArgs) => Promise<Hex>;
+  simulateSettle: (s: SettleArgs) => Promise<SimOutcome>;
+  sendSettle: (s: SettleArgs) => Promise<Hex>;
+};
+
 export type RelayerDeps = {
   chainId: number;
   stealthClaims: Address;
@@ -52,6 +72,8 @@ export type RelayerDeps = {
   log?: (m: string) => void;
   /** Hidden Vault withdraws; absent = POST /withdraw answers 503. */
   withdraw?: WithdrawDeps | undefined;
+  /** Private trades (ShieldedTrade swap and settle); absent = POST /swap and /settle answer 503. */
+  trade?: TradeDeps | undefined;
   /** Smallest claim relayed per token (raw); undefined = token not relayed. Absent = no minimum (tests, local). */
   claimMin?: ((token: Address) => bigint | undefined) | undefined;
   /** Exact browser origins allowed to call the relayer (the web app). Absent = no CORS headers (server-to-server only). */
@@ -110,6 +132,59 @@ export function parseWithdraw(body: unknown): WithdrawArgs | string {
       encryptedChange: p.encryptedChange as Hex,
     },
   };
+}
+
+const MAX_SLIPPAGE_BPS = 500;
+const U128 = 1n << 128n;
+
+export function parseSwap(body: unknown): SwapArgs | string {
+  if (!body || typeof body !== "object") return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  if (typeof b.proof !== "string" || !isHex(b.proof) || size(b.proof) === 0 || size(b.proof) > MAX_PROOF_BYTES) return "proof must be hex bytes";
+  const p = b.pub as Record<string, unknown> | undefined;
+  if (!p || typeof p !== "object") return "pub must be an object";
+  for (const k of ["root", "nullifier", "changeCommitment", "outPartial"]) if (!isWord(p[k])) return `pub.${k} must be a 32-byte hex word`;
+  for (const k of ["assetIn", "assetOut"]) if (typeof p[k] !== "string" || !isAddress(p[k] as string, { strict: false })) return `pub.${k} must be an address`;
+  const amountIn = parseUint(p.amountIn);
+  const relayerFee = parseUint(p.relayerFee);
+  const minOut = parseUint(p.minOut);
+  const deadline = parseUint(p.deadline);
+  if (amountIn === null || amountIn === 0n || amountIn >= U128) return "pub.amountIn must be a positive integer below 2^128";
+  if (relayerFee === null || relayerFee === 0n || relayerFee >= amountIn) return "pub.relayerFee must be a positive integer below amountIn";
+  if (minOut === null || minOut >= U128) return "pub.minOut must be an integer below 2^128";
+  if (deadline === null || deadline >= 1n << 64n) return "pub.deadline must be unix seconds";
+  const slip = b.maxSlippageBps;
+  if (typeof slip !== "number" || !Number.isInteger(slip) || slip < 0 || slip > MAX_SLIPPAGE_BPS) return `maxSlippageBps must be an integer 0..${MAX_SLIPPAGE_BPS}`;
+  for (const k of ["encryptedChange", "encryptedOut"]) if (typeof b[k] !== "string" || !isHex(b[k]) || size(b[k] as Hex) > MAX_NOTE_BYTES) return `${k} must be hex, at most 512 bytes`;
+  if (size(b.encryptedOut as Hex) === 0) return "encryptedOut must not be empty";
+  return {
+    proof: b.proof as Hex,
+    pub: {
+      root: p.root as Hex,
+      nullifier: p.nullifier as Hex,
+      changeCommitment: p.changeCommitment as Hex,
+      assetIn: getAddress(p.assetIn as string),
+      amountIn,
+      relayerFee,
+      assetOut: getAddress(p.assetOut as string),
+      minOut,
+      outPartial: p.outPartial as Hex,
+      deadline,
+    },
+    maxSlippageBps: slip,
+    encryptedChange: b.encryptedChange as Hex,
+    encryptedOut: b.encryptedOut as Hex,
+  };
+}
+
+export function parseSettle(body: unknown): SettleArgs | string {
+  if (!body || typeof body !== "object") return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  if (typeof b.proof !== "string" || !isHex(b.proof) || size(b.proof) === 0 || size(b.proof) > MAX_PROOF_BYTES) return "proof must be hex bytes";
+  for (const k of ["root", "nullifier", "outCommitment"]) if (!isWord(b[k])) return `${k} must be a 32-byte hex word`;
+  if (BigInt(b.outCommitment as Hex) === 0n) return "outCommitment must not be zero";
+  if (typeof b.encryptedOut !== "string" || !isHex(b.encryptedOut) || size(b.encryptedOut) === 0 || size(b.encryptedOut) > MAX_NOTE_BYTES) return "encryptedOut must be hex, 1..512 bytes";
+  return { proof: b.proof as Hex, root: b.root as Hex, nullifier: b.nullifier as Hex, outCommitment: b.outCommitment as Hex, encryptedOut: b.encryptedOut as Hex };
 }
 
 export function relayerApp(d: RelayerDeps) {
@@ -221,5 +296,47 @@ export function relayerApp(d: RelayerDeps) {
       withdrawing.delete(key);
     }
   });
+  // One in flight per nullifier, shared by withdraw, swap and settle (they all spend a note).
+  const spending = withdrawing;
+  async function relayTrade(c: Context, kind: "swap" | "settle"): Promise<Response> {
+    const t = d.trade;
+    if (!t) return c.json({ error: "private trades are not configured" }, 503);
+    if (!ipLimiter.take(ipOf(c))) return c.json({ error: "rate limited (ip)" }, 429);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const a = kind === "swap" ? parseSwap(body) : parseSettle(body);
+    if (typeof a === "string") return c.json({ error: a }, 400);
+    const nullifier = "pub" in a ? a.pub.nullifier : a.nullifier;
+    const root = "pub" in a ? a.pub.root : a.root;
+    if ("pub" in a) {
+      if (a.pub.deadline <= BigInt(Math.floor(now()))) return c.json({ error: "expired" }, 400);
+      const min = t.minFee(a.pub.assetIn);
+      if (min === undefined) return c.json({ error: "this asset is not relayed" }, 400);
+      if (a.pub.relayerFee < (min > 0n ? min : 1n)) return c.json({ error: `relayerFee below the minimum (${min > 0n ? min : 1n})` }, 400);
+    }
+    const key = nullifier.toLowerCase();
+    if (spending.has(key)) return c.json({ error: "a transaction for this note is already being sent" }, 409);
+    spending.add(key);
+    try {
+      if (await t.nullifierSpent(nullifier)) return c.json({ error: "note already spent" }, 409);
+      if (!(await t.isKnownRoot(root))) return c.json({ error: "unknown or expired root: sync and prove again" }, 400);
+      const sim = "pub" in a ? await t.simulateSwap(a) : await t.simulateSettle(a);
+      if (!sim.ok) return c.json({ error: `simulation reverted: ${sim.error}` }, 400);
+      const txHash = "pub" in a ? await t.sendSwap(a) : await t.sendSettle(a);
+      log(`${kind} sent ${txHash}`);
+      return c.json({ txHash });
+    } catch (err) {
+      log(`${kind} failed: ${String((err as Error)?.message ?? err).split("\n")[0]}`);
+      return c.json({ error: "could not send" }, 502);
+    } finally {
+      spending.delete(key);
+    }
+  }
+  app.post("/swap", (c) => relayTrade(c, "swap"));
+  app.post("/settle", (c) => relayTrade(c, "settle"));
   return app;
 }

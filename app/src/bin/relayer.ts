@@ -7,14 +7,15 @@
 // RELAYER_WITHDRAW_MIN_FEES ("0xasset:raw,..." minimum Hidden Vault withdraw fee per asset; unlisted assets are not
 // relayed) and RELAYER_CLAIM_MIN_RAW (smallest relayed Quiet claim per token). Both are required on mainnet; blank on
 // local / testnet = defaults for USDG and every Stock Token of the deployment (relayer/chain.ts relayerTables).
-// POST /withdraw is enabled when the deployment has a shieldedPool.
+// POST /withdraw is enabled when the deployment has a shieldedPool; POST /swap and /settle (private sell / buy / park)
+// when it also has a shieldedTrade.
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { readDeployment } from "@/indexer";
 import { getConnInfo } from "hono/bun";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadSigner } from "@/keeper/signer";
 import { relayerApp } from "@/relayer/app";
-import { chainDeps, NonceManager, relayerTables, withdrawDeps } from "@/relayer/chain";
+import { chainDeps, NonceManager, relayerTables, tradeDeps, withdrawDeps } from "@/relayer/chain";
 import { RateLimiter } from "@/relayer/ratelimit";
 
 const config = loadConfig();
@@ -50,6 +51,11 @@ const app = relayerApp({
   withdraw:
     typeof dep.shieldedPool === "string"
       ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces })
+      : undefined,
+  // Private sell / buy / park (POST /swap, /settle) when the deployment has a ShieldedTrade.
+  trade:
+    typeof dep.shieldedTrade === "string" && typeof dep.shieldedPool === "string"
+      ? tradeDeps({ pub, wallet, account, chain, trade: getAddress(dep.shieldedTrade), pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces })
       : undefined,
   log: (m) => console.log(`[relayer ${chainId}] ${m}`),
   corsOrigins: config.CORS_ORIGINS

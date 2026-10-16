@@ -1,7 +1,7 @@
 // viem-backed RelayerDeps.
 import { BaseError, ContractFunctionRevertedError, parseAbi, type Account, type Address, type Chain, type PublicClient, type WalletClient } from "viem";
-import { shieldedPoolAbi } from "@plynth/sdk/vault";
-import type { ClaimArgs, RelayerDeps, SimOutcome, WithdrawArgs, WithdrawDeps } from "./app";
+import { shieldedPoolAbi, shieldedTradeAbi } from "@plynth/sdk/vault";
+import type { ClaimArgs, RelayerDeps, SettleArgs, SimOutcome, SwapArgs, TradeDeps, WithdrawArgs, WithdrawDeps } from "./app";
 
 export const stealthClaimsAbi = parseAbi([
   "function claim(address token, address stealth, address to, uint256 raw, uint256 deadline, bytes sig)",
@@ -138,6 +138,39 @@ export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; accou
       if (r.status !== "success") throw new Error(`withdraw ${hash} reverted on-chain`);
       return hash;
     },
+  };
+}
+
+/** ShieldedTrade swap and settle (the pool answers spent/root questions: the trade spends pool notes). */
+export function tradeDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; trade: Address; pool: Address; minFee: (a: Address) => bigint | undefined; nonces?: NonceManager }): TradeDeps {
+  const nonces = o.nonces ?? new NonceManager(() => o.pub.getTransactionCount({ address: o.account.address, blockTag: "pending" }));
+  const swapArgs = (s: SwapArgs) => [s.proof, s.pub, s.maxSlippageBps, s.encryptedChange, s.encryptedOut] as const;
+  const settleArgs = (s: SettleArgs) => [s.proof, s.root, s.nullifier, s.outCommitment, s.encryptedOut] as const;
+  const sim = async (functionName: "swap" | "settle", args: readonly unknown[]): Promise<SimOutcome> => {
+    try {
+      await o.pub.simulateContract({ account: o.account, address: o.trade, abi: shieldedTradeAbi, functionName, args } as any);
+      return { ok: true };
+    } catch (err) {
+      const name = revertName(err);
+      if (name) return { ok: false, error: name };
+      throw err;
+    }
+  };
+  const send = async (functionName: "swap" | "settle", args: readonly unknown[]) => {
+    const hash = await nonces.run((nonce) => o.wallet.writeContract({ account: o.account, chain: o.chain, address: o.trade, abi: shieldedTradeAbi, functionName, args, nonce } as any));
+    const r = await o.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
+    if (r.status !== "success") throw new Error(`${functionName} ${hash} reverted on-chain`);
+    return hash;
+  };
+  return {
+    trade: o.trade,
+    minFee: o.minFee,
+    nullifierSpent: (n) => o.pub.readContract({ address: o.pool, abi: shieldedPoolAbi, functionName: "nullifierSpent", args: [n] }) as Promise<boolean>,
+    isKnownRoot: (r) => o.pub.readContract({ address: o.pool, abi: shieldedPoolAbi, functionName: "isKnownRoot", args: [r] }) as Promise<boolean>,
+    simulateSwap: (s) => sim("swap", swapArgs(s)),
+    sendSwap: (s) => send("swap", swapArgs(s)),
+    simulateSettle: (s) => sim("settle", settleArgs(s)),
+    sendSettle: (s) => send("settle", settleArgs(s)),
   };
 }
 

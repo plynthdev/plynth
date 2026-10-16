@@ -79,7 +79,10 @@ Read these before shipping any of it.
   past and future incoming note (but not spends). See the sections below for statement, disclosure and
   threshold-proof limits.
 - **Relayers.** A relayer sees the request's IP and contents and can refuse or delay it; it cannot change it
-  (the claim is signed and the withdraw is proven to a fixed recipient and fee). It does rate limit.
+  (the claim is signed; withdraws and trades are proven to a fixed recipient and fee). It does rate limit, and it
+  only relays a withdraw or trade whose fee covers its per-asset minimum and a claim above its per-token minimum.
+- **Private trades leak the sender.** Submit `swap` / `settle` through a relayer (see "Private sell, buy and park");
+  sending them from your own wallet links it to the trade.
 - **Keeper and owner powers** are listed in each contract's NatSpec: the keeper can only settle users who chose
   that delivery mode and cannot redirect Open users; exits (`withdraw`, `claimOpen`, pool withdraws) are never
   gated by eligibility, pause, keeper or owner.
@@ -97,8 +100,15 @@ tests; `cd app && bun install` also installs the SDK's dependencies. Not publish
 state = await syncPool(pub, pool, state, { trade });              // also reads PartialNoteFilled
 const note = myNotes(state, keys).find((n) => n.asset === tsla && !n.spent)!;
 const s = await proveSwap({ keys, tree: state.tree, note, amountIn, assetOut: usdg, minOut, deadline, relayerFee });
-await send(swapTx(trade, s, 100));                                 // any account (a relayer) can submit
+await relayerClient(relayerUrl).swap(s, 100);                      // the relayer submits it and keeps relayerFee
 ```
+
+- **Send private trades through a relayer, never from your own wallet.** The sender of a `swap` or `settle`
+  transaction is public: sent from the user's wallet it names that wallet as the trader, with the asset, amount
+  and time, which undoes the privacy the proof gives. `relayerClient(url).swap(...)` / `.settle(...)` (or
+  `submitSwap` / `submitSettle`) hand the proven call to a Plynth relayer (`POST /swap`, `POST /settle`); the
+  relayer cannot change it and is paid by the proof's `relayerFee` (at least its per-asset minimum).
+  `swapTx` / `settleTx` only build the call (for a relayer of your own, or tests).
 
 - One `swap` proof covers sell (Stock Token -> USDG), buy (USDG -> Stock Token), park (USDG -> park shares) and
   unpark (park shares -> USDG); the pair decides which. `amountIn`, both assets, `minOut`, the relayer fee and the
@@ -107,8 +117,8 @@ await send(swapTx(trade, s, 100));                                 // any accoun
   ShieldedTrade appends the amount (`PartialNoteFilled`). Encrypted notes for it use version byte 2. `myNotes`
   returns it with `version: 2` once synced with `trade`.
 - A v2 note can be swapped again directly. Transfer, withdraw, statements (`decryptNote` is v1 only) and threshold
-  proofs need it settled first: `proveSettle` + `settleTx` (one extra transaction, nothing public but a
-  nullifier and a commitment).
+  proofs need it settled first: `proveSettle` + `relayerClient(url).settle(...)` (one extra transaction, nothing
+  public but a nullifier and a commitment; the relayer pays it, there is no fee).
 - `parkValue(pub, trade, shareToken, shares)` shows a park position in USDG (ERC-4626 `convertToAssets`, Morpho
   share price including interest accrued since the market's last update).
 
