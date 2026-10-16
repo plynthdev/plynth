@@ -33,7 +33,38 @@ export function parseMinFees(env: string | undefined): (asset: Address) => bigin
   return (asset) => m.get(asset.toLowerCase()) ?? 0n;
 }
 
-export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; pool: Address; minFee: (a: Address) => bigint }): WithdrawDeps {
+/**
+ * One nonce source for every transaction the relayer signs (claims and withdraws). Concurrent requests used to let
+ * viem read the same pending nonce twice: the second send failed or replaced the first. Signing is serialised; the
+ * next nonce is max(the node's pending count, last used + 1); a failed send drops the local counter so the next one
+ * re-reads the chain (a nonce the failed send never used is reused, not skipped).
+ */
+export class NonceManager {
+  private last: number | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(private readonly pending: () => Promise<number>) {}
+
+  /** Runs `send(nonce)` with the next nonce, one at a time. */
+  async run<T>(send: (nonce: number) => Promise<T>): Promise<T> {
+    const turn = this.queue.then(async () => {
+      const chain = await this.pending();
+      const nonce = this.last === undefined || chain > this.last ? chain : this.last + 1;
+      try {
+        const r = await send(nonce);
+        this.last = nonce;
+        return r;
+      } catch (err) {
+        this.last = undefined;
+        throw err;
+      }
+    });
+    this.queue = turn.catch(() => {});
+    return turn;
+  }
+}
+
+export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; pool: Address; minFee: (a: Address) => bigint; nonces?: NonceManager }): WithdrawDeps {
+  const nonces = o.nonces ?? new NonceManager(() => o.pub.getTransactionCount({ address: o.account.address, blockTag: "pending" }));
   const args = (w: WithdrawArgs) => [w.proof, w.pub] as const;
   return {
     pool: o.pool,
@@ -51,7 +82,7 @@ export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; accou
       }
     },
     send: async (w) => {
-      const hash = await o.wallet.writeContract({ account: o.account, chain: o.chain, address: o.pool, abi: shieldedPoolAbi, functionName: "withdraw", args: args(w) });
+      const hash = await nonces.run((nonce) => o.wallet.writeContract({ account: o.account, chain: o.chain, address: o.pool, abi: shieldedPoolAbi, functionName: "withdraw", args: args(w), nonce }));
       const r = await o.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error(`withdraw ${hash} reverted on-chain`);
       return hash;
@@ -59,7 +90,8 @@ export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; accou
   };
 }
 
-export function chainDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; stealthClaims: Address; plynth: Iterable<string> }): RelayerDeps {
+export function chainDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; stealthClaims: Address; plynth: Iterable<string>; nonces?: NonceManager }): RelayerDeps {
+  const nonces = o.nonces ?? new NonceManager(() => o.pub.getTransactionCount({ address: o.account.address, blockTag: "pending" }));
   const args = (a: ClaimArgs) => [a.token, a.stealth, a.to, a.raw, a.deadline, a.sig] as const;
   return {
     chainId: o.chain.id,
@@ -81,7 +113,7 @@ export function chainDeps(o: { pub: PublicClient; wallet: WalletClient; account:
       }
     },
     send: async (a) => {
-      const hash = await o.wallet.writeContract({ account: o.account, chain: o.chain, address: o.stealthClaims, abi: stealthClaimsAbi, functionName: "claim", args: args(a) });
+      const hash = await nonces.run((nonce) => o.wallet.writeContract({ account: o.account, chain: o.chain, address: o.stealthClaims, abi: stealthClaimsAbi, functionName: "claim", args: args(a), nonce }));
       const r = await o.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
       if (r.status !== "success") throw new Error(`claim ${hash} reverted on-chain`);
       return hash;

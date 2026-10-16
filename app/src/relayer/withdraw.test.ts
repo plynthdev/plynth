@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Address, Hex } from "viem";
 import { parseWithdraw, relayerApp, type RelayerDeps, type WithdrawArgs, type WithdrawDeps } from "./app";
-import { parseMinFees } from "./chain";
+import { NonceManager, parseMinFees } from "./chain";
 import { RateLimiter } from "./ratelimit";
 
 const POOL = "0x00000000000000000000000000000000000000b1" as Address;
@@ -130,5 +130,22 @@ describe("POST /withdraw", () => {
     expect(f(DEST)).toBe(0n);
     expect(parseMinFees(undefined)(ASSET)).toBe(0n);
     expect(() => parseMinFees("nope:1")).toThrow();
+  });
+});
+
+// Audit lead "relayer nonces": claims and withdraws share one serialised nonce source.
+describe("relayer nonce manager", () => {
+  test("concurrent sends get distinct consecutive nonces; a failed send frees its nonce", async () => {
+    let chainPending = 7;
+    const used: number[] = [];
+    const nm = new NonceManager(async () => chainPending);
+    const send = (fail = false) => (n: number) =>
+      new Promise<number>((res, rej) => setTimeout(() => (fail ? rej(new Error("boom")) : (used.push(n), res(n))), Math.random() * 5));
+    const out = await Promise.all([nm.run(send()), nm.run(send()), nm.run(send())]);
+    expect(out).toEqual([7, 8, 9]);
+    await expect(nm.run(send(true))).rejects.toThrow("boom");
+    chainPending = 10; // the node has seen 7, 8, 9
+    expect(await nm.run(send())).toBe(10); // the failed nonce 10 is reused, not skipped
+    expect(used).toEqual([7, 8, 9, 10]);
   });
 });
