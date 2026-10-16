@@ -203,10 +203,10 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `RELAYER_PRIVATE_KEY` | – |  |
 | `RELAYER_KEYSTORE` | – |  |
 | `RELAYER_KEYSTORE_PASSWORD_FILE` | – |  |
-| `RELAYER_TRUST_PROXY` | `0` | 1 = rate-limit by X-Forwarded-For (only behind your own reverse proxy). |
+| `RELAYER_TRUST_PROXY` | `0` | 1 = rate-limit by X-Forwarded-For (only behind your own reverse proxy). IPv6 clients are limited per /64. |
 | `RELAYER_IP_LIMIT` | `20` |  |
 | `RELAYER_STEALTH_LIMIT` | `3` |  |
-| `RELAYER_WITHDRAW_MIN_FEES` | – | Minimum withdraw fee per asset, "0xasset:raw,0xasset:raw" in raw token units; unlisted assets are free. |
+| `RELAYER_WITHDRAW_MIN_FEES` | – | Minimum withdraw fee per asset, "0xasset:raw,0xasset:raw" in raw token units. Required on mainnet; an unlisted asset is not relayed; amount 0 and fee 0 are always refused. Blank on local/testnet = 0.25 USDG and 0.001 of each Stock Token of the deployment. |
 | **api (bin/api.ts)** | | |
 | `API_CHAIN` | `local` | Read-only dashboard API; holds no keys (except the optional eligibility attester below). |
 | `API_PORT` | `8789` |  |

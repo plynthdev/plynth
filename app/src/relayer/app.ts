@@ -3,9 +3,11 @@
 // against the current on-chain nonce -> rate limit per stealth address -> balance -> eth_call simulation ->
 // send from the relayer's own key -> { txHash }. The relayer pays the gas; there is no fee in v1.
 // It cannot move funds anywhere the stealth key did not sign for: StealthClaims re-verifies the signature.
+// Rate limits key IPv4 addresses whole and IPv6 addresses by their /64 (one subscriber's prefix; audit M-8).
 //
 // Hidden Vault withdraws (todo 16). POST /withdraw {proof, pub}: shape check -> rate limit per IP ->
-// recipient is not a Plynth contract -> relayerFee >= the configured minimum for the asset -> one in flight per
+// recipient is not a Plynth contract -> amount and relayerFee > 0, relayerFee >= the minimum for the asset (an asset
+// without one is not relayed; audit M-8) -> one in flight per
 // nullifier -> nullifier unspent and root known (on-chain reads) -> eth_call simulation -> send -> { txHash }.
 // The proof binds recipient, amount, fee and the encrypted change (ext_hash), so the relayer cannot redirect
 // funds or strand the change note by swapping its ciphertext; it keeps pub.relayerFee.
@@ -14,7 +16,7 @@ import type { PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { getAddress, isAddress, isHex, recoverTypedDataAddress, size, type Address, type Hex } from "viem";
-import { RateLimiter } from "./ratelimit";
+import { ipKey, RateLimiter } from "./ratelimit";
 
 export type ClaimArgs = { token: Address; stealth: Address; to: Address; raw: bigint; deadline: bigint; sig: Hex };
 export type SimOutcome = { ok: true } | { ok: false; error: string };
@@ -23,8 +25,8 @@ export type WithdrawArgs = { proof: Hex; pub: PublicWithdraw };
 
 export type WithdrawDeps = {
   pool: Address;
-  /** Minimum relayer fee in raw units of `asset` (0 = free). */
-  minFee: (asset: Address) => bigint;
+  /** Minimum relayer fee in raw units of `asset`; undefined = this asset is not relayed. Never below 1. */
+  minFee: (asset: Address) => bigint | undefined;
   nullifierSpent: (nullifier: Hex) => Promise<boolean>;
   isKnownRoot: (root: Hex) => Promise<boolean>;
   simulate: (w: WithdrawArgs) => Promise<SimOutcome>;
@@ -88,8 +90,9 @@ export function parseWithdraw(body: unknown): WithdrawArgs | string {
   for (const k of ["asset", "recipient"]) if (typeof p[k] !== "string" || !isAddress(p[k] as string, { strict: false })) return `pub.${k} must be an address`;
   const amount = parseUint(p.amount);
   const relayerFee = parseUint(p.relayerFee);
-  if (amount === null || amount >= 1n << 128n) return "pub.amount must be an integer below 2^128";
-  if (relayerFee === null || relayerFee > amount) return "pub.relayerFee must be an integer <= amount";
+  if (amount === null || amount === 0n || amount >= 1n << 128n) return "pub.amount must be a positive integer below 2^128";
+  // A zero fee would make the relayer pay for the transaction, and a zero amount moves nothing (audit M-8).
+  if (relayerFee === null || relayerFee === 0n || relayerFee > amount) return "pub.relayerFee must be a positive integer <= amount";
   if (typeof p.encryptedChange !== "string" || !isHex(p.encryptedChange) || size(p.encryptedChange) > MAX_NOTE_BYTES) return "pub.encryptedChange must be hex, at most 512 bytes";
   return {
     proof: b.proof as Hex,
@@ -108,7 +111,8 @@ export function parseWithdraw(body: unknown): WithdrawArgs | string {
 
 export function relayerApp(d: RelayerDeps) {
   const now = d.now ?? (() => Math.floor(Date.now() / 1000));
-  const ipOf = d.ipOf ?? ((c: Context) => c.req.header("x-real-ip") ?? "unknown");
+  const rawIp = d.ipOf ?? ((c: Context) => c.req.header("x-real-ip") ?? "unknown");
+  const ipOf = (c: Context) => ipKey(rawIp(c));
   const ipLimiter = d.ipLimiter ?? new RateLimiter(20, 60_000);
   const stealthLimiter = d.stealthLimiter ?? new RateLimiter(3, 60_000);
   const plynth = new Set([...d.plynth].map((a) => a.toLowerCase()));
@@ -189,7 +193,8 @@ export function relayerApp(d: RelayerDeps) {
       return c.json({ error: "recipient is a Plynth contract" }, 400);
     }
     const min = w.minFee(a.pub.asset);
-    if (a.pub.relayerFee < min) return c.json({ error: `relayerFee below the minimum (${min})` }, 400);
+    if (min === undefined) return c.json({ error: "this asset is not relayed: withdraw it from your own wallet" }, 400);
+    if (a.pub.relayerFee < (min > 0n ? min : 1n)) return c.json({ error: `relayerFee below the minimum (${min > 0n ? min : 1n})` }, 400);
     const key = a.pub.nullifier.toLowerCase();
     if (withdrawing.has(key)) return c.json({ error: "a withdraw for this note is already being sent" }, 409);
     withdrawing.add(key);

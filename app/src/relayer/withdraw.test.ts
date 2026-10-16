@@ -2,8 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Address, Hex } from "viem";
 import { parseWithdraw, relayerApp, type RelayerDeps, type WithdrawArgs, type WithdrawDeps } from "./app";
-import { NonceManager, parseMinFees } from "./chain";
-import { RateLimiter } from "./ratelimit";
+import { NonceManager, parseMinFees, relayerTables } from "./chain";
+import { ipKey, RateLimiter } from "./ratelimit";
 
 const POOL = "0x00000000000000000000000000000000000000b1" as Address;
 const VAULT = "0x0000000000000000000000000000000000000a11" as Address;
@@ -124,16 +124,84 @@ describe("POST /withdraw", () => {
     expect((await off.post(req())).status).toBe(503);
   });
 
-  test("RELAYER_WITHDRAW_MIN_FEES parsing", () => {
+  test("RELAYER_WITHDRAW_MIN_FEES parsing: unlisted assets are not relayed, a listed 0 still means at least 1", () => {
     const f = parseMinFees(`${ASSET}:25, ${POOL}:0`);
     expect(f(ASSET)).toBe(25n);
-    expect(f(DEST)).toBe(0n);
-    expect(parseMinFees(undefined)(ASSET)).toBe(0n);
+    expect(f(POOL)).toBe(1n);
+    expect(f(DEST)).toBeUndefined();
+    expect(parseMinFees(undefined)(ASSET)).toBeUndefined();
     expect(() => parseMinFees("nope:1")).toThrow();
   });
 });
 
-// Audit lead "relayer nonces": claims and withdraws share one serialised nonce source.
+// Audit M-8: the relayer accepted amount 0 and fee 0 and the shipped env left RELAYER_WITHDRAW_MIN_FEES empty, so
+// every asset was free. An attacker withdrew 0 (keeping the whole value as change) and repeated, limited only by
+// 20 requests a minute per IP, and a new IP (any address of their IPv6 /64) reset the limit.
+describe("audit M-8: no free withdraws", () => {
+  test("PoC: 21 zero-amount / zero-fee withdraws are all refused before any chain call", async () => {
+    let reads = 0;
+    const s = setup({ minFee: () => 0n, nullifierSpent: async () => (reads++, false) });
+    // a fresh IPv6 address each time, all in one /64: refused, and the 21st hits the shared per-/64 limit
+    for (let i = 0; i < 21; i++) {
+      const r = await s.post(req({ amount: "0", relayerFee: "0", nullifier: word(100 + i) }), `2001:db8:1:2::${(i + 1).toString(16)}`);
+      expect(r.status).toBe(i < 20 ? 400 : 429);
+    }
+    const zeroFee = await s.post(req({ amount: "1000", relayerFee: "0", nullifier: word(200) }));
+    expect(zeroFee.status).toBe(400);
+    expect(((await zeroFee.json()) as any).error).toContain("relayerFee must be a positive integer");
+    expect(((await (await s.post(req({ amount: "0", relayerFee: "0" }))).json()) as any).error).toContain("pub.amount must be a positive integer");
+    expect(reads).toBe(0);
+    expect(s.sent).toHaveLength(0);
+  });
+
+  test("an asset without a configured fee is not relayed (fail closed)", async () => {
+    const s = setup({ minFee: () => undefined });
+    const r = await s.post(req());
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as any).error).toContain("not relayed");
+  });
+
+  test("blank fee tables: a startup error on mainnet; local/testnet fall back to non-zero defaults per deployment asset", () => {
+    const dep = { usdg: ASSET, stocks: { TSLA: { token: DEST } } };
+    expect(() => relayerTables({}, "mainnet", dep)).toThrow(/RELAYER_WITHDRAW_MIN_FEES must be set on mainnet/);
+    const t = relayerTables({}, "testnet", dep);
+    expect(t.minFee(ASSET)).toBe(250_000n);
+    expect(t.minFee(DEST)).toBe(10n ** 15n);
+    expect(t.minFee(POOL)).toBeUndefined();
+    const m = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: `${ASSET}:7` }, "mainnet", dep);
+    expect(m.minFee(ASSET)).toBe(7n);
+    expect(m.minFee(DEST)).toBeUndefined();
+  });
+
+  test("the shipped mainnet env lists a non-zero withdraw fee for USDG and every Stock Token", async () => {
+    const env = await Bun.file(`${import.meta.dir}/../../scripts/server/env.example`).text();
+    const dep = (await Bun.file(`${import.meta.dir}/../../deployments/4663.json`).json()) as { usdg: string; stocks: Record<string, { token: string }> };
+    const line = (k: string) => env.split("\n").find((l) => l.startsWith(`${k}=`))!.slice(k.length + 1);
+    const t = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: line("RELAYER_WITHDRAW_MIN_FEES") }, "mainnet", dep);
+    for (const a of [dep.usdg, ...Object.values(dep.stocks).map((s) => s.token)] as Address[]) {
+      expect(t.minFee(a)! > 1n).toBe(true);
+    }
+  });
+
+  test("rate limit by IPv6 /64: a new address in the same /64 shares the limit; another /64 does not", async () => {
+    const s = setup({}, { ipLimiter: new RateLimiter(2, 60_000) });
+    expect((await s.post(req({ nullifier: word(30) }), "2001:db8:1:2::1")).status).toBe(200);
+    expect((await s.post(req({ nullifier: word(31) }), "2001:db8:1:2:ffff:ffff:ffff:fffe")).status).toBe(200);
+    expect((await s.post(req({ nullifier: word(32) }), "2001:0db8:0001:0002:abcd::9")).status).toBe(429);
+    expect((await s.post(req({ nullifier: word(33) }), "2001:db8:1:3::1")).status).toBe(200);
+  });
+
+  test("ipKey", () => {
+    expect(ipKey("203.0.113.7")).toBe("203.0.113.7");
+    expect(ipKey("::ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(ipKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(ipKey("[2001:DB8:0:0:1::1]")).toBe("2001:db8:0:0::/64");
+    expect(ipKey("fe80::1%en0")).toBe("fe80:0:0:0::/64");
+    expect(ipKey("::1")).toBe("0:0:0:0::/64");
+    expect(ipKey("unknown")).toBe("unknown");
+  });
+});
+
 describe("relayer nonce manager", () => {
   test("concurrent sends get distinct consecutive nonces; a failed send frees its nonce", async () => {
     let chainPending = 7;

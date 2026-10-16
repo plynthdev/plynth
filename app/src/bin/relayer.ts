@@ -4,7 +4,9 @@
 // RELAYER_KEYSTORE_PASSWORD_FILE (a Foundry keystore; the wallet pays gas; the key is never logged),
 // RELAYER_TRUST_PROXY=1 to rate-limit by X-Forwarded-For (only behind your own proxy),
 // RELAYER_IP_LIMIT (per minute, default 20), RELAYER_STEALTH_LIMIT (per minute, default 3),
-// RELAYER_WITHDRAW_MIN_FEES ("0xasset:raw,..." minimum Hidden Vault withdraw fee per asset; default free).
+// RELAYER_WITHDRAW_MIN_FEES ("0xasset:raw,..." minimum Hidden Vault withdraw fee per asset; unlisted assets are not
+// relayed). Required on mainnet; blank on local / testnet = defaults for USDG and every Stock Token of the deployment
+// (relayer/chain.ts relayerTables).
 // POST /withdraw is enabled when the deployment has a shieldedPool.
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { readDeployment } from "@/indexer";
@@ -12,7 +14,7 @@ import { getConnInfo } from "hono/bun";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadSigner } from "@/keeper/signer";
 import { relayerApp } from "@/relayer/app";
-import { chainDeps, NonceManager, parseMinFees, withdrawDeps } from "@/relayer/chain";
+import { chainDeps, NonceManager, relayerTables, withdrawDeps } from "@/relayer/chain";
 import { RateLimiter } from "@/relayer/ratelimit";
 
 const config = loadConfig();
@@ -36,6 +38,7 @@ const plynth = Object.entries(dep).filter(([k, v]) => k !== "deployer" && typeof
 for (const s of Object.values(dep.stocks ?? {})) plynth.push(s.token);
 
 const trustProxy = config.RELAYER_TRUST_PROXY;
+const tables = relayerTables(config, config.RELAYER_CHAIN, dep as { usdg?: unknown; stocks?: Record<string, { token: string }> });
 // One nonce source for claims and withdraws: concurrent requests never sign the same nonce.
 const nonces = new NonceManager(() => pub.getTransactionCount({ address: account.address, blockTag: "pending" }));
 const app = relayerApp({
@@ -45,7 +48,7 @@ const app = relayerApp({
   stealthLimiter: new RateLimiter(config.RELAYER_STEALTH_LIMIT, 60_000),
   withdraw:
     typeof dep.shieldedPool === "string"
-      ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: parseMinFees(config.RELAYER_WITHDRAW_MIN_FEES), nonces })
+      ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces })
       : undefined,
   log: (m) => console.log(`[relayer ${chainId}] ${m}`),
   corsOrigins: config.CORS_ORIGINS

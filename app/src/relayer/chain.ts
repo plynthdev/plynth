@@ -22,15 +22,62 @@ function revertName(err: unknown): string | null {
   return null;
 }
 
-/** "0xasset:raw,0xasset:raw" -> per-asset minimum fee (RELAYER_WITHDRAW_MIN_FEES); anything unlisted is free. */
-export function parseMinFees(env: string | undefined): (asset: Address) => bigint {
+/** "0xasset:raw,0xasset:raw" -> per-asset table. Throws on a malformed entry, naming `name`. */
+export function parseAssetTable(env: string | undefined, name: string): Map<string, bigint> {
   const m = new Map<string, bigint>();
   for (const part of (env ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
     const [a, v] = part.split(":");
-    if (!a || !v || !/^0x[0-9a-fA-F]{40}$/.test(a) || !/^[0-9]+$/.test(v)) throw new Error(`bad RELAYER_WITHDRAW_MIN_FEES entry: ${part}`);
+    if (!a || !v || !/^0x[0-9a-fA-F]{40}$/.test(a) || !/^[0-9]+$/.test(v)) throw new Error(`bad ${name} entry: ${part}`);
     m.set(a.toLowerCase(), BigInt(v));
   }
-  return (asset) => m.get(asset.toLowerCase()) ?? 0n;
+  return m;
+}
+
+/**
+ * RELAYER_WITHDRAW_MIN_FEES -> per-asset minimum fee; an unlisted asset is not relayed (undefined) and a listed 0
+ * still means at least 1 (the relayer never works for free; audit M-8).
+ */
+export function parseMinFees(env: string | undefined): (asset: Address) => bigint | undefined {
+  const m = parseAssetTable(env, "RELAYER_WITHDRAW_MIN_FEES");
+  return (asset) => {
+    const v = m.get(asset.toLowerCase());
+    return v === undefined ? undefined : v > 0n ? v : 1n;
+  };
+}
+
+/** Defaults when the variable is blank (local and testnet only): 0.25 USDG, 0.001 of a Stock Token (18 decimals). */
+export const DEFAULT_WITHDRAW_FEE = { usdg: 250_000n, stock: 1_000_000_000_000_000n } as const;
+
+function deploymentAssets(dep: { usdg?: unknown; stocks?: Record<string, { token: string }> | undefined }): { usdg: string[]; stocks: string[] } {
+  return { usdg: typeof dep.usdg === "string" ? [dep.usdg] : [], stocks: Object.values(dep.stocks ?? {}).map((s) => s.token) };
+}
+
+/**
+ * The relayer's withdraw fee table. A blank variable on mainnet is a startup error (fail closed: a relayer that
+ * silently relays for free is how the audit's PoC drained it); on local / testnet it falls back to the defaults
+ * above for USDG and every Stock Token of the deployment.
+ */
+export function relayerTables(
+  env: { RELAYER_WITHDRAW_MIN_FEES?: string | undefined },
+  chain: "local" | "testnet" | "mainnet",
+  dep: { usdg?: unknown; stocks?: Record<string, { token: string }> | undefined },
+): { minFee: (asset: Address) => bigint | undefined } {
+  const assets = deploymentAssets(dep);
+  const table = (v: string | undefined, name: string, d: { usdg: bigint; stock: bigint }) => {
+    if (v && v.trim()) return parseAssetTable(v, name);
+    if (chain === "mainnet") throw new Error(`${name} must be set on mainnet ("0xasset:raw,..."; see scripts/server/env.example)`);
+    const m = new Map<string, bigint>();
+    for (const a of assets.usdg) m.set(a.toLowerCase(), d.usdg);
+    for (const a of assets.stocks) m.set(a.toLowerCase(), d.stock);
+    return m;
+  };
+  const fees = table(env.RELAYER_WITHDRAW_MIN_FEES, "RELAYER_WITHDRAW_MIN_FEES", DEFAULT_WITHDRAW_FEE);
+  return {
+    minFee: (a) => {
+      const v = fees.get(a.toLowerCase());
+      return v === undefined ? undefined : v > 0n ? v : 1n;
+    },
+  };
 }
 
 /**
@@ -63,7 +110,7 @@ export class NonceManager {
   }
 }
 
-export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; pool: Address; minFee: (a: Address) => bigint; nonces?: NonceManager }): WithdrawDeps {
+export function withdrawDeps(o: { pub: PublicClient; wallet: WalletClient; account: Account; chain: Chain; pool: Address; minFee: (a: Address) => bigint | undefined; nonces?: NonceManager }): WithdrawDeps {
   const nonces = o.nonces ?? new NonceManager(() => o.pub.getTransactionCount({ address: o.account.address, blockTag: "pending" }));
   const args = (w: WithdrawArgs) => [w.proof, w.pub] as const;
   return {

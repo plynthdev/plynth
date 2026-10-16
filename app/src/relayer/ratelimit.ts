@@ -1,3 +1,28 @@
+import { isIPv4, isIPv6 } from "node:net";
+
+/**
+ * The rate-limit key of a client address: an IPv4 address as is (also when IPv4-mapped, ::ffff:a.b.c.d), an IPv6
+ * address by its /64. One subscriber normally gets a whole /64, so keying single IPv6 addresses would hand an attacker
+ * 2^64 fresh limits (audit M-8). Anything unparseable is its own key.
+ */
+export function ipKey(ip: string): string {
+  const a = ip.trim().replace(/^\[|\]$/g, "").split("%")[0]!.toLowerCase();
+  const mapped = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped && isIPv4(mapped[1]!)) return mapped[1]!;
+  if (isIPv4(a)) return a;
+  if (!isIPv6(a)) return a;
+  let groups: string[];
+  const tail = a.match(/:(\d+\.\d+\.\d+\.\d+)$/); // embedded IPv4 in the last 32 bits: not part of the /64
+  const head = tail ? a.slice(0, a.length - tail[1]!.length) + "0:0" : a;
+  if (head.includes("::")) {
+    const [l, r] = head.split("::") as [string, string];
+    const left = l ? l.split(":") : [];
+    const right = r ? r.split(":") : [];
+    groups = [...left, ...Array(8 - left.length - right.length).fill("0"), ...right];
+  } else groups = head.split(":");
+  return `${groups.slice(0, 4).map((g) => parseInt(g || "0", 16).toString(16)).join(":")}::/64`;
+}
+
 /** Sliding-window counter per key, in memory (one relayer process). */
 export class RateLimiter {
   private hits = new Map<string, number[]>();
