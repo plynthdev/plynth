@@ -367,7 +367,7 @@ Procedures are served by tRPC at `/trpc` and mirrored as REST under `/v1` with t
 | `GET /v1/account/{address}/habit`, `/activity`, `/settings` | Saving habit, activity history and settings |
 | `POST /v1/tx/deposit`, `/withdraw`, `/approveUsdg`, `/setMix`, `/setSettings`, `/setHiddenKeys`, `/claimOpen` | Unsigned saver transactions (`setHiddenKeys` refuses low-order or out-of-field keys) |
 | `GET /v1/crowd/books` | Open Crowd Buy books |
-| `GET /v1/statements/{address}`, `POST /v1/statements/verify` | Viewing-key statements: which exist, and verification of a disclosed one |
+| `GET /v1/statements/{address}`, `POST /v1/statements/verify` | Viewing-key statements: which exist, and verification of a disclosed one (at most 32 notes; the pool history is cached and scanned incrementally) |
 | `GET /v1/proofs/nonce`, `POST /v1/proofs/verify` | Threshold proofs ("holds at least", "saved at least") |
 | `POST /v1/eligibility/check` | Eligibility screen (when `ELIGIBILITY_REGISTRY` is set) |
 | `/v1/roundups/*` | Statement import and bank link for round-ups (when `ROUNDUPS_ENABLED=1`) |

@@ -150,7 +150,7 @@ that is too much.
 ```ts
 const bundle = discloseNotes(chosenNotes, period, { chainId, pool, history });
 const verdict = await verifyDisclosure(publicClient, bundle, { pool, deployBlock });
-// or POST /v1/statements/verify with the bundle (stateless)
+// or POST /v1/statements/verify with the bundle (at most 32 notes there)
 ```
 
 A bundle opens chosen notes (asset, raw, ownerPk, blinding, leafIndex) with a Merkle path to the pool's root at
@@ -159,6 +159,12 @@ reaches that root, checks the root really was the pool's root at period end (the
 before the period's last block), and looks each nullifier up in `NullifierSpent` events
 (`unspent`, `spent`, `spent-after-period`). Changing any field (amount, blinding, leaf, root) fails the check.
 No key is shared.
+
+Cost: one backwards scan for the root and one pass for all disclosed nullifiers together (64 per `getLogs`), never
+one scan per note; a bundle holds at most 256 notes (`maxNotes` lowers it). A long-running verifier can pass
+`lookup` (a `DisclosureLookup` over its own cached index) so a verification makes no historical scan at all: the
+API does this, keeps the pool's `RootUpdated` / `NullifierSpent` history in memory, scans only new blocks, caps a
+bundle at 32 notes and rate-limits the route.
 
 ### Linking limits: what a disclosure gives away
 

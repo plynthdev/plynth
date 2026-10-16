@@ -173,7 +173,7 @@ function fakePub(H: Hist, head = 100n, chainId = 31337): PublicClient {
         return H.roots.filter((r) => inRange(r.block)).map((r, i) => ({ blockNumber: r.block, logIndex: i, transactionHash: tx(1), args: { root: toBytes32(r.root) } }));
       if (q.event.name === "NullifierSpent")
         return [...H.h.nullifiers]
-          .filter(([n, p]) => inRange(p.block) && toBytes32(n) === q.args.nullifier)
+          .filter(([n, p]) => inRange(p.block) && [q.args.nullifier].flat().includes(toBytes32(n)))
           .map(([n, p]) => ({ blockNumber: p.block, logIndex: p.logIndex, transactionHash: p.txHash, args: { nullifier: toBytes32(n) } }));
       throw new Error(`unexpected getLogs ${q.event.name}`);
     },

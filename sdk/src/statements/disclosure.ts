@@ -102,12 +102,15 @@ export type DisclosureVerdict = {
   errors: string[];
 };
 
-const MAX_NOTES = 256;
+/** Notes one bundle may disclose (a verifier may pass a lower `maxNotes`, the API does). */
+export const MAX_NOTES = 256;
+/** Nullifiers per NullifierSpent getLogs (an OR on the indexed topic). */
+const NULLIFIER_BATCH = 64;
 const word = (x: unknown): x is Hex => typeof x === "string" && isHex(x) && x.length === 66;
 const field = (x: unknown) => word(x) && BigInt(x) < P;
 
 /** Structural checks only (no chain). Returns the problems found. */
-export function checkBundleShape(b: unknown): string[] {
+export function checkBundleShape(b: unknown, maxNotes = MAX_NOTES): string[] {
   const e: string[] = [];
   const x = b as Partial<DisclosureBundle> | null;
   if (!x || typeof x !== "object") return ["bundle must be an object"];
@@ -117,7 +120,8 @@ export function checkBundleShape(b: unknown): string[] {
   const blk = (s: unknown) => typeof s === "string" && /^\d{1,20}$/.test(s);
   if (!x.period || !blk(x.period.fromBlock) || !blk(x.period.toBlock) || BigInt(x.period.fromBlock) > BigInt(x.period.toBlock)) e.push("period must be {fromBlock, toBlock} block numbers, from <= to");
   if (!field(x.root)) e.push("root must be a 32-byte field element");
-  if (!Array.isArray(x.notes) || x.notes.length === 0 || x.notes.length > MAX_NOTES) e.push(`notes must be 1..${MAX_NOTES} entries`);
+  const max = Math.min(maxNotes, MAX_NOTES);
+  if (!Array.isArray(x.notes) || x.notes.length === 0 || x.notes.length > max) e.push(`notes must be 1..${max} entries`);
   return e;
 }
 
@@ -152,15 +156,47 @@ async function rootAt(pub: PublicClient, pool: Address, toBlock: bigint, floor: 
 }
 
 /**
+ * Where verifyDisclosure reads the pool's history. The default scans the chain per call (one pass for the root, one
+ * pass for ALL disclosed nullifiers, never one per note); a long-running verifier (the API) passes a cached,
+ * incremental index instead, so a request costs no historical RPC scan at all (audit L-15).
+ */
+export type DisclosureLookup = {
+  /** The last RootUpdated at or before `toBlock`. */
+  rootAt(toBlock: bigint): Promise<{ root: bigint; block: bigint } | null>;
+  /** The first NullifierSpent block (up to `head`) of each nullifier that was spent, keyed by lower-case hex word. */
+  spentBlocks(nullifiers: Hex[], head: bigint): Promise<Map<string, bigint>>;
+};
+
+/** The default DisclosureLookup: scans `pub` from `floor` in `chunk`-block ranges. */
+export function chainLookup(pub: PublicClient, pool: Address, floor: bigint, chunk: bigint): DisclosureLookup {
+  return {
+    rootAt: (toBlock) => rootAt(pub, pool, toBlock, floor, chunk),
+    spentBlocks: async (nullifiers, head) => {
+      const out = new Map<string, bigint>();
+      const uniq = [...new Set(nullifiers.map((n) => n.toLowerCase() as Hex))];
+      for (let i = 0; i < uniq.length; i += NULLIFIER_BATCH) {
+        const logs = await logsChunked(pub, { address: pool, event: nullifierSpentEvent as AbiEvent, args: { nullifier: uniq.slice(i, i + NULLIFIER_BATCH) } }, floor, head, chunk);
+        for (const l of logs) {
+          const k = String(l.args.nullifier).toLowerCase();
+          if (!out.has(k)) out.set(k, l.blockNumber);
+        }
+      }
+      return out;
+    },
+  };
+}
+
+/**
  * Verifies a bundle against the chain `pub` is connected to. Stateless; needs only public data.
- * opts.deployBlock bounds the backwards scans (default 0); opts.pool pins the expected pool.
+ * opts.deployBlock bounds the backwards scans (default 0); opts.pool pins the expected pool; opts.maxNotes lowers the
+ * note cap; opts.lookup replaces the per-call chain scans with a cached index.
  */
 export async function verifyDisclosure(
   pub: PublicClient,
   bundle: unknown,
-  opts: { deployBlock?: bigint; pool?: Address; chunk?: bigint } = {},
+  opts: { deployBlock?: bigint; pool?: Address; chunk?: bigint; maxNotes?: number; lookup?: DisclosureLookup } = {},
 ): Promise<DisclosureVerdict> {
-  const v: DisclosureVerdict = { ok: false, chainId: null, pool: null, period: null, root: null, rootBlock: null, notes: [], totals: [], errors: checkBundleShape(bundle) };
+  const v: DisclosureVerdict = { ok: false, chainId: null, pool: null, period: null, root: null, rootBlock: null, notes: [], totals: [], errors: checkBundleShape(bundle, opts.maxNotes) };
   if (v.errors.length) return v;
   // Commitments and paths are Poseidon2: load it here, so a stateless verifier (the API) needs no setup call.
   await initVault();
@@ -177,7 +213,8 @@ export async function verifyDisclosure(
 
   const floor = opts.deployBlock ?? 0n;
   const chunk = opts.chunk ?? 50_000n;
-  const r = await rootAt(pub, pool, toBlock, floor, chunk);
+  const lookup = opts.lookup ?? chainLookup(pub, pool, floor, chunk);
+  const r = await lookup.rootAt(toBlock);
   if (!r) v.errors.push("pool published no root by period end");
   else {
     v.rootBlock = r.block.toString();
@@ -185,6 +222,7 @@ export async function verifyDisclosure(
   }
 
   const seen = new Set<number>();
+  const withNullifier: { nv: NoteVerdict; nullifier: Hex }[] = [];
   for (const n of b.notes as Partial<DisclosedNote>[]) {
     const nv: NoteVerdict = { ok: false, leafIndex: n?.leafIndex ?? -1, asset: null, raw: String(n?.raw ?? ""), commitment: null, nullifierStatus: "not-disclosed", spentBlock: null, error: noteShape(n) };
     v.notes.push(nv);
@@ -201,15 +239,22 @@ export async function verifyDisclosure(
       nv.error = "commitment is not in the pool's tree at this leaf";
       continue;
     }
-    if (n.nullifier) {
-      const logs = await logsChunked(pub, { address: pool, event: nullifierSpentEvent as AbiEvent, args: { nullifier: n.nullifier } }, floor, head, chunk);
-      const s = logs[0];
-      if (s) {
-        nv.spentBlock = s.blockNumber.toString();
-        nv.nullifierStatus = s.blockNumber <= toBlock ? "spent" : "spent-after-period";
+    if (n.nullifier) withNullifier.push({ nv, nullifier: n.nullifier });
+    nv.ok = r !== null && r.root === BigInt(b.root);
+  }
+  // One lookup for every disclosed nullifier (it used to be a full history scan per note).
+  if (withNullifier.length) {
+    const spent = await lookup.spentBlocks(
+      withNullifier.map((x) => x.nullifier),
+      head,
+    );
+    for (const { nv, nullifier } of withNullifier) {
+      const at = spent.get(nullifier.toLowerCase());
+      if (at !== undefined) {
+        nv.spentBlock = at.toString();
+        nv.nullifierStatus = at <= toBlock ? "spent" : "spent-after-period";
       } else nv.nullifierStatus = "unspent";
     }
-    nv.ok = r !== null && r.root === BigInt(b.root);
   }
 
   const totals = new Map<Address, bigint>();
