@@ -121,6 +121,25 @@ describe("statement parsing", () => {
   test("statement size cap", () => {
     expect(() => parseStatement("x".repeat(2_000_001))).toThrow(/larger than/);
   });
+
+  // Audit M-9: the OFX parser re-split the whole text on every row, so a 20,000-row file (just under the 2 MB cap)
+  // took 44-59 s of API CPU. It is linear now: well under a second, with the same line numbers.
+  test("M-9: a 20,000-row OFX file parses in well under a second, line numbers intact", () => {
+    const head = "OFXHEADER:100\nDATA:OFXSGML\n\n<OFX>\n<BANKMSGSRSV1>\n<STMTTRNRS>\n<STMTRS>\n<CURDEF>USD\n<BANKACCTFROM>\n<ACCTID>1\n</BANKACCTFROM>\n<BANKTRANLIST>\n";
+    const row = (i: number) => `<STMTTRN>\n<DTPOSTED>20260915\n<TRNAMT>-1.${String(i % 100).padStart(2, "0")}\n<FITID>${i}\n<NAME>S\n</STMTTRN>\n`;
+    const text = head + Array.from({ length: 20_000 }, (_, i) => row(i)).join("") + "</BANKTRANLIST>\n</STMTRS>\n</STMTTRNRS>\n</BANKMSGSRSV1>\n</OFX>\n";
+    expect(new TextEncoder().encode(text).length).toBeLessThan(2_000_000);
+    const t0 = performance.now();
+    const p = parseStatement(text);
+    const ms = performance.now() - t0;
+    expect(p.rows).toHaveLength(20_000);
+    expect(ms).toBeLessThan(1_000);
+    // header is 12 lines, each row 6: row i starts on line 13 + 6i
+    expect([p.rows[0]!.line, p.rows[1]!.line, p.rows[19_999]!.line]).toEqual([13, 19, 13 + 6 * 19_999]);
+    // and the fixture's own line numbers still match a plain split
+    const q = fx("bank.qfx");
+    for (const r of parseStatement(q).rows) expect(q.split("\n")[r.line - 1]).toContain("<STMTTRN>");
+  }, 5_000);
 });
 
 describe("amount, date and CSV primitives", () => {

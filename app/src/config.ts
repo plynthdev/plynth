@@ -113,10 +113,13 @@ const schema = z.object({
   // api (+ the optional eligibility and round-up routes it mounts)
   API_CHAIN: chain,
   API_PORT: port(DEFAULT_PORTS.api),
+  API_TRUST_PROXY: flag,
   API_DEPLOYMENTS_DIR: str(DEFAULT_DEPLOYMENTS_DIR),
   CORS_ORIGINS: opt,
   ROUNDUPS_ENABLED: flag,
   ROUNDUPS_MAX_ROWS_PER_WEEK: int(2000, 1),
+  ROUNDUPS_IMPORT_IP_LIMIT: int(30, 1),
+  ROUNDUPS_IMPORT_USER_LIMIT: int(10, 1),
   PLAID_ENV: z.preprocess(blank, z.enum(["sandbox", "production"]).default("sandbox")),
   PLAID_CLIENT_ID: opt,
   PLAID_SECRET: opt,

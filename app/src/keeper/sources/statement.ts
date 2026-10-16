@@ -268,16 +268,30 @@ export function parseOfxStatement(text: string): ParsedStatement {
   if (!looksLikeOfx(text)) throw new StatementError("not an OFX/QFX file");
   const hash = hasher();
   const out: ParsedRow[] = [];
+  // Line numbers are counted incrementally: re-splitting the text up to every row made a 20,000-row file take ~50 s
+  // of API CPU (quadratic; audit M-9). Every match below advances monotonically, so this stays linear.
+  let seenTo = 0;
+  let seenLines = 1;
+  const lineAt = (i: number) => {
+    if (i < seenTo) {
+      seenTo = 0;
+      seenLines = 1;
+    }
+    for (let k = text.indexOf("\n", seenTo); k !== -1 && k < i; k = text.indexOf("\n", k + 1)) seenLines++;
+    seenTo = i;
+    return seenLines;
+  };
   // One statement per <STMTRS> (bank) or <CCSTMTRS> (card); each has its CURDEF and account id.
-  const stmts = [...text.matchAll(/<(CC)?STMTRS>([\s\S]*?)(<\/(CC)?STMTRS>|(?=<(CC)?STMTRS>)|$)/gi)].map((m) => m[2]!);
+  // base: where the statement's body starts in the file (after the opening tag), for line numbers.
+  const stmts = [...text.matchAll(/<(CC)?STMTRS>([\s\S]*?)(<\/(CC)?STMTRS>|(?=<(CC)?STMTRS>)|$)/gi)].map((m) => ({ st: m[2]!, base: m.index + (m[1] ? 10 : 8) }));
   if (!stmts.length) throw new StatementError("OFX file has no statement (STMTRS/CCSTMTRS)");
-  for (const st of stmts) {
+  for (const { st, base } of stmts) {
     const curdef = (ofxField(st, "CURDEF") ?? "USD").toUpperCase();
     const acct = ofxField(st, "ACCTID") ?? "";
     for (const m of st.matchAll(/<STMTTRN>([\s\S]*?)(<\/STMTTRN>|(?=<STMTTRN>)|(?=<\/BANKTRANLIST>))/gi)) {
       if (out.length >= MAX_STATEMENT_ROWS) throw new StatementError(`more than ${MAX_STATEMENT_ROWS} rows`);
       const b = m[1]!;
-      const line = text.slice(0, m.index ?? 0).split("\n").length;
+      const line = lineAt(base + (m.index ?? 0));
       const fitid = ofxField(b, "FITID");
       const dt = ofxField(b, "DTPOSTED") ?? ofxField(b, "DTUSER") ?? "";
       const amt = ofxField(b, "TRNAMT") ?? "";

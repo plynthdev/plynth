@@ -25,8 +25,12 @@ import { sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getAddress, isAddress, verifyMessage, type Address, type Hex, type PublicClient } from "viem";
+import { ipKey, RateLimiter } from "@/lib/ratelimit";
 
 export const SIGNATURE_MAX_AGE_S = 600;
+/** Statement imports per hour per client address (an IPv6 /64) and per wallet (audit M-9). */
+export const DEFAULT_IMPORT_IP_LIMIT = 30;
+export const DEFAULT_IMPORT_USER_LIMIT = 10;
 /** New statement rows one user may add in any 7 days (audit M-7). Re-imports of known rows do not count. */
 export const DEFAULT_MAX_IMPORT_ROWS_PER_WEEK = 2_000;
 
@@ -54,6 +58,11 @@ export type RoundupDeps = {
   now?: () => number;
   /** New statement rows per user per rolling 7 days (ROUNDUPS_MAX_ROWS_PER_WEEK). */
   maxRowsPerWeek?: number | undefined;
+  /** The client address of a request (the API passes its proxy-aware reader). Absent = one shared key. */
+  ipOf?: ((c: Context) => string) | undefined;
+  /** Imports per hour per client address / per wallet (ROUNDUPS_IMPORT_IP_LIMIT / ROUNDUPS_IMPORT_USER_LIMIT). */
+  importIpLimiter?: RateLimiter | undefined;
+  importUserLimiter?: RateLimiter | undefined;
 };
 
 class HttpError extends Error {
@@ -110,6 +119,8 @@ const SOURCE_KINDS = new Set(["statement", "plaid"]);
 
 export function roundupRoutes(d: RoundupDeps): Hono {
   const app = new Hono();
+  const importIp = d.importIpLimiter ?? new RateLimiter(DEFAULT_IMPORT_IP_LIMIT, 3_600_000);
+  const importUser = d.importUserLimiter ?? new RateLimiter(DEFAULT_IMPORT_USER_LIMIT, 3_600_000);
   const wrap = (fn: (c: Context) => Promise<Response>) => async (c: Context) => {
     try {
       return await fn(c);
@@ -129,9 +140,13 @@ export function roundupRoutes(d: RoundupDeps): Hono {
     // JSON escaping can grow the text: allow some headroom over the statement cap.
     bodyLimit({ maxSize: MAX_STATEMENT_BYTES * 2, onError: (c) => c.json({ error: { message: "statement too large" } }, 413) }),
     wrap(async (c) => {
+      // Before anything is read or parsed: an import is the costliest request the API serves (audit M-9).
+      if (!importIp.take(ipKey(d.ipOf?.(c) ?? "shared"))) throw new HttpError(429, "too many imports from this address; try again later");
       const b = await json(c);
       const content = str(b, "content")!;
       const user = await authorise(d, b, "import", sha256Hex(content));
+      // Per wallet only after the signature checks out, so nobody can use up someone else's quota.
+      if (!importUser.take(user.toLowerCase())) throw new HttpError(429, "too many imports for this wallet; try again later");
       const format = str(b, "format", false);
       const debitSign = str(b, "debitSign", false);
       if (format && format !== "csv" && format !== "ofx") throw new HttpError(400, "format must be csv or ofx");
@@ -231,6 +246,16 @@ export async function roundupsFromEnv(env: Record<string, string | undefined>, b
   if (env.ROUNDUPS_ENABLED !== "1") return undefined;
   const plaid = plaidFromEnv(env);
   const sealer = plaid ? await Sealer.create(parseSecretKey(env.KEEPER_SECRET_KEY)) : undefined;
-  const maxRows = Number(env.ROUNDUPS_MAX_ROWS_PER_WEEK);
-  return roundupRoutes({ ...base, plaid, sealer, ...(env.ROUNDUPS_MAX_ROWS_PER_WEEK && Number.isInteger(maxRows) && maxRows > 0 ? { maxRowsPerWeek: maxRows } : {}) });
+  const n = (k: string, d: number) => {
+    const v = Number(env[k]);
+    return env[k] && Number.isInteger(v) && v > 0 ? v : d;
+  };
+  return roundupRoutes({
+    ...base,
+    plaid,
+    sealer,
+    maxRowsPerWeek: n("ROUNDUPS_MAX_ROWS_PER_WEEK", DEFAULT_MAX_IMPORT_ROWS_PER_WEEK),
+    importIpLimiter: new RateLimiter(n("ROUNDUPS_IMPORT_IP_LIMIT", DEFAULT_IMPORT_IP_LIMIT), 3_600_000),
+    importUserLimiter: new RateLimiter(n("ROUNDUPS_IMPORT_USER_LIMIT", DEFAULT_IMPORT_USER_LIMIT), 3_600_000),
+  });
 }

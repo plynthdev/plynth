@@ -8,10 +8,12 @@ import { join } from "node:path";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { Sealer, plaidAad, sha256Hex } from "@/keeper";
 import { privateKeyToAccount } from "viem/accounts";
+import { RateLimiter } from "@/lib/ratelimit";
 import { BlockTimes, createApp, roundupMessage, roundupRoutes, roundupsFromEnv, SIGNATURE_MAX_AGE_S, type RoundupAction } from "@/api";
 import { keeperTestDb } from "@/testing/keeper-helpers";
 
 const alice = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"); // test-key (anvil #1)
+const bob = privateKeyToAccount("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"); // test-key (anvil #3)
 const mallory = privateKeyToAccount("0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"); // test-key (anvil #2)
 const CHAIN = 31337;
 const fx = (f: string) => readFileSync(join(import.meta.dir, "..", "..", "testing", "fixtures", "keeper", f), "utf8");
@@ -132,6 +134,46 @@ describe("POST /v1/roundups/import", () => {
     expect(await again.json()).toMatchObject({ imported: 0, duplicates: 4 });
     const one = csv(1, 4);
     expect((await post("/import", await signed("import", sha256Hex(one), { content: one }, mallory, nowS(), mallory.address), capped)).status).toBe(200);
+  });
+
+  test("audit M-9: a 20,000-row OFX upload through the route answers in well under a second (was ~57 s)", async () => {
+    const big = roundupRoutes({ chainId: CHAIN, db: t.db, maxRowsPerWeek: 50_000 });
+    const head = "OFXHEADER:100\nDATA:OFXSGML\n\n<OFX>\n<STMTRS>\n<CURDEF>USD\n<BANKTRANLIST>\n";
+    const rows = Array.from({ length: 20_000 }, (_, i) => `<STMTTRN>\n<DTPOSTED>20260915\n<TRNAMT>-0.00\n<FITID>${i}\n</STMTTRN>\n`).join("");
+    const content = `${head}${rows}</BANKTRANLIST>\n</STMTRS>\n</OFX>\n`; // zero amounts: parsed in full, nothing stored
+    const body = await signed("import", sha256Hex(content), { content }, mallory, nowS(), mallory.address);
+    const t0 = performance.now();
+    const r = await post("/import", body, big);
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as any).rows).toBe(20_000);
+    expect(performance.now() - t0).toBeLessThan(1_000);
+  }, 10_000);
+
+  test("audit M-9: imports are rate-limited per client address (IPv6 /64) and per wallet", async () => {
+    let ip = "203.0.113.9";
+    const limited = roundupRoutes({ chainId: CHAIN, db: t.db, ipOf: () => ip, importIpLimiter: new RateLimiter(3, 3_600_000), importUserLimiter: new RateLimiter(2, 3_600_000) });
+    const content = "Date,Description,Amount\n2026-09-02,Cafe,-3.10\n";
+    const send = async (who = alice) => post("/import", await signed("import", sha256Hex(content), { content }, who, nowS(), who.address), limited);
+    expect((await send()).status).toBe(200);
+    expect((await send()).status).toBe(200);
+    const userLimited = await send(); // third for alice: per-wallet limit (2)
+    expect(userLimited.status).toBe(429);
+    expect(((await userLimited.json()) as any).error.message).toContain("this wallet");
+    const ipLimited = await send(mallory); // fourth from this address: per-IP limit (3)
+    expect(ipLimited.status).toBe(429);
+    expect(((await ipLimited.json()) as any).error.message).toContain("this address");
+    // bad signatures cannot use up a wallet's quota: they never reach the per-wallet limiter
+    ip = "2001:db8:aa:bb::1";
+    const forged = await post("/import", await signed("import", sha256Hex(content), { content }, mallory, nowS(), alice.address), limited);
+    expect(forged.status).toBe(401);
+    ip = "2001:db8:aa:bb::2";
+    expect((await send(mallory)).status).toBe(200);
+    ip = "2001:db8:aa:bb:ffff::3"; // same /64: its third request
+    expect((await send(bob)).status).toBe(200);
+    ip = "2001:db8:aa:bb::4"; // a fourth address of that /64 shares its limit
+    const v6 = await send(bob);
+    expect(v6.status).toBe(429);
+    expect(((await v6.json()) as any).error.message).toContain("this address");
   });
 
   test("oversized upload is refused", async () => {

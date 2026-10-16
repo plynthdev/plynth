@@ -211,9 +211,12 @@ All config comes from environment variables and is checked at startup (`app/src/
 | **api (bin/api.ts)** | | |
 | `API_CHAIN` | `local` | Read-only dashboard API; holds no keys (except the optional eligibility attester below). |
 | `API_PORT` | `8789` |  |
+| `API_TRUST_PROXY` | `0` | 1 = rate limits use the first X-Forwarded-For hop (only behind your own proxy; Caddy replaces any client value). IPv6 clients are limited per /64. |
 | `API_DEPLOYMENTS_DIR` | `app/deployments` |  |
 | `CORS_ORIGINS` | – | Comma-separated exact origins. Blank = the hosted frontend and http://localhost:5173. |
 | `ROUNDUPS_ENABLED` | `0` | Round-up sources beyond on-chain spends (statement import, bank link). `1` mounts `/v1/roundups/*`. The bank link also needs `KEEPER_SECRET_KEY` (tokens are stored sealed with it, so the API and the keeper share it) |
+| `ROUNDUPS_IMPORT_IP_LIMIT` | `30` | Statement imports per hour per client address; over it 429 before the body is read. |
+| `ROUNDUPS_IMPORT_USER_LIMIT` | `10` | Statement imports per hour per wallet (counted after the signature checks out). |
 | `ROUNDUPS_MAX_ROWS_PER_WEEK` | `2000` | New statement rows one user may import in any 7 days (re-imports of known rows do not count); over it the import answers 429. |
 | `PLAID_ENV` | `sandbox` | sandbox (free) \| production |
 | `PLAID_CLIENT_ID` | – |  |
