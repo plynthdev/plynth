@@ -1,2 +1,8 @@
+[install]
+# Supply-chain guard (audit, dependencies): never install a package version published less than 24 h ago, and
+# keep the text lockfile. Each install in CI and on the server is also --frozen-lockfile.
+saveTextLockfile = true
+minimumReleaseAge = 86400
+
 [test]
 pathIgnorePatterns = ["node_modules/**", "deployments/**", "data/**", ".fork/**"]
