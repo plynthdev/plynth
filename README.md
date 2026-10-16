@@ -245,6 +245,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `RPC_URL` | – | RPC for the MCP server (falls back to TREASURY_RPC_URL). |
 | `DEPLOYMENT_JSON` | – | Optional deployment JSON (default app/deployments/<chainid>.json + <chainid>-treasury.json). |
 | **treasury (shared by the treasury services)** | | |
+| `WEBHOOK_ALLOW_PRIVATE` | `0` | Webhook targets (subscriptions, `RISK_WEBHOOK_URLS`, `TREASURY_WEBHOOK_URLS`) must be https to a public host: localhost, `*.local` / `*.internal`, private, loopback, link-local and metadata addresses are refused at registration and again (after DNS) on every send, and redirects are not followed. 1 allows loopback/private targets for local development; refused on mainnet. |
 | `TREASURY_RPC_URL` | – |  |
 | `TREASURY_CHAIN_ID` | – | Webhooks CLI only: skips reading the chain id from TREASURY_RPC_URL. |
 | `TREASURY_POLL_MS` | – | Receipt polling for sent transactions (default 100 ms on anvil, 2000 ms elsewhere). |

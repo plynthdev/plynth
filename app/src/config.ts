@@ -119,6 +119,8 @@ const schema = z.object({
   API_DEPLOYMENTS_DIR: str(DEFAULT_DEPLOYMENTS_DIR),
   CORS_ORIGINS: opt,
   ROUNDUPS_ENABLED: flag,
+  // Webhooks to loopback / private hosts (tests and local development only; refused on mainnet).
+  WEBHOOK_ALLOW_PRIVATE: flag,
   ROUNDUPS_MAX_ROWS_PER_WEEK: int(2000, 1),
   ROUNDUPS_IMPORT_IP_LIMIT: int(30, 1),
   ROUNDUPS_IMPORT_USER_LIMIT: int(10, 1),

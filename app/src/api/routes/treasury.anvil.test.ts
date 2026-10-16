@@ -324,14 +324,14 @@ describe("signed webhooks", () => {
       },
     });
     try {
-      const store = new WebhookStore(conn.db);
+      const store = new WebhookStore(conn.db, { allowPrivate: true }); // the receiver is on 127.0.0.1
       await store.add(31337, acct, `http://127.0.0.1:${server.port}/hook`, SECRET, ["guard.denied", "close.committed", "drawdown.state"]);
       await expect(store.add(31337, acct, "http://example.com/hook", SECRET, ["guard.denied"])).rejects.toThrow(/https/);
       await expect(store.add(31337, acct, "https://example.com/hook", "short", ["guard.denied"])).rejects.toThrow(/secret/);
       await expect(store.add(31337, acct, "https://example.com/hook", SECRET, ["nope"])).rejects.toThrow(/unknown/);
       expect((await store.list(31337, acct))[0]).not.toHaveProperty("secret");
 
-      const d = new WebhookDispatcher(conn.db, { chainId: 31337, backoffMs: 10 });
+      const d = new WebhookDispatcher(conn.db, { chainId: 31337, backoffMs: 10, allowPrivate: true });
       const first = await d.pollOnce();
       expect(first.every((x) => x.ok)).toBe(true);
       const types = got.map((g) => JSON.parse(g.body).type);

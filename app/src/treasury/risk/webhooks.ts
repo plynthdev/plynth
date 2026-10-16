@@ -2,6 +2,7 @@
 // set, header `x-plinth-signature: sha256=<hex HMAC-SHA256(secret, body)>` lets the receiver verify it.
 // Delivery retries with backoff on network errors and 5xx/429; a 4xx is final.
 import { createHmac, randomUUID } from "node:crypto";
+import { assertPublicUrl, outboundFetch, type Resolver } from "@/lib/outbound";
 
 export type WebhookEvent = { type: string; data: unknown };
 
@@ -26,6 +27,10 @@ export type WebhookOptions = {
   backoffMs?: number; // first backoff, doubled each retry (default 500)
   timeoutMs?: number; // per attempt (default 5000)
   fetchImpl?: typeof fetch;
+  /** Tests / local development only: allow loopback and private targets (never on mainnet). */
+  allowPrivate?: boolean | undefined;
+  /** DNS for the send-time destination check (default the system resolver). */
+  resolve?: Resolver;
 };
 
 export const stringify = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
@@ -35,7 +40,10 @@ export function sign(secret: string, body: string): string {
 }
 
 export class Webhooks implements WebhookSink {
-  constructor(readonly opts: WebhookOptions) {}
+  /** Throws at startup for a URL that is not https to a public host (src/lib/outbound.ts). */
+  constructor(readonly opts: WebhookOptions) {
+    for (const u of opts.urls) assertPublicUrl(u, opts);
+  }
 
   async emit(e: WebhookEvent, now = new Date()): Promise<Delivery[]> {
     const body = stringify({ type: e.type, id: randomUUID(), ts: now.toISOString(), data: e.data });
@@ -51,7 +59,7 @@ export class Webhooks implements WebhookSink {
     let last: Delivery = { url, ok: false, status: null, attempts: 0 };
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const r = await f(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) });
+        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: f, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
         last = { url, ok: r.ok, status: r.status, attempts: attempt };
         if (r.ok || (r.status < 500 && r.status !== 429)) return last;
       } catch (err) {

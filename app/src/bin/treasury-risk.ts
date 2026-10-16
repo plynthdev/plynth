@@ -59,9 +59,11 @@ async function main() {
     pusher = new MirrorPusher(pub, wallet, controller, getAddress(mirror) as Address);
   }
   const urls = [...config.RISK_WEBHOOK_URLS];
-  const direct = urls.length ? new Webhooks({ urls, secret: config.RISK_WEBHOOK_SECRET }) : undefined;
+  if (config.WEBHOOK_ALLOW_PRIVATE && chainId === 4663) throw new Error("WEBHOOK_ALLOW_PRIVATE=1 is refused on mainnet");
+  const allowPrivate = config.WEBHOOK_ALLOW_PRIVATE;
+  const direct = urls.length ? new Webhooks({ urls, secret: config.RISK_WEBHOOK_SECRET, allowPrivate }) : undefined;
   // Subscribed webhooks only when a database is named explicitly (the risk service runs without Postgres).
-  const subscribed = isSet("DATABASE_URL") ? new WebhookDispatcher(connect(config.DATABASE_URL).db, { chainId }) : undefined;
+  const subscribed = isSet("DATABASE_URL") ? new WebhookDispatcher(connect(config.DATABASE_URL).db, { chainId, allowPrivate }) : undefined;
   const webhooks = fanout(direct, subscribed);
   const svc = new RiskService(
     pub,

@@ -230,7 +230,7 @@ describe("T2 desks on anvil", () => {
     expect(hs.positions).toEqual([{ underlying: a.tsla!, tokens: -h.order!.tokens }]);
 
     // Reconciler over both on-chain venues: clean.
-    const webhooks = new Webhooks({ urls: [`http://127.0.0.1:${server!.port}/hook`], secret: "test", backoffMs: 5 });
+    const webhooks = new Webhooks({ urls: [`http://127.0.0.1:${server!.port}/hook`], secret: "test", backoffMs: 5, allowPrivate: true });
     const rec = new Reconciler(kit.pub, { chainId: 31337, account: kit.a.account!, venues: [{ client: basisClient, mode: "onchain" }, { client: hedgeClient, mode: "onchain" }] }, { store, ledger, webhooks });
     const r1 = await rec.run();
     expect(r1.breaks).toEqual([]);

@@ -50,7 +50,8 @@ const venues: VenueSource[] = raw.venues.map((v) => {
 
 const { db, close } = connect(databaseUrl());
 const urls = [...config.TREASURY_WEBHOOK_URLS];
-const webhooks = urls.length ? new Webhooks({ urls, secret: config.TREASURY_WEBHOOK_SECRET }) : undefined;
+if (config.WEBHOOK_ALLOW_PRIVATE && chainId === 4663) throw new Error("WEBHOOK_ALLOW_PRIVATE=1 is refused on mainnet");
+const webhooks = urls.length ? new Webhooks({ urls, secret: config.TREASURY_WEBHOOK_SECRET, allowPrivate: config.WEBHOOK_ALLOW_PRIVATE }) : undefined;
 const say = (m: string, extra?: unknown) => console.log(`[reconcile ${chainId}] ${m}${extra ? ` ${JSON.stringify(extra, (_k, x) => (typeof x === "bigint" ? x.toString() : x))}` : ""}`);
 const rec = new Reconciler(pub, { chainId, account: getAddress(raw.account) as Address, mirror: raw.mirror ? getAddress(raw.mirror) : undefined, venues }, { store: new PgExceptionStore(db), ledger: new PgLedger(db), webhooks, log: say });
 

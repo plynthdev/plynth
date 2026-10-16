@@ -49,7 +49,7 @@ function fakePub(m: { positions: { underlying: Address; tokens: bigint }[]; equi
 
 function hooksSink() {
   const got: { type: string; data: Record<string, unknown> }[] = [];
-  const wh = new Webhooks({ urls: ["http://hooks.invalid/x"], retries: 0, fetchImpl: (async (_u: string, init: RequestInit) => { got.push(JSON.parse(String(init.body))); return new Response("ok"); }) as unknown as typeof fetch });
+  const wh = new Webhooks({ urls: ["https://hooks.invalid/x"], retries: 0, allowPrivate: true, fetchImpl: (async (_u: string, init: RequestInit) => { got.push(JSON.parse(String(init.body))); return new Response("ok"); }) as unknown as typeof fetch });
   return { wh, got };
 }
 

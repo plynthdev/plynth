@@ -31,7 +31,10 @@ const { db, close } = connect(databaseUrl());
 let code = 0;
 try {
   const id = await chainId();
-  const store = new WebhookStore(db);
+  // Private / loopback targets only for local development, never on mainnet (src/lib/outbound.ts).
+  if (config.WEBHOOK_ALLOW_PRIVATE && id === 4663) throw new Error("WEBHOOK_ALLOW_PRIVATE=1 is refused on mainnet");
+  const allowPrivate = config.WEBHOOK_ALLOW_PRIVATE;
+  const store = new WebhookStore(db, { allowPrivate });
   if (cmd === "add") {
     const envName = arg("--secret-env");
     const secret = envName ? namedSecret(envName) : undefined;
@@ -44,7 +47,7 @@ try {
     await store.disable(Number(arg("--id")));
     console.log(`[webhooks] subscription ${arg("--id")} disabled`);
   } else if (cmd === "run") {
-    const d = new WebhookDispatcher(db, { chainId: id });
+    const d = new WebhookDispatcher(db, { chainId: id, allowPrivate });
     const interval = config.TREASURY_WEBHOOK_INTERVAL_S * 1000;
     const once = process.argv.includes("--once");
     let polls = 0;

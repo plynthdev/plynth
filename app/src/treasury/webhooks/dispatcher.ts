@@ -16,6 +16,7 @@ import { treasuryWebhookCursors, treasuryWebhookDeliveries, treasuryWebhooks, cl
 import { and, asc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { getAddress } from "viem";
 import { sign, stringify, type WebhookEvent, type WebhookSink } from "@/treasury/risk/webhooks";
+import { assertPublicUrl, outboundFetch, type Resolver } from "@/lib/outbound";
 
 export const WEBHOOK_EVENTS = ["guard.denied", "drawdown.state", "close.committed", "risk.alert", "reconcile.break"] as const;
 export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];
@@ -28,6 +29,10 @@ export type DispatcherOptions = {
   timeoutMs?: number; // per attempt, default 5000
   maxAttempts?: number; // total attempts across polls before giving up (default 10)
   now?: () => Date;
+  /** Tests / local development only: allow loopback and private targets (never on mainnet). */
+  allowPrivate?: boolean | undefined;
+  /** DNS for the send-time destination check (default the system resolver). */
+  resolve?: Resolver;
 };
 
 type Sub = typeof treasuryWebhooks.$inferSelect;
@@ -35,10 +40,13 @@ type Sub = typeof treasuryWebhooks.$inferSelect;
 export type SendResult = { webhookId: number; eventKey: string; ok: boolean; status: number | null; attempts: number; skipped?: boolean };
 
 export class WebhookStore {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly opts: { allowPrivate?: boolean | undefined } = {},
+  ) {}
 
   async add(chainId: number, account: string, url: string, secret: string, events: string[]): Promise<number> {
-    validateSubscription(url, secret, events);
+    validateSubscription(url, secret, events, this.opts);
     const [row] = await this.db
       .insert(treasuryWebhooks)
       .values({ chainId, account: getAddress(account).toLowerCase(), url, secret, events, active: true })
@@ -62,16 +70,9 @@ export class WebhookStore {
   }
 }
 
-export function validateSubscription(url: string, secret: string, events: string[]) {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    throw new Error(`bad webhook url ${url}`);
-  }
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname))) {
-    throw new Error("webhook url must be https (http only for localhost)");
-  }
+/** https to a public host only (src/lib/outbound.ts); `allowPrivate` for tests and local development. */
+export function validateSubscription(url: string, secret: string, events: string[], opts: { allowPrivate?: boolean | undefined } = {}) {
+  assertPublicUrl(url, opts);
   if (secret.length < 16) throw new Error("webhook secret must be at least 16 characters");
   if (events.length === 0) throw new Error("subscribe to at least one event");
   for (const e of events) if (!(WEBHOOK_EVENTS as readonly string[]).includes(e)) throw new Error(`unknown webhook event ${e}`);
@@ -136,7 +137,8 @@ export class WebhookDispatcher implements WebhookSink {
     let last: { ok: boolean; status: number | null; attempts: number; error?: string } = { ok: false, status: null, attempts: 0 };
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const r = await f(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) });
+        // The destination is re-checked on every send (DNS can change) and redirects are never followed.
+        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: f, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
         last = { ok: r.ok, status: r.status, attempts: attempt };
         if (r.ok || (r.status < 500 && r.status !== 429)) return last;
       } catch (err) {

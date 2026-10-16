@@ -151,7 +151,7 @@ describe("webhooks", () => {
     });
     try {
       const base = `http://127.0.0.1:${server.port}`;
-      const wh = new Webhooks({ urls: [`${base}/hook`, `${base}/bad`], secret: "s3cret", retries: 3, backoffMs: 5 });
+      const wh = new Webhooks({ urls: [`${base}/hook`, `${base}/bad`], secret: "s3cret", retries: 3, backoffMs: 5, allowPrivate: true });
       const [ok, bad] = await wh.emit({ type: "drawdown.state", data: { to: "paused", navUsd: 5n * E18 } });
       expect(ok).toMatchObject({ ok: true, status: 200, attempts: 3 });
       expect(bad).toMatchObject({ ok: false, status: 400, attempts: 1 });
@@ -170,6 +170,7 @@ describe("webhooks", () => {
     let calls = 0;
     const wh = new Webhooks({
       urls: ["http://127.0.0.1:9/x"],
+      allowPrivate: true,
       retries: 1,
       backoffMs: 1,
       fetchImpl: (async () => {

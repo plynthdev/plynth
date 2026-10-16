@@ -76,7 +76,7 @@ describe("risk service on anvil", () => {
     const reader = new StaticVenueReader(a.off!, { positions: [{ underlying: a.tsla!, tokens: -10n * E18 }], equityUsd: 3_000n * E18, flowInSeen: 0n });
     const wallet = kit.wallet(kit.deployer); // the kit policy's controller is the deployer
     const pusher = new MirrorPusher(kit.pub, wallet, kit.deployer, a.mirror!);
-    const webhooks = new Webhooks({ urls: [`http://127.0.0.1:${server!.port}/hook`], secret: "test", backoffMs: 5 });
+    const webhooks = new Webhooks({ urls: [`http://127.0.0.1:${server!.port}/hook`], secret: "test", backoffMs: 5, allowPrivate: true });
     const svc = new RiskService(kit.pub, { account: kit.a.account!, readers: [reader] }, { pusher, webhooks });
 
     const navBefore = (await kit.pub.readContract({ address: kit.a.guard!, abi: guardAbi, functionName: "snapshot", args: [kit.a.account!] })).nav;
