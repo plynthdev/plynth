@@ -11,13 +11,18 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=plynth
-Group=plynth
-WorkingDirectory=/var/lib/plynth
-Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
+User=plynth-api
+Group=plynth-api
+SupplementaryGroups=plynth plynth-screening
+StateDirectory=plynth-api
+WorkingDirectory=/var/lib/plynth-api
+Environment=HOME=/var/lib/plynth-api
+EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=/etc/plynth/env/api.env
 EnvironmentFile=-/etc/plynth/api.env
+ReadWritePaths=/var/lib/plynth-api /var/lib/plynth/data
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/api.ts
 Restart=always
 RestartSec=5
@@ -30,7 +35,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -5,13 +5,17 @@
 # up and runs it for you.
 #
 #   bash provision.sh                 everything below
-#   bash provision.sh --units-only    only (re)install the systemd units and the backup script (deploy.sh uses this)
+#   bash provision.sh --units-only    only the service users, the per-service env files, key permissions, the systemd
+#                                     units and the backup script (deploy.sh runs this on every deploy)
 #
-# What it does: a `plynth` system user; apt upgrade; git, build tools, jq; Postgres (the distro's current major)
+# What it does: a `plynth` system user that owns the code and runs migrations, and one system user per service
+# (plynth-indexer, -keeper, -api, -eligibility, -relayer, -mcp, -treasury); apt upgrade; git, build tools, jq; Postgres (the distro's current major)
 # with a `plynth` role and database whose random password goes to /etc/plynth/db.env (0600); ufw allowing only
 # 22, 80 and 443; fail2ban for SSH; unattended security upgrades; a swap file when there is none; Bun and cast
 # (Foundry) at pinned versions; Caddy as the HTTPS reverse proxy for the API and the relayer; the systemd units; the
-# nightly backup timer; /etc/plynth/plynth.env from env.example on the first run.
+# nightly backup timer; the settings from env.example on the first run, split into one file per service in
+# /etc/plynth/env/ (split-env.sh; an existing single /etc/plynth/plynth.env is split the same way and kept as
+# plynth.env.pre-split); each keystore readable only by the service that signs with it.
 #
 # Env (optional; saved to /etc/plynth/provision.conf and reused on the next run):
 #   API_DOMAIN       default api.plynthnetwork.com
@@ -44,7 +48,7 @@ case "${1:-}" in
 esac
 
 [[ "$(id -u)" == 0 ]] || die "run as root"
-for f in systemd/plynth.target Caddyfile env.example backup.sh; do
+for f in systemd/plynth.target Caddyfile env.example backup.sh split-env.sh; do
   [[ -e "$HERE/$f" ]] || die "missing $HERE/$f: run provision.sh from the app/scripts/server folder"
 done
 cd /
@@ -67,7 +71,83 @@ install_units() {
   if [[ "$changed" == 1 ]]; then log "systemd units installed"; else log "systemd units unchanged"; fi
 }
 
+# ---------------------------------------------------------------- service users, env files, key permissions
+# Every service runs as its own system user and gets only its own env file (audit, privileged/ops). Group plynth
+# lets a service traverse /etc/plynth/keys; each key file is readable only by the group of the service that signs:
+#   plynth-main-keeper, keeper.password          plynth-keeper
+#   plynth-main-relayer, relayer.password        plynth-relayer
+#   plynth-main-attester, attester.password      plynth-screening (plynth-eligibility and plynth-api)
+#   plynth-main-controller, controller.password  plynth-treasury (also any other file: treasury desk keystores)
+SERVICE_USERS=(plynth-indexer plynth-keeper plynth-api plynth-eligibility plynth-relayer plynth-mcp plynth-treasury)
+ensure_accounts() {
+  id plynth >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/plynth --create-home --shell /usr/sbin/nologin plynth
+  getent group plynth-screening >/dev/null || groupadd --system plynth-screening
+  local u
+  for u in "${SERVICE_USERS[@]}"; do
+    id "$u" >/dev/null 2>&1 || { useradd --system --user-group --no-create-home --home-dir "/var/lib/$u" --shell /usr/sbin/nologin "$u"; log "created system user $u"; }
+  done
+  for u in plynth-keeper plynth-relayer plynth-api plynth-eligibility plynth-treasury; do usermod -a -G plynth "$u"; done
+  for u in plynth-api plynth-eligibility; do usermod -a -G plynth-screening "$u"; done
+  install -d -o plynth -g plynth -m 0755 /var/lib/plynth
+  # IP country database and sanctions cache: written by plynth-eligibility (and its ipdb refresh), read by the API.
+  install -d -o root -g plynth-screening -m 2770 /var/lib/plynth/data
+  find /var/lib/plynth/data -maxdepth 1 -type f -exec chgrp plynth-screening {} + -exec chmod g+rw {} +
+  install -d -o root -g plynth -m 0750 /etc/plynth /etc/plynth/keys
+  install -d -o root -g root -m 0700 /etc/plynth/env
+}
+
+fix_key_permissions() {
+  local f g
+  shopt -s nullglob
+  for f in /etc/plynth/keys/*; do
+    case "$(basename "$f")" in
+      plynth-main-keeper | keeper.password) g=plynth-keeper ;;
+      plynth-main-relayer | relayer.password) g=plynth-relayer ;;
+      plynth-main-attester | attester.password) g=plynth-screening ;;
+      *) g=plynth-treasury ;;
+    esac
+    chown root:"$g" "$f"
+    chmod 0440 "$f"
+  done
+  shopt -u nullglob
+}
+
+fill_generated() {
+  # Replaces GENERATED_BY_PROVISION with fresh random secrets (passed through the environment, not argv).
+  local src="$1" dst="$2"
+  KSK="0x$(openssl rand -hex 32)" MTS="$(openssl rand -hex 32)" awk '
+    /^KEEPER_SECRET_KEY=GENERATED_BY_PROVISION$/ { print "KEEPER_SECRET_KEY=" ENVIRON["KSK"]; next }
+    /^MCP_TOKEN_SECRET=GENERATED_BY_PROVISION$/ { print "MCP_TOKEN_SECRET=" ENVIRON["MTS"]; next }
+    { print }
+  ' "$src" >"$dst"
+}
+
+# /etc/plynth/env/<service>.env from the single settings file: env.example on a fresh server, or the existing
+# /etc/plynth/plynth.env on a server provisioned before the split (kept as plynth.env.pre-split, 0600).
+ensure_env_files() {
+  [[ -f /etc/plynth/env/common.env ]] && { log "per-service env files exist in /etc/plynth/env: left as they are"; return; }
+  umask 077
+  if [[ ! -f /etc/plynth/plynth.env ]]; then
+    fill_generated "$HERE/env.example" /etc/plynth/plynth.env.tmp
+    mv /etc/plynth/plynth.env.tmp /etc/plynth/plynth.env
+    log "settings written from env.example: replace every CHANGE_ME in /etc/plynth/env/*.env before deploying"
+  elif grep -q '=GENERATED_BY_PROVISION$' /etc/plynth/plynth.env; then
+    fill_generated /etc/plynth/plynth.env /etc/plynth/plynth.env.tmp
+    mv /etc/plynth/plynth.env.tmp /etc/plynth/plynth.env
+  fi
+  bash "$HERE/split-env.sh" /etc/plynth/plynth.env /etc/plynth/env
+  chown root:root /etc/plynth/env/*.env
+  chmod 0600 /etc/plynth/env/*.env
+  mv /etc/plynth/plynth.env /etc/plynth/plynth.env.pre-split
+  chmod 0600 /etc/plynth/plynth.env.pre-split
+  umask 022
+  log "split the settings into /etc/plynth/env/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury}.env (the old file is /etc/plynth/plynth.env.pre-split)"
+}
+
 if [[ "$UNITS_ONLY" == 1 ]]; then
+  ensure_accounts
+  ensure_env_files
+  fix_key_permissions
   install_units
   exit 0
 fi
@@ -123,13 +203,8 @@ sysctl -q -p /etc/sysctl.d/60-plynth.conf
 timedatectl set-ntp true 2>/dev/null || warn "could not turn on NTP sync (timedatectl)"
 
 # ---------------------------------------------------------------- user and directories
-if ! id plynth >/dev/null 2>&1; then
-  log "creating the plynth system user"
-  useradd --system --user-group --home-dir /var/lib/plynth --create-home --shell /usr/sbin/nologin plynth
-fi
-install -d -o plynth -g plynth -m 0750 /var/lib/plynth /var/lib/plynth/data
+ensure_accounts
 install -d -o plynth -g plynth -m 0755 /opt/plynth /opt/plynth/releases
-install -d -o root -g plynth -m 0750 /etc/plynth /etc/plynth/keys
 install -d -o root -g root -m 0700 /var/backups/plynth
 
 umask 077
@@ -225,31 +300,9 @@ chmod 0600 /etc/plynth/db.env
 umask 022
 unset db_password
 
-# ---------------------------------------------------------------- /etc/plynth/plynth.env (first run only)
-fill_generated() {
-  # Replaces GENERATED_BY_PROVISION with fresh random secrets (passed through the environment, not argv).
-  local src="$1" dst="$2"
-  KSK="0x$(openssl rand -hex 32)" MTS="$(openssl rand -hex 32)" awk '
-    /^KEEPER_SECRET_KEY=GENERATED_BY_PROVISION$/ { print "KEEPER_SECRET_KEY=" ENVIRON["KSK"]; next }
-    /^MCP_TOKEN_SECRET=GENERATED_BY_PROVISION$/ { print "MCP_TOKEN_SECRET=" ENVIRON["MTS"]; next }
-    { print }
-  ' "$src" >"$dst"
-}
-umask 077
-if [[ ! -f /etc/plynth/plynth.env ]]; then
-  fill_generated "$HERE/env.example" /etc/plynth/plynth.env.tmp
-  mv /etc/plynth/plynth.env.tmp /etc/plynth/plynth.env
-  log "wrote /etc/plynth/plynth.env from env.example: replace every CHANGE_ME in it before deploying"
-elif grep -q '=GENERATED_BY_PROVISION$' /etc/plynth/plynth.env; then
-  fill_generated /etc/plynth/plynth.env /etc/plynth/plynth.env.tmp
-  mv /etc/plynth/plynth.env.tmp /etc/plynth/plynth.env
-  log "filled the generated secrets in /etc/plynth/plynth.env"
-else
-  log "/etc/plynth/plynth.env exists: left as it is"
-fi
-chown root:root /etc/plynth/plynth.env
-chmod 0600 /etc/plynth/plynth.env
-umask 022
+# ---------------------------------------------------------------- settings: one env file per service
+ensure_env_files
+fix_key_permissions
 
 # ---------------------------------------------------------------- firewall: 22, 80, 443 only
 log "ufw: allow 22/tcp, 80/tcp, 443 (tcp + udp for HTTP/3); deny everything else inbound"
@@ -350,7 +403,8 @@ provision: done.
              (certificates arrive once both DNS records point at this server)
   Backups    nightly to /var/backups/plynth (systemctl list-timers plynth-backup.timer)
 Next (README.md in this folder):
-  1. Edit /etc/plynth/plynth.env: replace every CHANGE_ME.
-  2. Copy the four keystores and password files into /etc/plynth/keys/ (chown root:plynth, chmod 0440).
+  1. Edit /etc/plynth/env/*.env: replace every CHANGE_ME (grep -l CHANGE_ME /etc/plynth/env/*.env).
+  2. Copy the four keystores and password files into /etc/plynth/keys/; deploy.sh (or provision.sh --units-only)
+     gives each one to the service that signs with it (root:<service group>, 0440).
   3. From the owner's machine: app/scripts/server/deploy.sh <host>
 EOF

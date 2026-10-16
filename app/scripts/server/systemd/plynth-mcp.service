@@ -11,13 +11,18 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=plynth
-Group=plynth
-WorkingDirectory=/var/lib/plynth
-Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
+User=plynth-mcp
+Group=plynth-mcp
+StateDirectory=plynth-mcp
+WorkingDirectory=/var/lib/plynth-mcp
+Environment=HOME=/var/lib/plynth-mcp
+EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=/etc/plynth/env/mcp.env
 EnvironmentFile=-/etc/plynth/mcp.env
+ReadWritePaths=/var/lib/plynth-mcp
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/mcp.ts
 Restart=always
 RestartSec=5
@@ -30,7 +35,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -9,11 +9,17 @@ ConditionPathExists=/opt/plynth/current/app/scripts/download-dbip.ts
 
 [Service]
 Type=oneshot
-User=plynth
-Group=plynth
-WorkingDirectory=/var/lib/plynth
-Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
+User=plynth-eligibility
+Group=plynth-eligibility
+SupplementaryGroups=plynth-screening
+StateDirectory=plynth-eligibility
+WorkingDirectory=/var/lib/plynth-eligibility
+Environment=HOME=/var/lib/plynth-eligibility
+EnvironmentFile=/etc/plynth/env/common.env
+EnvironmentFile=/etc/plynth/env/eligibility.env
+ReadWritePaths=/var/lib/plynth-eligibility /var/lib/plynth/data
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/scripts/download-dbip.ts
 ExecStartPost=+/usr/bin/systemctl try-restart plynth-eligibility.service plynth-api.service
 TimeoutStartSec=300
@@ -24,4 +30,3 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth

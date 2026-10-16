@@ -14,10 +14,12 @@
 #   1. ships the committed tree at <ref> (git archive of app/ and sdk/: uncommitted changes are never shipped) plus
 #      the gitignored mainnet deployment files app/deployments/4663.json, 4663-treasury.json and 4663-beta.json to
 #      a new /opt/plynth/releases/<time>-<sha>;
-#   2. checks /etc/plynth/plynth.env: no CHANGE_ME left, every *_CHAIN is mainnet, the RPC answers chain id 4663,
-#      the registry and factory addresses match 4663.json, and every keystore / password file it names is readable
-#      by the plynth user (only tested for access, never read);
-#   3. refreshes the systemd units, runs bun install --frozen-lockfile as plynth;
+#   2. refreshes the service users, the per-service env files in /etc/plynth/env (a single old plynth.env is split
+#      once, see split-env.sh), the key permissions and the systemd units (provision.sh --units-only);
+#   3. checks the env files: no CHANGE_ME left, every *_CHAIN is mainnet, the RPC answers chain id 4663, the
+#      registry and factory addresses match 4663.json, every keystore / password file is readable by the service
+#      user that signs with it and by no other service user (access tests only, never read); runs
+#      bun install --frozen-lockfile as plynth;
 #   4. points /opt/plynth/current at the release and runs the migrations (plynth-migrate.service); if they fail, the
 #      link goes back to the previous release and nothing is restarted;
 #   5. restarts plynth.target;
@@ -84,17 +86,26 @@ remote_script() {
 main() {
   set -euo pipefail
   local mode="$1" rel="${2:-}" sha="${3:-}"
-  local BASE=/opt/plynth ENVF=/etc/plynth/plynth.env
+  local BASE=/opt/plynth ENV_DIR=/etc/plynth/env
   local CORE=(indexer keeper api eligibility relayer mcp treasury-marks treasury-webhooks)
   local OPTIONAL=(treasury-desks treasury-close treasury-risk treasury-receipts treasury-reconciler)
   log() { printf '[server %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
   die() { printf 'deploy (server): %s\n' "$*" >&2; exit 1; }
-  # Last assignment wins, as in systemd's EnvironmentFile.
-  envval() { sed -n "s/^$1=//p" "$ENVF" | tail -1; }
+  # The settings: one file per service (after the split), else the old single file. Last assignment wins, as in
+  # systemd's EnvironmentFile; a key shared by two services (CORS_ORIGINS, ...) has the same value in both.
+  envfiles() { if compgen -G "$ENV_DIR/*.env" >/dev/null; then ls "$ENV_DIR"/*.env; else echo /etc/plynth/plynth.env; fi; }
+  envval() { local f; for f in $(envfiles); do sed -n "s/^$1=//p" "$f"; done | tail -1; }
+  # Which service user reads a settings file's keystores.
+  user_of() {
+    case "$(basename "$1" .env)" in
+      keeper) echo plynth-keeper ;; relayer) echo plynth-relayer ;; api) echo plynth-api ;;
+      eligibility) echo plynth-eligibility ;; treasury) echo plynth-treasury ;; *) echo plynth ;;
+    esac
+  }
   lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
   [[ "$(id -u)" == 0 ]] || die "connect as root"
-  id plynth >/dev/null 2>&1 && [[ -x /usr/local/bin/bun && -f /etc/plynth/db.env && -f "$ENVF" ]] \
+  id plynth >/dev/null 2>&1 && [[ -x /usr/local/bin/bun && -f /etc/plynth/db.env ]] && { [[ -f /etc/plynth/plynth.env ]] || compgen -G "$ENV_DIR/*.env" >/dev/null; } \
     || die "server not provisioned: run deploy.sh --provision <host> first"
   command -v jq >/dev/null || die "jq missing: re-run provision.sh"
 
@@ -163,14 +174,22 @@ main() {
   local R="$BASE/releases/$rel"
   [[ -n "$rel" && -d "$R/app" ]] || die "release $rel was not uploaded"
 
-  # ---- preflight: plynth.env
+  # ---- service users, per-service env files, key permissions, units (before the checks: they read the split files)
+  bash "$R/app/scripts/server/provision.sh" --units-only
+
+  # ---- preflight: the env files
   local left
-  left="$(grep -oE '^[A-Z0-9_]+=(CHANGE_ME|GENERATED_BY_PROVISION)$' "$ENVF" | cut -d= -f1 | tr '\n' ' ' || true)"
-  [[ -z "$left" ]] || die "fill these in /etc/plynth/plynth.env first: $left"
+  left="$(grep -HoE '^[A-Z0-9_]+=(CHANGE_ME|GENERATED_BY_PROVISION)$' $(envfiles) | sed 's#^.*/##; s/=.*//' | tr '\n' ' ' || true)"
+  [[ -z "$left" ]] || die "fill these in $ENV_DIR first (file:KEY): $left"
   local v
   for v in INDEXER_CHAIN KEEPER_CHAIN RELAYER_CHAIN API_CHAIN ELIGIBILITY_CHAIN; do
-    [[ "$(envval "$v")" == mainnet ]] || die "$v must be mainnet in /etc/plynth/plynth.env"
+    [[ "$(envval "$v")" == mainnet ]] || die "$v must be mainnet in $ENV_DIR"
   done
+  # The relayer refuses to start on mainnet without its fee tables (audit M-8 / L-12): catch it here, before a restart.
+  for v in RELAYER_WITHDRAW_MIN_FEES RELAYER_CLAIM_MIN_RAW; do
+    [[ -n "$(envval "$v")" ]] || die "$v is empty in $ENV_DIR/relayer.env: copy its line from app/scripts/server/env.example"
+  done
+  [[ "$(envval API_TRUST_PROXY)" == 1 ]] || log "WARNING: API_TRUST_PROXY is not 1 in $ENV_DIR/api.env: behind Caddy every request then shares one rate limit"
   local rpc chain
   rpc="$(envval RHC_MAINNET_RPC_URL)"
   rpc="${rpc:-https://rpc.mainnet.chain.robinhood.com}"
@@ -187,23 +206,29 @@ main() {
     var="${pair#*:}"
     want="$(jq -r --arg k "$key" '.[$k] // empty' "$dep")"
     have="$(envval "$var")"
-    [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "$var in plynth.env is $have but 4663.json says $key = $want"
+    [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "$var in $ENV_DIR is $have but 4663.json says $key = $want"
   done
   for v in KEEPER_PRIVATE_KEY RELAYER_PRIVATE_KEY ELIGIBILITY_ATTESTER_KEY TREASURY_CONTROLLER_KEY TREASURY_CONTROLLER_KEYSTORE_PASSWORD; do
-    [[ -z "$(envval "$v")" ]] || log "WARNING: $v is set in plynth.env; use a keystore + password file under /etc/plynth/keys instead"
+    [[ -z "$(envval "$v")" ]] || log "WARNING: $v is set in $ENV_DIR; use a keystore + password file under /etc/plynth/keys instead"
   done
-  local path
-  for v in $(grep -oE '^[A-Z0-9_]+_(KEYSTORE|KEYSTORE_PASSWORD_FILE)=' "$ENVF" | tr -d = | sort -u); do
-    path="$(envval "$v")"
-    [[ -n "$path" ]] || continue
-    # Access test only: the file is never read or printed here.
-    runuser -u plynth -- test -r "$path" \
-      || die "$v names $path, which the plynth user cannot read: copy it into /etc/plynth/keys, chown root:plynth, chmod 0440"
+  local path f u other
+  for f in $(envfiles); do
+    u="$(user_of "$f")"
+    for v in $(grep -oE '^[A-Z0-9_]+_(KEYSTORE|KEYSTORE_PASSWORD_FILE)=' "$f" | tr -d = | sort -u); do
+      path="$(sed -n "s/^$v=//p" "$f" | tail -1)"
+      [[ -n "$path" ]] || continue
+      # Access tests only: the file is never read or printed here.
+      runuser -u "$u" -- test -r "$path" \
+        || die "$v ($(basename "$f")) names $path, which $u cannot read: copy it into /etc/plynth/keys and re-run (provision.sh --units-only sets the owner)"
+      for other in plynth-indexer plynth-mcp plynth-keeper plynth-relayer plynth-api plynth-treasury; do
+        [[ "$other" == "$u" || ( "$u" == plynth-eligibility && "$other" == plynth-api ) || ( "$u" == plynth-api && "$v" == ELIGIBILITY_* ) ]] && continue
+        ! runuser -u "$other" -- test -r "$path" 2>/dev/null || die "$path ($v) is readable by $other too: each key must be readable only by the service that signs with it"
+      done
+    done
   done
-  log "preflight ok: chain 4663, deployment block $(jq -r '.deployBlock' "$dep"), keystores readable"
+  log "preflight ok: chain 4663, deployment block $(jq -r '.deployBlock' "$dep"), each keystore readable by its own service only"
 
-  # ---- units, ownership, dependencies
-  bash "$R/app/scripts/server/provision.sh" --units-only
+  # ---- ownership, dependencies
   printf '%s\n' "$sha" >"$R/REVISION"
   chown -R plynth:plynth "$R"
   log "bun install --frozen-lockfile"

@@ -8,12 +8,15 @@ Wants=postgresql.service
 
 [Service]
 Type=oneshot
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
 User=plynth
 Group=plynth
 WorkingDirectory=/var/lib/plynth
 Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
+EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
+ReadWritePaths=/var/lib/plynth
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/migrate.ts
 TimeoutStartSec=600
 StandardOutput=journal
@@ -23,4 +26,3 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth

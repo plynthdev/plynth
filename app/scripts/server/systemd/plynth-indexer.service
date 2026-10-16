@@ -11,13 +11,18 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=plynth
-Group=plynth
-WorkingDirectory=/var/lib/plynth
-Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
+User=plynth-indexer
+Group=plynth-indexer
+StateDirectory=plynth-indexer
+WorkingDirectory=/var/lib/plynth-indexer
+Environment=HOME=/var/lib/plynth-indexer
+EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
+EnvironmentFile=/etc/plynth/env/indexer.env
 EnvironmentFile=-/etc/plynth/indexer.env
+ReadWritePaths=/var/lib/plynth-indexer
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/indexer.ts
 Restart=always
 RestartSec=5
@@ -30,7 +35,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -11,13 +11,17 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=plynth
-Group=plynth
-WorkingDirectory=/var/lib/plynth
-Environment=HOME=/var/lib/plynth
-EnvironmentFile=/etc/plynth/plynth.env
-EnvironmentFile=/etc/plynth/db.env
+# Its own Unix user and only its own settings (audit: one user and one env file for every service).
+User=plynth-relayer
+Group=plynth-relayer
+SupplementaryGroups=plynth
+StateDirectory=plynth-relayer
+WorkingDirectory=/var/lib/plynth-relayer
+Environment=HOME=/var/lib/plynth-relayer
+EnvironmentFile=/etc/plynth/env/common.env
+EnvironmentFile=/etc/plynth/env/relayer.env
 EnvironmentFile=-/etc/plynth/relayer.env
+ReadWritePaths=/var/lib/plynth-relayer
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/relayer.ts
 Restart=always
 RestartSec=5
@@ -30,7 +34,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/plynth
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
