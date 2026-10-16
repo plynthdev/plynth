@@ -45,7 +45,7 @@ const ipOf = (c: Context) => clientIp(c.req.raw.headers, config.API_TRUST_PROXY,
 const roundups = await roundupsFromEnv(config.env, { chainId, db, pub, ipOf });
 const app = createApp(
   { chainId, pub, db, dep, blockTimes: new BlockTimes(pub), mcpSecret: config.MCP_TOKEN_SECRET },
-  { corsOrigins: corsOrigins(config.CORS_ORIGINS), eligibility: elig?.routes, roundups },
+  { corsOrigins: corsOrigins(config.CORS_ORIGINS), eligibility: elig?.routes, roundups, ipOf, rateLimit: { perMinute: config.API_RATE_LIMIT, heavyPerMinute: config.API_HEAVY_RATE_LIMIT } },
 );
 const server = Bun.serve({ port: config.API_PORT, fetch: app.fetch });
 console.log(`[api ${chainId}] listening on :${server.port} ${JSON.stringify(safeConfigSummary(config, keysFor("API_", "CORS_", "ROUNDUPS_", "ELIGIBILITY_", "LOG_")))}`);

@@ -14,6 +14,7 @@ import {
   corsOrigins,
   createApp,
   DEFAULT_CORS_ORIGINS,
+  DEFAULT_RATE_LIMIT,
   eligibility,
   fixed,
   parseAmount,
@@ -126,6 +127,34 @@ describe("tx builders validate like the contracts", () => {
     expect(() => buildClaimOpen(1, dep, A(0x99), "0")).toThrow(TxInputError);
     expect(() => buildClaimOpen(1, dep, A(0x10), "-1")).toThrow(TxInputError);
     expect(decodeFunctionData({ abi: crowdAbi, data: buildClaimOpen(1, dep, A(0x10), "7").data }).args).toEqual([A(0x10), 7n]);
+  });
+});
+
+// Audit L-13: the API had no rate limiting at all.
+describe("rate limiting (audit L-13)", () => {
+  test("per client address; IPv6 per /64; heavy routes have a tighter bucket; 429 with retry-after", async () => {
+    let ip = "198.51.100.1";
+    const a = createApp(deps, { ipOf: () => ip, rateLimit: { perMinute: 3, heavyPerMinute: 1 } });
+    for (let i = 0; i < 3; i++) expect((await a.request("/v1/meta/eligibility")).status).toBe(200);
+    const r = await a.request("/v1/meta/eligibility");
+    expect(r.status).toBe(429);
+    expect(r.headers.get("retry-after")).toBe("60");
+    expect(((await r.json()) as any).error.code).toBe("TOO_MANY_REQUESTS");
+    expect((await a.request("/trpc/meta.eligibility")).status).toBe(429); // tRPC shares the limit
+    ip = "2001:db8:5::1";
+    expect((await a.request("/v1/statements/verify", { method: "POST", body: "{}" })).status).not.toBe(429);
+    expect((await a.request("/v1/statements/verify", { method: "POST", body: "{}" })).status).toBe(429); // heavy: 1/min
+    ip = "2001:db8:5::ffff"; // same /64
+    expect((await a.request("/v1/proofs/verify", { method: "POST", body: "{}" })).status).toBe(429);
+    ip = "198.51.100.2";
+    expect((await a.request("/v1/meta/eligibility")).status).toBe(200);
+  });
+
+  test("always on: without options every request still counts against the default limit", async () => {
+    const a = createApp(deps);
+    let last = 0;
+    for (let i = 0; i <= DEFAULT_RATE_LIMIT; i++) last = (await a.request("/v1/meta/eligibility")).status;
+    expect(last).toBe(429);
   });
 });
 

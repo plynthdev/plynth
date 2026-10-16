@@ -114,6 +114,8 @@ const schema = z.object({
   API_CHAIN: chain,
   API_PORT: port(DEFAULT_PORTS.api),
   API_TRUST_PROXY: flag,
+  API_RATE_LIMIT: int(600, 1),
+  API_HEAVY_RATE_LIMIT: int(30, 1),
   API_DEPLOYMENTS_DIR: str(DEFAULT_DEPLOYMENTS_DIR),
   CORS_ORIGINS: opt,
   ROUNDUPS_ENABLED: flag,

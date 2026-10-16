@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { getHTTPStatusCodeFromError } from "@trpc/server/http";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
+import { ipKey, RateLimiter } from "@/lib/ratelimit";
 import { appRouter, type Ctx } from "./router";
 import type { Deps } from "./service";
 
@@ -71,12 +72,27 @@ export const REST: Proc[] = [
   { method: "GET", path: "/v1/meta/health", call: (k) => k.meta.health() },
 ];
 
+/** Requests per minute per client address (an IPv6 /64), and for the routes that cost real work (audit L-13). */
+export const DEFAULT_RATE_LIMIT = 600;
+export const DEFAULT_HEAVY_RATE_LIMIT = 30;
+/** Proof and statement verification (RPC fan-out, proof checks) and the CFO pack: the expensive routes. */
+const HEAVY = [/^\/(v1\/)?(statements|proofs)\/verify$/, /^\/trpc\/(statements|proofs)\.verify/, /^\/v1\/treasury\/[^/]+\/cfo-pack\//, /^\/trpc\/cfo\.pack/];
+export const isHeavyPath = (path: string) => HEAVY.some((r) => r.test(path));
+
+export type ApiRateLimit = { perMinute?: number | undefined; heavyPerMinute?: number | undefined };
+
 /**
+ * opts.ipOf: the client address (bin/api.ts: the socket, or X-Forwarded-For behind Caddy with API_TRUST_PROXY=1).
+ * Every request is rate-limited per address; without ipOf every request shares one key ("unknown").
+ * opts.rateLimit: per-minute limits (API_RATE_LIMIT / API_HEAVY_RATE_LIMIT); always on.
  * opts.eligibility: the screening routes from @plynth/eligibility (eligibilityFromEnv(...).routes). When given,
  * they are served at /eligibility/check and /v1/eligibility/check behind the same CORS allow-list.
  * opts.roundups: the round-up source routes (roundupsFromEnv), served at /roundups/* and /v1/roundups/*.
  */
-export function createApp(deps: Deps, opts: { corsOrigins?: string[] | undefined; eligibility?: Hono | undefined; roundups?: Hono | undefined } = {}): Hono {
+export function createApp(
+  deps: Deps,
+  opts: { corsOrigins?: string[] | undefined; eligibility?: Hono | undefined; roundups?: Hono | undefined; ipOf?: ((c: Context) => string) | undefined; rateLimit?: ApiRateLimit | undefined } = {},
+): Hono {
   const allowed = new Set(opts.corsOrigins ?? DEFAULT_CORS_ORIGINS);
   const app = new Hono();
 
@@ -88,6 +104,20 @@ export function createApp(deps: Deps, opts: { corsOrigins?: string[] | undefined
     await next();
   });
   app.use("*", cors({ origin: (o) => (allowed.has(o) ? o : null), allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type", "x-plynth-residency"], maxAge: 600 }));
+
+  // Audit L-13: rate limiting, enforced on every route (health included), before any work is done.
+  const general = new RateLimiter(opts.rateLimit?.perMinute ?? DEFAULT_RATE_LIMIT, 60_000);
+  const heavy = new RateLimiter(opts.rateLimit?.heavyPerMinute ?? DEFAULT_HEAVY_RATE_LIMIT, 60_000);
+  app.use("*", async (c, next) => {
+    if (c.req.method === "OPTIONS") return next();
+    const key = ipKey(opts.ipOf?.(c) ?? "unknown");
+    const ok = general.take(key) && (!isHeavyPath(c.req.path) || heavy.take(key));
+    if (!ok) {
+      c.header("retry-after", "60");
+      return c.json({ error: { code: "TOO_MANY_REQUESTS", message: "rate limited: too many requests from this address" } }, 429);
+    }
+    await next();
+  });
 
   const ctxOf = (c: Context): Ctx => ({ ...deps, headers: c.req.raw.headers });
 

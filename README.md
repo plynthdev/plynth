@@ -212,6 +212,8 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `API_CHAIN` | `local` | Read-only dashboard API; holds no keys (except the optional eligibility attester below). |
 | `API_PORT` | `8789` |  |
 | `API_TRUST_PROXY` | `0` | 1 = rate limits use the first X-Forwarded-For hop (only behind your own proxy; Caddy replaces any client value). IPv6 clients are limited per /64. |
+| `API_RATE_LIMIT` | `600` | Requests per minute per client address, on every route (always on; 429 with Retry-After). |
+| `API_HEAVY_RATE_LIMIT` | `30` | Per minute per address for `POST /v1/statements/verify`, `POST /v1/proofs/verify` and the CFO pack. |
 | `API_DEPLOYMENTS_DIR` | `app/deployments` |  |
 | `CORS_ORIGINS` | – | Comma-separated exact origins. Blank = the hosted frontend and http://localhost:5173. |
 | `ROUNDUPS_ENABLED` | `0` | Round-up sources beyond on-chain spends (statement import, bank link). `1` mounts `/v1/roundups/*`. The bank link also needs `KEEPER_SECRET_KEY` (tokens are stored sealed with it, so the API and the keeper share it) |
