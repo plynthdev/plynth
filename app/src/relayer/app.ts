@@ -1,7 +1,8 @@
 // Gasless claims for Quiet delivery. POST /claim {token, stealth, to, raw, deadline, sig}:
 // shape check -> rate limit per IP -> destination check -> deadline -> EIP-712 signature recovered off-chain
 // against the current on-chain nonce -> rate limit per stealth address -> balance -> eth_call simulation ->
-// send from the relayer's own key -> { txHash }. The relayer pays the gas; there is no fee in v1.
+// send from the relayer's own key -> { txHash }. The relayer pays the gas; StealthClaims takes no fee, so a claim
+// below the per-token minimum (RELAYER_CLAIM_MIN_RAW, audit L-12) is refused: the user claims it from their own wallet.
 // It cannot move funds anywhere the stealth key did not sign for: StealthClaims re-verifies the signature.
 // Rate limits key IPv4 addresses whole and IPv6 addresses by their /64 (one subscriber's prefix; audit M-8).
 //
@@ -51,6 +52,8 @@ export type RelayerDeps = {
   log?: (m: string) => void;
   /** Hidden Vault withdraws; absent = POST /withdraw answers 503. */
   withdraw?: WithdrawDeps | undefined;
+  /** Smallest claim relayed per token (raw); undefined = token not relayed. Absent = no minimum (tests, local). */
+  claimMin?: ((token: Address) => bigint | undefined) | undefined;
   /** Exact browser origins allowed to call the relayer (the web app). Absent = no CORS headers (server-to-server only). */
   corsOrigins?: string[] | undefined;
 };
@@ -144,6 +147,11 @@ export function relayerApp(d: RelayerDeps) {
     const a = parseClaim(body);
     if (typeof a === "string") return c.json({ error: a }, 400);
     if (plynth.has(a.to.toLowerCase())) return c.json({ error: "destination is a Plynth contract" }, 400);
+    if (d.claimMin) {
+      const min = d.claimMin(a.token);
+      if (min === undefined) return c.json({ error: "this token is not relayed: claim it from your own wallet" }, 400);
+      if (a.raw < min) return c.json({ error: `claim below the relayer minimum (${min}): claim it from your own wallet` }, 400);
+    }
     if (a.deadline < BigInt(Math.floor(now()))) return c.json({ error: "expired" }, 400);
 
     const nonce = await d.nonceOf(a.stealth);

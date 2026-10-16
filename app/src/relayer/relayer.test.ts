@@ -201,3 +201,23 @@ describe("CORS", () => {
   });
 });
 
+// Audit L-12: StealthClaims takes no fee, so a relayed claim of 1 wei costs the relayer full gas for nothing. Claims
+// below the per-token minimum (RELAYER_CLAIM_MIN_RAW) are refused before any chain call; the user claims them from
+// their own wallet.
+describe("audit L-12: relayer minimum for tiny stealth claims", () => {
+  test("below the minimum, or a token without one: refused, nothing read or sent; at the minimum: relayed", async () => {
+    let reads = 0;
+    const s = setup({ claimMin: (t) => (t.toLowerCase() === TOKEN.toLowerCase() ? 100n : undefined), nonceOf: async () => (reads++, 0n) });
+    const tiny = await s.post(await body(STEALTH_KEY, { raw: 1n }));
+    expect(tiny.status).toBe(400);
+    expect(((await tiny.json()) as any).error).toContain("below the relayer minimum (100)");
+    expect(reads).toBe(0);
+    const ok = await s.post(await body(STEALTH_KEY, { raw: 100n }));
+    expect(ok.status).toBe(200);
+    const other = setup({ claimMin: () => undefined });
+    const r = await other.post(await body(STEALTH_KEY));
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as any).error).toContain("not relayed");
+    expect(other.sent).toHaveLength(0);
+  });
+});

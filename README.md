@@ -207,6 +207,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `RELAYER_IP_LIMIT` | `20` |  |
 | `RELAYER_STEALTH_LIMIT` | `3` |  |
 | `RELAYER_WITHDRAW_MIN_FEES` | – | Minimum withdraw fee per asset, "0xasset:raw,0xasset:raw" in raw token units. Required on mainnet; an unlisted asset is not relayed; amount 0 and fee 0 are always refused. Blank on local/testnet = 0.25 USDG and 0.001 of each Stock Token of the deployment. |
+| `RELAYER_CLAIM_MIN_RAW` | – | Smallest Quiet claim the relayer pays gas for, per token (same format). Required on mainnet. Blank on local/testnet = 1 USDG and 0.001 of each Stock Token. |
 | **api (bin/api.ts)** | | |
 | `API_CHAIN` | `local` | Read-only dashboard API; holds no keys (except the optional eligibility attester below). |
 | `API_PORT` | `8789` |  |

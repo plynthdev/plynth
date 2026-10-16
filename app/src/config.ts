@@ -108,6 +108,7 @@ const schema = z.object({
   RELAYER_IP_LIMIT: int(20, 1),
   RELAYER_STEALTH_LIMIT: int(3, 1),
   RELAYER_WITHDRAW_MIN_FEES: opt,
+  RELAYER_CLAIM_MIN_RAW: opt,
 
   // api (+ the optional eligibility and round-up routes it mounts)
   API_CHAIN: chain,

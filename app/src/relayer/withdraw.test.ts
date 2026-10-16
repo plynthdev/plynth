@@ -164,22 +164,26 @@ describe("audit M-8: no free withdraws", () => {
   test("blank fee tables: a startup error on mainnet; local/testnet fall back to non-zero defaults per deployment asset", () => {
     const dep = { usdg: ASSET, stocks: { TSLA: { token: DEST } } };
     expect(() => relayerTables({}, "mainnet", dep)).toThrow(/RELAYER_WITHDRAW_MIN_FEES must be set on mainnet/);
+    expect(() => relayerTables({ RELAYER_WITHDRAW_MIN_FEES: `${ASSET}:1` }, "mainnet", dep)).toThrow(/RELAYER_CLAIM_MIN_RAW must be set on mainnet/);
     const t = relayerTables({}, "testnet", dep);
     expect(t.minFee(ASSET)).toBe(250_000n);
     expect(t.minFee(DEST)).toBe(10n ** 15n);
     expect(t.minFee(POOL)).toBeUndefined();
-    const m = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: `${ASSET}:7` }, "mainnet", dep);
+    expect(t.claimMin(ASSET)).toBe(1_000_000n);
+    const m = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: `${ASSET}:7`, RELAYER_CLAIM_MIN_RAW: `${ASSET}:9` }, "mainnet", dep);
     expect(m.minFee(ASSET)).toBe(7n);
     expect(m.minFee(DEST)).toBeUndefined();
+    expect(m.claimMin(ASSET)).toBe(9n);
   });
 
-  test("the shipped mainnet env lists a non-zero withdraw fee for USDG and every Stock Token", async () => {
+  test("the shipped mainnet env lists a non-zero fee and claim minimum for USDG and every Stock Token", async () => {
     const env = await Bun.file(`${import.meta.dir}/../../scripts/server/env.example`).text();
     const dep = (await Bun.file(`${import.meta.dir}/../../deployments/4663.json`).json()) as { usdg: string; stocks: Record<string, { token: string }> };
     const line = (k: string) => env.split("\n").find((l) => l.startsWith(`${k}=`))!.slice(k.length + 1);
-    const t = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: line("RELAYER_WITHDRAW_MIN_FEES") }, "mainnet", dep);
+    const t = relayerTables({ RELAYER_WITHDRAW_MIN_FEES: line("RELAYER_WITHDRAW_MIN_FEES"), RELAYER_CLAIM_MIN_RAW: line("RELAYER_CLAIM_MIN_RAW") }, "mainnet", dep);
     for (const a of [dep.usdg, ...Object.values(dep.stocks).map((s) => s.token)] as Address[]) {
       expect(t.minFee(a)! > 1n).toBe(true);
+      expect(t.claimMin(a)! > 1n).toBe(true);
     }
   });
 

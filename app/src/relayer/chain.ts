@@ -47,21 +47,23 @@ export function parseMinFees(env: string | undefined): (asset: Address) => bigin
 
 /** Defaults when the variable is blank (local and testnet only): 0.25 USDG, 0.001 of a Stock Token (18 decimals). */
 export const DEFAULT_WITHDRAW_FEE = { usdg: 250_000n, stock: 1_000_000_000_000_000n } as const;
+/** Smallest relayed Quiet claim when blank: 1 USDG, 0.001 of a Stock Token. */
+export const DEFAULT_CLAIM_MIN = { usdg: 1_000_000n, stock: 1_000_000_000_000_000n } as const;
 
 function deploymentAssets(dep: { usdg?: unknown; stocks?: Record<string, { token: string }> | undefined }): { usdg: string[]; stocks: string[] } {
   return { usdg: typeof dep.usdg === "string" ? [dep.usdg] : [], stocks: Object.values(dep.stocks ?? {}).map((s) => s.token) };
 }
 
 /**
- * The relayer's withdraw fee table. A blank variable on mainnet is a startup error (fail closed: a relayer that
+ * The relayer's fee and minimum tables. A blank variable on mainnet is a startup error (fail closed: a relayer that
  * silently relays for free is how the audit's PoC drained it); on local / testnet it falls back to the defaults
  * above for USDG and every Stock Token of the deployment.
  */
 export function relayerTables(
-  env: { RELAYER_WITHDRAW_MIN_FEES?: string | undefined },
+  env: { RELAYER_WITHDRAW_MIN_FEES?: string | undefined; RELAYER_CLAIM_MIN_RAW?: string | undefined },
   chain: "local" | "testnet" | "mainnet",
   dep: { usdg?: unknown; stocks?: Record<string, { token: string }> | undefined },
-): { minFee: (asset: Address) => bigint | undefined } {
+): { minFee: (asset: Address) => bigint | undefined; claimMin: (token: Address) => bigint | undefined } {
   const assets = deploymentAssets(dep);
   const table = (v: string | undefined, name: string, d: { usdg: bigint; stock: bigint }) => {
     if (v && v.trim()) return parseAssetTable(v, name);
@@ -72,11 +74,13 @@ export function relayerTables(
     return m;
   };
   const fees = table(env.RELAYER_WITHDRAW_MIN_FEES, "RELAYER_WITHDRAW_MIN_FEES", DEFAULT_WITHDRAW_FEE);
+  const mins = table(env.RELAYER_CLAIM_MIN_RAW, "RELAYER_CLAIM_MIN_RAW", DEFAULT_CLAIM_MIN);
   return {
     minFee: (a) => {
       const v = fees.get(a.toLowerCase());
       return v === undefined ? undefined : v > 0n ? v : 1n;
     },
+    claimMin: (t) => mins.get(t.toLowerCase()),
   };
 }
 

@@ -5,8 +5,8 @@
 // RELAYER_TRUST_PROXY=1 to rate-limit by X-Forwarded-For (only behind your own proxy),
 // RELAYER_IP_LIMIT (per minute, default 20), RELAYER_STEALTH_LIMIT (per minute, default 3),
 // RELAYER_WITHDRAW_MIN_FEES ("0xasset:raw,..." minimum Hidden Vault withdraw fee per asset; unlisted assets are not
-// relayed). Required on mainnet; blank on local / testnet = defaults for USDG and every Stock Token of the deployment
-// (relayer/chain.ts relayerTables).
+// relayed) and RELAYER_CLAIM_MIN_RAW (smallest relayed Quiet claim per token). Both are required on mainnet; blank on
+// local / testnet = defaults for USDG and every Stock Token of the deployment (relayer/chain.ts relayerTables).
 // POST /withdraw is enabled when the deployment has a shieldedPool.
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { readDeployment } from "@/indexer";
@@ -43,6 +43,7 @@ const tables = relayerTables(config, config.RELAYER_CHAIN, dep as { usdg?: unkno
 const nonces = new NonceManager(() => pub.getTransactionCount({ address: account.address, blockTag: "pending" }));
 const app = relayerApp({
   ...chainDeps({ pub, wallet, account, chain, stealthClaims: getAddress(dep.stealthClaims), plynth, nonces }),
+  claimMin: tables.claimMin,
   ipOf: (c) => (trustProxy ? (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown") : (getConnInfo(c).remote.address ?? "unknown")),
   ipLimiter: new RateLimiter(config.RELAYER_IP_LIMIT, 60_000),
   stealthLimiter: new RateLimiter(config.RELAYER_STEALTH_LIMIT, 60_000),
