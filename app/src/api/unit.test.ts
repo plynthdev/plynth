@@ -7,6 +7,7 @@ import {
   BlockTimes,
   buildClaimOpen,
   buildDeposit,
+  buildSetHiddenKeys,
   buildSetMix,
   buildSetSettings,
   buildWithdraw,
@@ -98,6 +99,28 @@ describe("tx builders validate like the contracts", () => {
     expect(() => buildSetMix(1, dep, [{ token: A(0x10), weightBps: 5000 }, { token: A(0x10), weightBps: 5000 }])).toThrow(/duplicate/);
     expect(() => buildSetMix(1, dep, [{ token: A(0x10), weightBps: 9999 }])).toThrow(/sum/);
     expect(() => buildSetMix(1, dep, [{ token: A(0x10), weightBps: 0 }, { token: A(0x11), weightBps: 10_000 }])).toThrow(TxInputError);
+  });
+  test("setHiddenKeys (audit M-6): low-order viewing keys and out-of-field / zero ownerPk are refused, on REST too", async () => {
+    const good = { ownerPk: `0x${"00".repeat(31)}07`, viewingPub: `0x${"09".padEnd(64, "0")}` } as const;
+    const d = decodeFunctionData({ abi: vaultAbi, data: buildSetHiddenKeys(1, dep, good.ownerPk, good.viewingPub).data });
+    expect(d.functionName).toBe("setHiddenKeys");
+    // libsodium's low-order blocklist (canonical and non-canonical encodings)
+    const lowOrder = [
+      `0x${"00".repeat(32)}`,
+      `0x01${"00".repeat(31)}`,
+      "0xe0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800", // not-a-key
+      "0x5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157", // not-a-key
+      `0xec${"ff".repeat(30)}7f`,
+      `0xed${"ff".repeat(30)}7f`,
+      `0xee${"ff".repeat(30)}7f`,
+    ] as const;
+    for (const v of lowOrder) expect(() => buildSetHiddenKeys(1, dep, good.ownerPk, v)).toThrow(/low-order/);
+    expect(() => buildSetHiddenKeys(1, dep, `0x${"ff".repeat(32)}`, good.viewingPub)).toThrow(/field/);
+    expect(() => buildSetHiddenKeys(1, dep, `0x${"00".repeat(32)}`, good.viewingPub)).toThrow(TxInputError);
+    const r = await app.request("/v1/tx/setHiddenKeys", { method: "POST", body: JSON.stringify({ ownerPk: good.ownerPk, viewingPub: lowOrder[2] }) });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as any).error.message).toMatch(/low-order/);
+    expect((await app.request("/v1/tx/setHiddenKeys", { method: "POST", body: JSON.stringify(good) })).status).toBe(200);
   });
   test("claimOpen: known asset, integer bookId", () => {
     expect(() => buildClaimOpen(1, dep, A(0x99), "0")).toThrow(TxInputError);

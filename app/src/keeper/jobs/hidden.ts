@@ -7,11 +7,12 @@
 // Then, as a public service, it batches deposits whose MIN_PENDING_DELAY has passed into the tree
 // (insertPending; anyone may call it, users' own deposits included).
 // Nothing secret is stored: the row keeps (asset, book, user, raw, commitment), all public in DepositQueued.
-import { commitmentOf, encryptNote, initVault, randomField, shieldedPoolAbi, toBytes32 } from "@plynth/sdk/vault";
+import { commitmentOf, encryptNote, hiddenKeysProblem, initVault, randomField, shieldedPoolAbi, toBytes32 } from "@plynth/sdk/vault";
 import { sql } from "drizzle-orm";
 import { encodeAbiParameters, getAddress, hexToBytes, type Address, type Hex } from "viem";
 import { crowdAbi, vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
+import { setJob } from "@/keeper/jobstore";
 
 export const MODE_HIDDEN = 2;
 /** Deposits inserted per insertPending transaction (each leaf is ~1.2M gas). */
@@ -55,37 +56,64 @@ async function record(ctx: Ctx, asset: Address, bookId: string, user: Address, v
       tx_hash = coalesce(excluded.tx_hash, keeper_hidden_deliveries.tx_hash), updated_at = now()`);
 }
 
+/**
+ * One saver who cannot be served this pass (low-order or out-of-field keys, a failing read): a "hidden-skip" row and a
+ * note. Kept out of keeper_hidden_deliveries so the user is retried every pass and served once they re-register.
+ * One user must never stop Hidden delivery (or the insertPending batching after it) for everyone (audit M-6).
+ */
+async function recordSkip(ctx: Ctx, res: JobResult, asset: Address, bookId: string, user: Address, reason: string, note: string) {
+  res.notes.push(`${user}: ${note}`);
+  const key = `${asset.toLowerCase()}:${bookId}:${user.toLowerCase()}`;
+  await setJob(ctx, "hidden-skip", key, { status: "skipped", payload: { reason, at: new Date().toISOString() }, error: reason });
+}
+
 async function deliverPhase(ctx: Ctx, res: JobResult): Promise<void> {
-  for (const { asset, bookId, user } of await candidates(ctx)) {
-    const read = (functionName: string, args: readonly unknown[], address = ctx.dep.crowd, abi: any = crowdAbi) =>
-      ctx.pub.readContract({ address, abi, functionName, args } as any) as Promise<any>;
-    if (await read("settled", [asset, BigInt(bookId), user])) {
-      await record(ctx, asset, bookId, user, { status: "skipped", reason: "already settled (claimed openly or delivered)" });
-      continue;
+  for (const c of await candidates(ctx)) {
+    // An error while our transaction is out still stops the pass (as before); anything else is about this user only.
+    const sending = { now: false };
+    try {
+      await deliverOne(ctx, res, c, sending);
+    } catch (err) {
+      if (sending.now) throw err;
+      const msg = String((err as Error)?.message ?? err).split("\n")[0]!;
+      await recordSkip(ctx, res, c.asset, c.bookId, c.user, msg, `skipped this pass (${msg})`);
     }
-    if ((await read("orderOf", [asset, BigInt(bookId), user])) === 0n) {
-      await record(ctx, asset, bookId, user, { status: "skipped", reason: "no order (cancelled)" });
-      continue;
-    }
-    const mode = Number((await read("settingsOf", [user], ctx.dep.vault, vaultAbi)).mode);
-    if (mode !== MODE_HIDDEN) continue; // re-checked every pass: the user may switch to Hidden before claiming
-    const keys = (await read("hiddenKeysOf", [user], ctx.dep.vault, vaultAbi)) as { ownerPk: Hex; viewingPub: Hex };
-    if (BigInt(keys.ownerPk) === 0n) {
-      res.notes.push(`${user}: Hidden but no registered hidden keys`);
-      continue;
-    }
-    const raw = (await read("allocationOf", [asset, BigInt(bookId), user])) as bigint;
-    const plan = planHiddenNote(asset, raw, BigInt(keys.ownerPk), hexToBytes(keys.viewingPub));
-    const args = [asset, BigInt(bookId), user, plan.route] as const;
-    const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "deliver", args);
-    if (!sim.ok) {
-      res.notes.push(`${user} ${asset} book ${bookId}: deliver reverts ${sim.errorName}`);
-      continue;
-    }
-    const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", args, "deliver-hidden");
-    await record(ctx, asset, bookId, user, { status: "delivered", raw, commitment: plan.commitment, txHash: r.transactionHash });
-    res.actions++;
   }
+}
+
+async function deliverOne(ctx: Ctx, res: JobResult, { asset, bookId, user }: { asset: Address; bookId: string; user: Address }, sending: { now: boolean }): Promise<void> {
+  const read = (functionName: string, args: readonly unknown[], address = ctx.dep.crowd, abi: any = crowdAbi) =>
+    ctx.pub.readContract({ address, abi, functionName, args } as any) as Promise<any>;
+  if (await read("settled", [asset, BigInt(bookId), user])) {
+    await record(ctx, asset, bookId, user, { status: "skipped", reason: "already settled (claimed openly or delivered)" });
+    return;
+  }
+  if ((await read("orderOf", [asset, BigInt(bookId), user])) === 0n) {
+    await record(ctx, asset, bookId, user, { status: "skipped", reason: "no order (cancelled)" });
+    return;
+  }
+  const mode = Number((await read("settingsOf", [user], ctx.dep.vault, vaultAbi)).mode);
+  if (mode !== MODE_HIDDEN) return; // re-checked every pass: the user may switch to Hidden before claiming
+  const keys = (await read("hiddenKeysOf", [user], ctx.dep.vault, vaultAbi)) as { ownerPk: Hex; viewingPub: Hex };
+  // Validated before planning: a low-order viewing key makes encryptNote throw, an ownerPk >= p the commitment (M-6).
+  const problem = hiddenKeysProblem(keys.ownerPk, keys.viewingPub);
+  if (problem) {
+    await recordSkip(ctx, res, asset, bookId, user, problem, `skipped, Hidden but ${problem} (they can still claim openly or re-register)`);
+    return;
+  }
+  const raw = (await read("allocationOf", [asset, BigInt(bookId), user])) as bigint;
+  const plan = planHiddenNote(asset, raw, BigInt(keys.ownerPk), hexToBytes(keys.viewingPub));
+  const args = [asset, BigInt(bookId), user, plan.route] as const;
+  const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "deliver", args);
+  if (!sim.ok) {
+    res.notes.push(`${user} ${asset} book ${bookId}: deliver reverts ${sim.errorName}`);
+    return;
+  }
+  sending.now = true;
+  const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", args, "deliver-hidden");
+  sending.now = false;
+  await record(ctx, asset, bookId, user, { status: "delivered", raw, commitment: plan.commitment, txHash: r.transactionHash });
+  res.actions++;
 }
 
 async function insertPhase(ctx: Ctx, res: JobResult): Promise<void> {

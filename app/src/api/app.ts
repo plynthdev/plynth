@@ -39,6 +39,7 @@ export const REST: Proc[] = [
   { method: "POST", path: "/v1/tx/deposit", call: async (k, c) => k.tx.deposit((await body(c)) as any) },
   { method: "POST", path: "/v1/tx/withdraw", call: async (k, c) => k.tx.withdraw((await body(c)) as any) },
   { method: "POST", path: "/v1/tx/setMix", call: async (k, c) => k.tx.setMix((await body(c)) as any) },
+  { method: "POST", path: "/v1/tx/setHiddenKeys", call: async (k, c) => k.tx.setHiddenKeys((await body(c)) as any) },
   { method: "POST", path: "/v1/tx/claimOpen", call: async (k, c) => k.tx.claimOpen((await body(c)) as any) },
   { method: "GET", path: "/v1/crowd/books", call: (k, c) => k.crowd.books(q(c) as any) },
   { method: "GET", path: "/v1/statements/:address", call: (k, c) => k.statements.list({ address: c.req.param("address")! }) },

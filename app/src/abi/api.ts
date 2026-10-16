@@ -10,6 +10,7 @@ export const vaultAbi = parseAbi([
   "function withdraw(uint256 amount, address to)",
   "function setSettings(Settings s)",
   "function setMix(MixEntry[] mix)",
+  "function setHiddenKeys(bytes32 ownerPk, bytes32 viewingPub)",
   "function settingsOf(address user) view returns (Settings)",
   "function accountOf(address user) view returns (Account)",
   "function mixOf(address user) view returns (MixEntry[])",

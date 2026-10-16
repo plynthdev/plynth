@@ -1,6 +1,7 @@
 // Unsigned transaction builders. The API never holds user keys: it returns {to, data, value, chainId}
 // for the user's own wallet to sign and send. Inputs are validated with the same rules the contracts
 // enforce, so a bad request fails here with a reason instead of as an opaque revert in the wallet.
+import { hiddenKeysProblem } from "@plynth/sdk/vault";
 import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { crowdAbi, erc20Abi, vaultAbi } from "@/abi/api";
 import { stockOf, type ApiDeployment } from "@/chain/deployment";
@@ -50,6 +51,16 @@ export function buildSetSettings(chainId: number, dep: ApiDeployment, i: Setting
     args: [{ roundTo: i.roundTo, multiplier: i.multiplier, weeklyCap: cap, fixedTopUp: top, mode }],
   });
   return tx(chainId, dep.vault, data);
+}
+
+/**
+ * SavingsVault.setHiddenKeys(ownerPk, viewingPub). The contract stores any two words; keys that can never receive a
+ * note (a low-order x25519 viewing key, an ownerPk of 0 or outside the field) are refused here (audit M-6).
+ */
+export function buildSetHiddenKeys(chainId: number, dep: ApiDeployment, ownerPk: Hex, viewingPub: Hex): UnsignedTx {
+  const problem = hiddenKeysProblem(ownerPk, viewingPub);
+  if (problem) throw new TxInputError(`invalid Hidden keys: ${problem}`);
+  return tx(chainId, dep.vault, encodeFunctionData({ abi: vaultAbi, functionName: "setHiddenKeys", args: [ownerPk, viewingPub] }));
 }
 
 /** USDG.approve(vault, amount): needed once before deposit (plain ERC-20 path). */

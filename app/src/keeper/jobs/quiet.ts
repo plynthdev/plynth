@@ -40,7 +40,7 @@
 // part waits (and if the allocation is no longer settled at all, the plan goes back to the deliver phase).
 //
 // Privacy note: the plan row links user to stealth addresses; it is scrubbed to amounts once every part is out.
-import { computeStealthAddress } from "@plynth/sdk/stealth";
+import { computeStealthAddress, parseMetaAddress } from "@plynth/sdk/stealth";
 import { sql } from "drizzle-orm";
 import { encodeAbiParameters, getAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from "viem";
 import { crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
@@ -253,6 +253,31 @@ export function releaseCheck(plan: Plan): { ok: true } | { ok: false; reason: st
   return { ok: true };
 }
 
+/**
+ * Why a registered ERC-6538 scheme-1 meta-address cannot be used, or null when it can. The registry stores any
+ * bytes, so both 33-byte compressed keys are checked to be points on secp256k1 BEFORE anything is planned for it.
+ */
+export function quietMetaProblem(meta: Hex): string | null {
+  if (meta === "0x" || meta.length <= 2) return "no ERC-6538 meta-address registered";
+  if (meta.length !== 2 + 132) return `meta-address is ${(meta.length - 2) / 2} bytes, not 66 bytes`;
+  try {
+    parseMetaAddress(meta);
+  } catch {
+    return "meta-address is not a valid pair of secp256k1 points";
+  }
+  return null;
+}
+
+/**
+ * One saver who cannot be served this pass (malformed keys, a failing read): recorded as a "quiet-skip" row (kept
+ * apart from the plan, so the user is retried every pass and served once they fix it) and a note. One user must
+ * never stop the pass for everyone else (audit M-6).
+ */
+async function recordSkip(ctx: Ctx, res: JobResult, key: string, user: Address, reason: string, note: string) {
+  res.notes.push(`${user}: ${note}`);
+  await setJob(ctx, "quiet-skip", key, { status: "skipped", payload: { reason, at: new Date().toISOString() }, error: reason });
+}
+
 async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promise<void> {
   const n = ctx.splitParts ?? DEFAULT_SPLIT_PARTS;
   const list = await candidates(ctx);
@@ -260,7 +285,30 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
   // Every read of this phase is pinned to one confirmed block (head - confirmations): settled and the settlement logs
   // agree with each other, and nothing a reorg can still remove counts.
   const { at: atBlock } = await confirmedBlock(ctx);
-  for (const { asset, bookId, user } of list) {
+  for (const c of list) {
+    // Errors while one of OUR transactions is out (TxUnconfirmed, transport) still stop the pass: the next pass decides
+    // from the stored transaction. Anything else is about this one user: recorded, and the loop goes on.
+    const sending = { now: false };
+    try {
+      await deliverOne(ctx, res, n, execCount, atBlock, c, sending);
+    } catch (err) {
+      if (sending.now) throw err;
+      const msg = String((err as Error)?.message ?? err).split("\n")[0]!;
+      await recordSkip(ctx, res, planKey(c.asset, c.bookId, c.user), c.user, msg, `skipped this pass (${msg})`);
+    }
+  }
+}
+
+async function deliverOne(
+  ctx: Ctx,
+  res: JobResult,
+  n: number,
+  execCount: number,
+  atBlock: bigint,
+  { asset, bookId, user }: { asset: Address; bookId: string; user: Address },
+  sending: { now: boolean },
+): Promise<void> {
+  {
     const key = planKey(asset, bookId, user);
     const settled = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "settled", args: [asset, BigInt(bookId), user], blockNumber: atBlock })) as boolean;
     const existing = await getJob(ctx, "quiet-plan", key);
@@ -268,25 +316,27 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
     if (settled) {
       if (!plan) {
         await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: "settled without Quiet delivery (claimed openly or cancelled)" } });
-        continue;
+        return;
       }
       // NOT proof that our deliver landed: claimOpen and a Hidden deliver set settled too.
       await recordSettlement(ctx, res, key, plan, await proveSettlement(ctx, plan, await executedAt(ctx, asset, bookId), atBlock), atBlock);
-      continue;
+      return;
     }
     const order = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "orderOf", args: [asset, BigInt(bookId), user] })) as bigint;
     if (order === 0n) {
       await setJob(ctx, "quiet-plan", key, { status: "skipped", payload: { reason: "no order (cancelled)" } });
-      continue;
+      return;
     }
     const mode = ((await ctx.pub.readContract({ address: ctx.dep.vault, abi: vaultAbi, functionName: "settingsOf", args: [user] })) as { mode: number }).mode;
-    if (Number(mode) !== 1) continue; // Open users claim themselves; re-checked every pass in case they switch
-    const meta = (await ctx.pub.readContract({ address: ctx.dep.erc6538Registry, abi: registryAbi, functionName: "stealthMetaAddressOf", args: [user, 1n] })) as Hex;
-    if (meta === "0x" || meta.length !== 2 + 132) {
-      res.notes.push(`${user}: Quiet but no valid ERC-6538 meta-address`);
-      continue;
-    }
+    if (Number(mode) !== 1) return; // Open users claim themselves; re-checked every pass in case they switch
     if (!plan) {
+      // Validated before planning: an off-curve or truncated key would make computeStealthAddress throw (M-6).
+      const meta = (await ctx.pub.readContract({ address: ctx.dep.erc6538Registry, abi: registryAbi, functionName: "stealthMetaAddressOf", args: [user, 1n] })) as Hex;
+      const problem = quietMetaProblem(meta);
+      if (problem) {
+        await recordSkip(ctx, res, key, user, problem, `skipped, Quiet but ${problem} (they can still claim openly)`);
+        return;
+      }
       const allocation = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "allocationOf", args: [asset, BigInt(bookId), user] })) as bigint;
       const parts = splitAmount(allocation, n).map((raw, i): PlannedPart => {
         const g = computeStealthAddress(meta);
@@ -301,18 +351,20 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
       const r = await ctx.sender.receiptOf(prior.hash);
       if (r && r.blockNumber > atBlock) {
         res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} mined at block ${r.blockNumber}, above the confirmed block ${atBlock}; proven once confirmed`);
-        continue;
+        return;
       }
       if (r?.status === "success") {
         res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} mined after block ${atBlock}; proven next pass`);
-        continue;
+        return;
       }
       if (!r) {
         const confirmed = await ctx.pub.getTransactionCount({ address: ctx.sender.address, blockNumber: atBlock });
         if (confirmed <= prior.nonce) {
+          sending.now = true;
           if (prior.raw) await ctx.sender.rebroadcast(prior.raw);
+          sending.now = false;
           res.notes.push(`${user} ${asset} book ${bookId}: deliver ${prior.hash} (nonce ${prior.nonce}) still pending`);
-          continue;
+          return;
         }
       }
       // It reverted, or another transaction took its nonce: it can never settle anything. Send a new one.
@@ -320,26 +372,29 @@ async function deliverPhase(ctx: Ctx, res: JobResult, execCount: number): Promis
     const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "deliver", [asset, BigInt(bookId), user, QUIET_ROUTE]);
     if (!sim.ok) {
       res.notes.push(`${user} ${asset} book ${bookId}: deliver reverts ${sim.errorName}`);
-      continue;
+      return;
     }
     const onSigned = async (tx: SignedTx) => {
       await setJob(ctx, "quiet-plan", key, { status: "planned", payload: { deliverTx: { hash: tx.hash, nonce: tx.nonce, raw: tx.raw } } });
       plan!.deliverTx = { hash: tx.hash, nonce: tx.nonce, raw: tx.raw };
     };
     let receipt;
+    sending.now = true;
     try {
       receipt = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", [asset, BigInt(bookId), user, QUIET_ROUTE], "deliver-quiet", { onSigned });
     } catch (err) {
       if (!(err instanceof TxReverted)) throw err; // TxUnconfirmed / transport: the next pass decides from the stored tx
+      sending.now = false;
       res.notes.push(`${user} ${asset} book ${bookId}: deliver ${err.hash} reverted; the next pass checks how it was settled`);
-      continue;
+      return;
     }
+    sending.now = false;
     const confirmed = (await confirmedBlock(ctx)).at;
     if (receipt.blockNumber > confirmed) {
       // Mined, but a reorg can still remove it: a later pass proves it from the stored transaction once confirmed.
       res.notes.push(`${user} ${asset} book ${bookId}: deliver ${receipt.transactionHash} mined at block ${receipt.blockNumber}; proven once confirmed`);
       res.actions++;
-      continue;
+      return;
     }
     const s = classifySettlement(parseEventLogs({ abi: settlementEvents, logs: receipt.logs }) as unknown as Ev[], ctx.dep.crowd, ctx.dep.stealthClaims!, asset, bookId, user);
     if (s?.kind === "quiet") {
@@ -446,7 +501,8 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
   const doneByPlan = new Map<string, Set<number>>();
   const blocked = new Set<string>();
   let atBlock: bigint | undefined;
-  for (const { job_key, payload: plan } of plans) {
+  // Each plan is examined on its own: a read that fails for one plan holds that plan only (M-6).
+  for (const { job_key, payload: plan } of plans) try {
     if (!plan.delivered) {
       // Promoted by an older keeper on "settled and a plan exists", which is no proof: prove it now.
       atBlock ??= (await confirmedBlock(ctx)).at;
@@ -503,6 +559,9 @@ export async function releasePhase(ctx: Ctx, res: JobResult, execCount: number, 
       }
     }
     for (const i of dueNow) due.push({ key: job_key, plan, i, fromBlock: resendFrom.get(i) });
+  } catch (err) {
+    blocked.add(job_key);
+    res.notes.push(`plan ${job_key}: held this pass (${String((err as Error)?.message ?? err).split("\n")[0]})`);
   }
   for (const { key, plan, i, fromBlock: earlier } of shuffle(due)) {
     const p = plan.parts[i]!;

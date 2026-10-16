@@ -242,8 +242,9 @@ describe("deliver-quiet: one transaction per part, whatever happens to it", () =
     r = await pass(); // inside the grace period
     expect(r.res.notes.join(" ")).toContain("grace");
     clock += 60_000;
-    r = await pass(); // past the grace: the pinned read refuses to answer from the past
-    expect(String(r.error)).toContain("header not found");
+    r = await pass(); // past the grace: the pinned read refuses to answer from the past (that plan is held, M-6)
+    expect(r.error).toBeUndefined();
+    expect(r.res.notes.join(" ")).toContain("header not found");
     expect(chain.signed.size).toBe(1);
     chain.lagHead = undefined; // the node catches up
     r = await pass();

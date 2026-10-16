@@ -31,7 +31,7 @@ import {
   TreasuryNotFound,
 } from "./routes/treasury";
 import { issueMcpToken, listMcpTokens, McpAuthError, McpUnavailable, revokeMcpToken } from "./routes/mcp-tokens";
-import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
+import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetHiddenKeys, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
 export type Ctx = Deps & { headers: Headers };
 
@@ -121,6 +121,9 @@ export const appRouter = t.router({
     setMix: t.procedure
       .input(z.object({ mix: z.array(z.object({ token: address, weightBps: z.number().int() })).min(1).max(5) }))
       .mutation(({ ctx, input }) => wrap(() => buildSetMix(ctx.chainId, ctx.dep, input.mix))),
+    setHiddenKeys: t.procedure
+      .input(z.object({ ownerPk: bytes32, viewingPub: bytes32 }))
+      .mutation(({ ctx, input }) => wrap(() => buildSetHiddenKeys(ctx.chainId, ctx.dep, input.ownerPk, input.viewingPub))),
     claimOpen: t.procedure
       .input(z.object({ asset: address, bookId: z.union([z.string(), z.number().int().nonnegative()]).transform(String) }))
       .mutation(({ ctx, input }) => wrap(() => buildClaimOpen(ctx.chainId, ctx.dep, input.asset, input.bookId))),
