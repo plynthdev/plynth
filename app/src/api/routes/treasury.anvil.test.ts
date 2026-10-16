@@ -3,7 +3,7 @@
 // against the chain and against each other. Also: treasury.create / policy.propose return transactions that the
 // board can send as-is, and the signed webhooks fire for guard.denied, close.committed and drawdown.state.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { connect, createDatabaseIfMissing, databaseUrl, dropDatabase, runMigrations, withDatabase } from "@/db";
+import { connect, createDatabaseIfMissing, databaseUrl, dropDatabase, runMigrations, treasuryMcpTokens, withDatabase } from "@/db";
 import { createHmac } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { WebhookDispatcher, WebhookStore } from "@/treasury/webhooks/dispatcher";
 import { receiptsOnce } from "@/treasury/receipts/service";
 import { ReceiptStore } from "@/treasury/receipts/store";
-import { fileExceptionRequest, issueMessage, revokeMessage } from "@/api";
+import { fileExceptionRequest, issueMessage, revokeMessage, signToken } from "@/api";
 import { KEYS, Kit, ROOT } from "@/testing/treasury-kit";
 import { BlockTimes, createApp, factoryAbi, templateHashOf, type ApiDeployment } from "@/api";
 import { artifact } from "@/testing/treasury-kit";
@@ -38,6 +38,10 @@ let cfgPath: string;
 let ready = false;
 let deps: Parameters<typeof createApp>[0];
 let receiptHour: bigint;
+/** An MCP token for `acct`: the off-chain treasury records need one (audit L-14). */
+const READER_ID = "ab".repeat(16);
+let reader = "";
+const auth = () => (reader ? { authorization: `Bearer ${reader}` } : {});
 
 function run(script: string, args: string[], env: Record<string, string>) {
   const r = Bun.spawnSync(["bun", "run", "--cwd", "app", script, ...args], { cwd: ROOT, env: { ...process.env, DATABASE_URL: dbUrl, TREASURY_RPC_URL: RPC, ...env }, stdout: "pipe", stderr: "pipe" });
@@ -49,8 +53,8 @@ function run(script: string, args: string[], env: Record<string, string>) {
 async function trpc(path: string, input: unknown, method: "GET" | "POST" = "GET") {
   const r =
     method === "GET"
-      ? await app.request(`/trpc/${path}?input=${encodeURIComponent(JSON.stringify(input))}`)
-      : await app.request(`/trpc/${path}`, { method: "POST", body: JSON.stringify(input), headers: { "content-type": "application/json" } });
+      ? await app.request(`/trpc/${path}?input=${encodeURIComponent(JSON.stringify(input))}`, { headers: auth() })
+      : await app.request(`/trpc/${path}`, { method: "POST", body: JSON.stringify(input), headers: { "content-type": "application/json", ...auth() } });
   const j = (await r.json()) as any;
   return { status: r.status, data: j.result?.data, error: j.error };
 }
@@ -60,7 +64,7 @@ async function ok(path: string, input: unknown, method: "GET" | "POST" = "GET") 
   return r.data;
 }
 async function rest(path: string, init?: RequestInit) {
-  const r = await app.request(path, init);
+  const r = await app.request(path, { ...init, headers: { ...((init?.headers as Record<string, string>) ?? {}), ...auth() } });
   return { status: r.status, body: (await r.json()) as any };
 }
 
@@ -133,6 +137,8 @@ beforeAll(async () => {
   };
   deps = { chainId: 31337, pub: kit.pub, db: conn.db, dep, blockTimes: new BlockTimes(kit.pub), mcpSecret: MCP_SECRET };
   app = createApp(deps);
+  await conn.db.insert(treasuryMcpTokens).values({ id: READER_ID, chainId: 31337, account: acct.toLowerCase(), label: "test reader", issuedBy: kit.deployer.address.toLowerCase(), expiresAt: new Date(Date.now() + 86_400_000) });
+  reader = signToken(MCP_SECRET, { v: 1, jti: READER_ID, chainId: 31337, account: acct, exp: Math.floor(Date.now() / 1000) + 86_400 });
   ready = true;
 }, 240_000);
 
@@ -475,12 +481,35 @@ describe("todo 30: receipts, NAV marks, marketplace, MCP tokens", () => {
     expect(r503.status).toBe(503);
 
     const list = await ok("mcpTokens.list", { account: acct });
-    expect(list.tokens.map((x: any) => x.id)).toEqual([issued.id]);
+    expect(list.tokens.map((x: any) => x.id)).toEqual([issued.id, READER_ID]);
     expect(JSON.stringify(list)).not.toContain(issued.token);
     const rv = { id: issued.id, issuedAt: now };
     const rvSig = await kit.wallet(kit.deployer).signMessage({ account: kit.deployer, message: revokeMessage({ chainId: 31337, account: acct, ...rv }) });
     expect((await rest(`/v1/treasury/${acct}/mcp-tokens/${issued.id}/revoke`, { method: "POST", body: JSON.stringify({ issuedAt: now, signature: rvSig }), headers: { "content-type": "application/json" } })).status).toBe(200);
     expect((await ok("mcpTokens.list", { account: acct })).tokens[0].revokedAt).not.toBeNull();
+  }, 60_000);
+
+  test("audit L-14: off-chain records need an MCP token for that treasury; chain-derived reads stay public", async () => {
+    if (!ready) return;
+    const bare = async (path: string, headers: Record<string, string> = {}) => (await app.request(path, { headers })).status;
+    for (const p of [`/v1/treasury/${acct}/actions`, `/v1/treasury/${acct}/exceptions`, `/v1/treasury/${acct}/mcp-tokens`, `/v1/treasury/${acct}/actions/1/proof`]) {
+      expect(await bare(p)).toBe(401);
+      expect(await bare(p, { authorization: "Bearer pmcp_forged.AAAA" })).toBe(401);
+      expect(await bare(p, { authorization: `Bearer ${reader}` })).not.toBe(401);
+    }
+    expect((await app.request(`/trpc/actions.list?input=${encodeURIComponent(JSON.stringify({ account: acct }))}`)).status).toBe(401);
+    // a token for another treasury does not open this one
+    const otherId = "cd".repeat(16);
+    const other = getAddress("0x00000000000000000000000000000000000a11ce");
+    await conn.db.insert(treasuryMcpTokens).values({ id: otherId, chainId: 31337, account: other.toLowerCase(), label: "other", issuedBy: other.toLowerCase(), expiresAt: new Date(Date.now() + 86_400_000) });
+    const otherTok = signToken(MCP_SECRET, { v: 1, jti: otherId, chainId: 31337, account: other, exp: Math.floor(Date.now() / 1000) + 86_400 });
+    expect(await bare(`/v1/treasury/${acct}/actions`, { authorization: `Bearer ${otherTok}` })).toBe(401);
+    // a revoked token stops working (before: it passes auth and the route answers 404, not a treasury)
+    expect(await bare(`/v1/treasury/${other}/actions`, { authorization: `Bearer ${otherTok}` })).toBe(404);
+    await conn.sql`update treasury_mcp_tokens set revoked_at = now() where id = ${otherId}`;
+    expect(await bare(`/v1/treasury/${other}/actions`, { authorization: `Bearer ${otherTok}` })).toBe(401);
+    // public by design: derived from the chain
+    for (const p of [`/v1/treasury/${acct}/nav`, `/v1/treasury/${acct}/positions`, `/v1/treasury/${acct}/desks`, `/v1/treasury/${acct}/policy`, `/v1/treasury/${acct}/closes`]) expect(await bare(p)).toBe(200);
   }, 60_000);
 
   test("exception requests filed for the board show up in exceptions.list and never touch the chain", async () => {

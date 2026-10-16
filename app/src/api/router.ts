@@ -30,7 +30,7 @@ import {
   treasuryCreate,
   TreasuryNotFound,
 } from "./routes/treasury";
-import { issueMcpToken, listMcpTokens, McpAuthError, McpUnavailable, revokeMcpToken } from "./routes/mcp-tokens";
+import { issueMcpToken, listMcpTokens, McpAuthError, McpUnavailable, requireTreasuryReader, revokeMcpToken } from "./routes/mcp-tokens";
 import { buildApproveUsdg, buildClaimOpen, buildDeposit, buildSetHiddenKeys, buildSetMix, buildSetSettings, buildWithdraw, TxInputError } from "./tx";
 
 export type Ctx = Deps & { headers: Headers };
@@ -85,6 +85,14 @@ async function treasury<T>(f: () => Promise<T>): Promise<T> {
 }
 
 const tAccount = z.object({ account: address });
+
+/** Off-chain treasury records: only with an MCP token scoped to the treasury (audit L-14; see requireTreasuryReader). */
+async function privateRead<T>(ctx: Ctx, account: Address, f: () => Promise<T>): Promise<T> {
+  return treasury(async () => {
+    await requireTreasuryReader(ctx, ctx.headers, account);
+    return f();
+  });
+}
 const templateInput = z
   .object({
     templateName: z.string().optional(),
@@ -175,7 +183,7 @@ export const appRouter = t.router({
       .query(({ ctx, input }) => treasury(() => receiptsRoot(ctx, input.account, input.hour))),
     proof: t.procedure
       .input(tAccount.extend({ actionId: z.coerce.number().int().positive() }))
-      .query(({ ctx, input }) => treasury(() => receiptsProof(ctx, input.account, input.actionId))),
+      .query(({ ctx, input }) => privateRead(ctx, input.account, () => receiptsProof(ctx, input.account, input.actionId))),
   }),
   marketplace: t.router({
     list: t.procedure.query(({ ctx }) => treasury(() => marketplaceList(ctx))),
@@ -195,7 +203,7 @@ export const appRouter = t.router({
     revoke: t.procedure
       .input(tAccount.extend({ id: z.string().regex(/^[0-9a-f]{32}$/), issuedAt: z.coerce.number().int().positive(), signature: z.string().regex(/^0x[0-9a-fA-F]+$/).transform((s) => s as `0x${string}`) }))
       .mutation(({ ctx, input }) => treasury(() => revokeMcpToken(ctx, input.account, input))),
-    list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => listMcpTokens(ctx, input.account))),
+    list: t.procedure.input(tAccount).query(({ ctx, input }) => privateRead(ctx, input.account, () => listMcpTokens(ctx, input.account))),
   }),
   positions: t.router({
     list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => positionsList(ctx, input.account))),
@@ -209,12 +217,12 @@ export const appRouter = t.router({
           limit: z.coerce.number().int().min(1).max(200).default(50),
         }),
       )
-      .query(({ ctx, input }) => treasury(() => actionsList(ctx, input.account, input))),
+      .query(({ ctx, input }) => privateRead(ctx, input.account, () => actionsList(ctx, input.account, input))),
   }),
   exceptions: t.router({
     list: t.procedure
       .input(tAccount.extend({ status: z.enum(["open", "explained", "resolved"]).optional() }))
-      .query(({ ctx, input }) => treasury(() => exceptionsList(ctx, input.account, input.status))),
+      .query(({ ctx, input }) => privateRead(ctx, input.account, () => exceptionsList(ctx, input.account, input.status))),
   }),
   close: t.router({
     list: t.procedure.input(tAccount).query(({ ctx, input }) => treasury(() => closeList(ctx, input.account))),

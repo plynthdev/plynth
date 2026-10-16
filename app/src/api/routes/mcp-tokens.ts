@@ -69,6 +69,22 @@ export async function authenticate(d: Pick<Deps, "db" | "chainId" | "mcpSecret">
   return c;
 }
 
+/**
+ * Audit L-14: the off-chain treasury records (desk decisions with their reasons, exceptions and exception requests,
+ * the board's MCP token list, a decision's receipt proof, which carries the decision row) are read only with an MCP
+ * token scoped to that treasury, sent as `Authorization: Bearer pmcp_...`. Everything derived from the chain (NAV,
+ * positions, desks, policy, period closes and the CFO pack, hourly receipt roots, templates) stays public by design:
+ * anyone can recompute it from the chain, and publishing it is the point of a policy-enforced treasury.
+ */
+export async function requireTreasuryReader(d: Pick<Deps, "db" | "chainId" | "mcpSecret">, headers: Headers, account: Address): Promise<McpClaims> {
+  const auth = headers.get("authorization") ?? "";
+  const m = auth.match(/^Bearer\s+(\S+)$/i);
+  if (!m) throw new McpAuthError("this treasury record needs an MCP token for the treasury (Authorization: Bearer pmcp_...)");
+  const c = await authenticate(d, m[1]!);
+  if (c.account.toLowerCase() !== account.toLowerCase()) throw new McpAuthError("token is for another treasury");
+  return c;
+}
+
 /** The exact text the board signs to issue a token. */
 export function issueMessage(i: { chainId: number; account: Address; label: string; issuedAt: number; expiresAt: number }): string {
   return [

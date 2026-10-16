@@ -103,7 +103,7 @@ export function createApp(
     if (origin && !allowed.has(origin)) return c.json({ error: "origin not allowed" }, 403);
     await next();
   });
-  app.use("*", cors({ origin: (o) => (allowed.has(o) ? o : null), allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type", "x-plynth-residency"], maxAge: 600 }));
+  app.use("*", cors({ origin: (o) => (allowed.has(o) ? o : null), allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type", "x-plynth-residency", "authorization"], maxAge: 600 }));
 
   // Audit L-13: rate limiting, enforced on every route (health included), before any work is done.
   const general = new RateLimiter(opts.rateLimit?.perMinute ?? DEFAULT_RATE_LIMIT, 60_000);

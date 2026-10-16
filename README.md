@@ -365,7 +365,7 @@ Procedures are served by tRPC at `/trpc` and mirrored as REST under `/v1` with t
 | `GET /v1/meta/eligibility` | Eligibility requirements for buying |
 | `GET /v1/account/{address}/overview` | Balances, mix, books and deliveries for a saver |
 | `GET /v1/account/{address}/habit`, `/activity`, `/settings` | Saving habit, activity history and settings |
-| `POST /v1/tx/deposit`, `/withdraw`, `/approveUsdg`, `/setMix`, `/setSettings`, `/claimOpen` | Unsigned saver transactions |
+| `POST /v1/tx/deposit`, `/withdraw`, `/approveUsdg`, `/setMix`, `/setSettings`, `/setHiddenKeys`, `/claimOpen` | Unsigned saver transactions (`setHiddenKeys` refuses low-order or out-of-field keys) |
 | `GET /v1/crowd/books` | Open Crowd Buy books |
 | `GET /v1/statements/{address}`, `POST /v1/statements/verify` | Viewing-key statements: which exist, and verification of a disclosed one |
 | `GET /v1/proofs/nonce`, `POST /v1/proofs/verify` | Threshold proofs ("holds at least", "saved at least") |
@@ -374,12 +374,17 @@ Procedures are served by tRPC at `/trpc` and mirrored as REST under `/v1` with t
 | `GET /v1/treasury/templates`, `/v1/treasury/marketplace` | Policy templates and listed marketplace templates |
 | `POST /v1/treasury/create` | Unsigned factory transaction for a new treasury |
 | `GET /v1/treasury/{account}/policy`, `POST /policy/diff`, `POST /policy/propose` | Current policy, a diff against a proposal, the unsigned proposal |
-| `GET /v1/treasury/{account}/desks`, `/positions`, `/actions`, `/exceptions` | Desks, positions, desk decisions and open exceptions |
+| `GET /v1/treasury/{account}/desks`, `/positions` | Desks and positions |
+| `GET /v1/treasury/{account}/actions`, `/exceptions` (MCP token) | Desk decisions with their reasons; open exceptions and exception requests |
 | `GET /v1/treasury/{account}/nav`, `/nav/history` | Latest NAV and the per-minute marks |
 | `GET /v1/treasury/{account}/closes`, `/closes/{index}` | Period statements |
 | `GET /v1/treasury/{account}/cfo-pack/{periodEnd}` (+ `/download`) | The verified statement as JSON, CSV and HTML |
-| `GET /v1/treasury/{account}/receipts/{hour}`, `/actions/{actionId}/proof` | Hourly receipt roots and an inclusion proof for one decision |
-| `GET`, `POST /v1/treasury/{account}/mcp-tokens`, `POST /mcp-tokens/{id}/revoke` | Board-issued MCP tokens |
+| `GET /v1/treasury/{account}/receipts/{hour}` | Hourly receipt roots |
+| `GET /v1/treasury/{account}/actions/{actionId}/proof` (MCP token) | An inclusion proof for one decision (it carries the decision row) |
+| `POST /v1/treasury/{account}/mcp-tokens`, `POST /mcp-tokens/{id}/revoke` | Board-issued MCP tokens (board signature) |
+| `GET /v1/treasury/{account}/mcp-tokens` (MCP token) | The treasury's tokens (ids, labels, expiry; never the tokens) |
+
+**Treasury access.** Rows marked "MCP token" are off-chain records: they need `Authorization: Bearer pmcp_...` with a token the board issued for that treasury (a token for another treasury, an expired or a revoked one is 401; with no `MCP_TOKEN_SECRET` they answer 503). Everything else about a treasury is public by design: NAV, positions, desks, policy, period closes, the CFO pack and the hourly receipt roots are all derived from the chain, anyone can recompute them, and publishing them is the point of a policy-enforced treasury. Every route is rate-limited per client address (`API_RATE_LIMIT`, `API_HEAVY_RATE_LIMIT`).
 
 ## Checks
 
