@@ -12,25 +12,27 @@ import { runTopups } from "./jobs/topups";
 
 /**
  * Pass order matters within one pass: refresh-mock-feeds first (testnet kit only), so a mock feed that went stale
- * cannot put the market on hold for this pass's execute. Then top-ups fund `available`, round-ups (on-chain, then statement/Plaid
- * spends) move it to `pending`, sweep
+ * cannot put the market on hold for this pass's execute. Then top-ups fund `available`, on-chain round-ups move it to
+ * `pending`, sweep
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
  * deliver-open needs nothing from the keeper: users claim (claimOpen). deliver-quiet runs last: it delivers
  * books executed in earlier passes (it reads executions from the indexer). deliver-hidden (after it) settles Hidden users
  * into ShieldedPool notes and batches ready pending deposits into the tree. fee-push (independent of the consumer
  * jobs, right after the feed refresh) observes the PLTH pool and pushes the FeeRouter hourly: push is keeper-only.
+ * spends (statement / Plaid accruals) runs LAST (audit M-7): those rows come from user uploads, so whatever they
+ * cost in time or gas can never hold up sweep, beacon, execute or delivery; their accruals sweep on the next pass.
  */
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["refresh-mock-feeds", runRefreshMockFeeds],
   ["fee-push", runFeePush],
   ["topups", runTopups],
   ["roundups", runRoundups],
-  ["spends", runSpends],
   ["sweep", runSweep],
   ["beacon", runBeacon],
   ["execute", runExecute],
   ["deliver-quiet", runDeliverQuiet],
   ["deliver-hidden", runDeliverHidden],
+  ["spends", runSpends],
 ];
 
 export type PassReport = { at: string; ok: boolean; jobs: JobResult[] };

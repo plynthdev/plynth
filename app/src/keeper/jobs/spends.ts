@@ -3,9 +3,13 @@
 // The vault computes the round-up and enforces the weekly cap (across all sources, on-chain included) and
 // replay protection; the keeper only reports spends. Events dated more than LOOKBACK before the source was
 // linked are skipped, so an old statement cannot be replayed into this week's cap.
+// Audit M-7: nothing is sent for a user the vault cannot credit (no settings, nothing available, no room under the
+// weekly cap, a whole-amount spend): those rows are skipped with the reason. Accruals are also capped per user per
+// vault week and per pass (AccrueGate), and this job runs after the core jobs (keeper.ts), so imports can never
+// starve sweep, beacon, execute or delivery of the keeper's gas or time.
 import { getAddress, type Address } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
-import { accrueSpend } from "@/keeper/sources/accrue";
+import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
 import { plaidRowHash, PlaidSource, StatementSource } from "@/keeper/sources/plaid";
 import { activeSources, setEventResult, skipOlderThan } from "@/keeper/sources/store";
 import { accrualKey, usdgUnits, type SourceName, type SpendSource } from "@/keeper/sources/types";
@@ -17,7 +21,7 @@ export const rowHashOf = (source: SourceName, id: string) => (source === "plaid"
 /** Earliest date accepted for a source linked at `linkedAt`. */
 export const sinceFor = (linkedAt: Date, lookbackDays = LOOKBACK_DAYS) => new Date(linkedAt.getTime() - lookbackDays * 86_400_000);
 
-export async function runSpends(ctx: Ctx): Promise<JobResult> {
+export async function runSpends(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<JobResult> {
   const res: JobResult = { job: "spends", ok: true, actions: 0, notes: [] };
   const all = await activeSources(ctx);
   const sources: Record<"statement" | "plaid", SpendSource | undefined> = {
@@ -35,6 +39,7 @@ export async function runSpends(ctx: Ctx): Promise<JobResult> {
     if (!g || s.createdAt < g.linkedAt) groups.set(k, { user: getAddress(s.userAddress), kind: s.kind, linkedAt: s.createdAt });
   }
   for (const { user, kind, linkedAt } of groups.values()) {
+    if (gate.passFull()) break;
     const src = sources[kind];
     if (!src) continue;
     const since = sinceFor(linkedAt);
@@ -47,16 +52,27 @@ export async function runSpends(ctx: Ctx): Promise<JobResult> {
         await setEventResult(ctx, row, { status: "skipped", reason: `currency ${e.currency} is not USD` });
         continue;
       }
+      const units = usdgUnits(e);
+      const g = await gate.check(user, units);
+      if (!g.ok) {
+        if (!g.skip) break; // pass budget used: this row and the rest stay open for the next pass
+        await setEventResult(ctx, row, { status: "skipped", reason: g.reason });
+        continue;
+      }
       const key = accrualKey(kind, user, e.id);
-      const o = await accrueSpend(ctx, user, key, 0, usdgUnits(e));
+      const o = await accrueSpend(ctx, user, key, 0, units);
       if (o.status === "failed") {
         await setEventResult(ctx, row, { status: "failed", reason: o.reason, accrualKey: key });
         res.notes.push(`accrue ${kind} ${e.id.slice(0, 16)} reverts ${o.reason}`);
         continue;
       }
       await setEventResult(ctx, row, { status: "done", reason: o.reason, accrualKey: key, added: o.added, tx: o.tx });
-      if (o.tx) res.actions++;
+      if (o.tx) {
+        gate.record(user, units, o.added);
+        res.actions++;
+      }
     }
   }
+  if (gate.passFull()) res.notes.push(`pass budget of ${gate.limits.perPass} accruals used; the rest waits for the next pass`);
   return res;
 }

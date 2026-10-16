@@ -205,13 +205,13 @@ describe("keeper on anvil", () => {
     expect(expected).toEqual([1_200_002n, 2_250_000n, 990_000n]);
 
     const out = cycle();
-    expect(out).toContain("roundups: ok actions=5");
+    expect(out).toContain("roundups: ok actions=4"); // the exact multiple adds 0: skipped, never sent (audit M-7)
     expect(out).toContain("topups: ok actions=1");
     expect(out).toContain("sweep: ok actions=1");
 
     const rows = await t.sql`select user_address, added, status, reason, spend from keeper_roundups order by block_number, log_index`;
-    expect(rows.filter((r) => r.status === "done")).toHaveLength(5);
-    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason)).toEqual(["transfer into a Plynth contract"]);
+    expect(rows.filter((r) => r.status === "done")).toHaveLength(4);
+    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason).sort()).toEqual(["no round-up (whole amount): the vault would add 0", "transfer into a Plynth contract"]);
     expect(rows.some((r) => BigInt(r.spend) === 1_500_000n)).toBe(false); // pre-link spend never indexed
     for (const [i, u] of users.entries()) {
       const added = rows.filter((r) => r.user_address === u.toLowerCase() && r.status === "done").reduce((a, r) => a + BigInt(r.added), 0n);
@@ -240,7 +240,7 @@ describe("keeper on anvil", () => {
     await t.sql`delete from keeper_roundups`;
     const out2 = keeper("roundups");
     expect(out2).toContain("roundups: ok actions=0");
-    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(5);
+    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(4);
     expect(await pub.getTransactionCount({ address: ANVIL_ADDR_1 })).toBe(before);
   }, 120_000);
 

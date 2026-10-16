@@ -66,7 +66,7 @@ const mockFeeds = {
   alignBps: config.KEEPER_MOCK_FEED_ALIGN_BPS,
 };
 const confirmations = keeperConfirmations(chainName, config.KEEPER_CONFIRMATIONS);
-const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, confirmations, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };
+const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, dep, lookahead: config.KEEPER_LOOKAHEAD, splitParts: config.SPLIT_PARTS, confirmations, accrueLimits: { perPass: config.KEEPER_MAX_ACCRUALS_PER_PASS, perUserWeek: config.KEEPER_MAX_ACCRUALS_PER_USER_WEEK }, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };
 
 const only = config.KEEPER_JOBS;
 for (const j of only) if (!JOBS.some(([n]) => n === j)) throw new Error(`unknown job in KEEPER_JOBS: ${j}`);

@@ -201,7 +201,9 @@ describe("round-up sources on anvil", () => {
     const onchain = await t.sql`select added from keeper_roundups where status = 'done'`;
     const total = ev.filter((r) => r.status === "done").reduce((s, r) => s + BigInt(r.added ?? 0), 0n) + onchain.reduce((s, r) => s + BigInt(r.added), 0n);
     expect(total).toBe(3n * U);
-    expect(ev.filter((r) => r.status === "done")).toHaveLength(5); // 3 statement + 2 Plaid (the refund was never stored)
+    expect(ev.filter((r) => r.status === "done")).toHaveLength(4); // 3 statement + 1 Plaid (the refund was never stored)
+    // the last Plaid spend would add 0 (cap used): skipped without a keeper transaction (audit M-7)
+    expect(ev.filter((r) => r.reason === "weekly cap reached: the vault would add 0")).toHaveLength(1);
     expect(ev.find((r) => Number(r.amount_cents) === 1)).toMatchObject({ status: "skipped", reason: "older than 30 days before the source was linked" });
     expect(onchain.map((r) => BigInt(r.added))).toEqual([600_000n]);
 

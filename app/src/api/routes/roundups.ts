@@ -21,11 +21,14 @@ import {
   Sealer,
   type PlaidConfig,
 } from "@/keeper";
+import { sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getAddress, isAddress, verifyMessage, type Address, type Hex, type PublicClient } from "viem";
 
 export const SIGNATURE_MAX_AGE_S = 600;
+/** New statement rows one user may add in any 7 days (audit M-7). Re-imports of known rows do not count. */
+export const DEFAULT_MAX_IMPORT_ROWS_PER_WEEK = 2_000;
 
 export type RoundupAction = "import" | "plaid-link" | "plaid-exchange" | "unlink";
 
@@ -49,11 +52,13 @@ export type RoundupDeps = {
   plaid?: PlaidConfig | undefined;
   sealer?: Sealer | undefined;
   now?: () => number;
+  /** New statement rows per user per rolling 7 days (ROUNDUPS_MAX_ROWS_PER_WEEK). */
+  maxRowsPerWeek?: number | undefined;
 };
 
 class HttpError extends Error {
   constructor(
-    readonly status: 400 | 401 | 404 | 503,
+    readonly status: 400 | 401 | 404 | 429 | 503,
     message: string,
   ) {
     super(message);
@@ -132,8 +137,25 @@ export function roundupRoutes(d: RoundupDeps): Hono {
       if (format && format !== "csv" && format !== "ofx") throw new HttpError(400, "format must be csv or ofx");
       if (debitSign && debitSign !== "negative" && debitSign !== "positive") throw new HttpError(400, "debitSign must be negative or positive");
       const parsed = parseStatement(content, { format: format as "csv" | "ofx" | undefined, debitSign: debitSign as "negative" | "positive" | undefined, layout: str(b, "layout", false) });
+      // Audit M-7: rows per user per week are capped, so one wallet cannot fill the table (the keeper's own accrual
+      // limits keep these rows from costing gas).
+      const cap = d.maxRowsPerWeek ?? DEFAULT_MAX_IMPORT_ROWS_PER_WEEK;
+      const [{ n: recent } = { n: 0 }] = (await d.db.execute(sql`
+        select count(*)::int as n from roundup_events
+        where chain_id = ${d.chainId} and user_address = ${user.toLowerCase()} and source = 'statement' and created_at >= now() - interval '7 days'`)) as unknown as { n: number }[];
+      const spends = spendRows(parsed.rows);
+      const known = new Set(
+        spends.length === 0
+          ? []
+          : (
+              (await d.db.execute(sql`select row_hash from roundup_events where chain_id = ${d.chainId} and user_address = ${user.toLowerCase()}
+                and row_hash in ${sql`(${sql.join(spends.map((x) => sql`${x.rowHash}`), sql`, `)})`}`)) as unknown as { row_hash: string }[]
+            ).map((x) => x.row_hash),
+      );
+      const fresh = spends.filter((x) => !known.has(x.rowHash));
+      if (fresh.length > 0 && Number(recent) + fresh.length > cap) throw new HttpError(429, `import limit: at most ${cap} new statement rows per 7 days (${recent} already)`);
       await upsertSource(d, user, "statement", "statement");
-      const r = await insertEvents(d, user, "statement", "statement", spendRows(parsed.rows));
+      const r = await insertEvents(d, user, "statement", "statement", spends);
       return c.json({
         format: parsed.format,
         layout: parsed.layout,
@@ -209,5 +231,6 @@ export async function roundupsFromEnv(env: Record<string, string | undefined>, b
   if (env.ROUNDUPS_ENABLED !== "1") return undefined;
   const plaid = plaidFromEnv(env);
   const sealer = plaid ? await Sealer.create(parseSecretKey(env.KEEPER_SECRET_KEY)) : undefined;
-  return roundupRoutes({ ...base, plaid, sealer });
+  const maxRows = Number(env.ROUNDUPS_MAX_ROWS_PER_WEEK);
+  return roundupRoutes({ ...base, plaid, sealer, ...(env.ROUNDUPS_MAX_ROWS_PER_WEEK && Number.isInteger(maxRows) && maxRows > 0 ? { maxRowsPerWeek: maxRows } : {}) });
 }

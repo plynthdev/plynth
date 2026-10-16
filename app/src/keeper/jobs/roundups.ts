@@ -5,7 +5,7 @@ import { keeperRoundups } from "@/db";
 import { sql } from "drizzle-orm";
 import { getAddress } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
-import { accrueSpend } from "@/keeper/sources/accrue";
+import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
 import { OnchainSource } from "@/keeper/sources/onchain";
 import type { SpendLog } from "@/keeper/state";
 
@@ -36,7 +36,7 @@ async function put(ctx: Ctx, s: SpendLog, patch: Partial<Row> & { status: string
     });
 }
 
-export async function runRoundups(ctx: Ctx): Promise<JobResult> {
+export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<JobResult> {
   const res: JobResult = { job: "roundups", ok: true, actions: 0, notes: [] };
   for (const { spend: s, decision: d } of await new OnchainSource(ctx).scan()) {
     if (d.kind === "skip") {
@@ -45,6 +45,16 @@ export async function runRoundups(ctx: Ctx): Promise<JobResult> {
     }
     const user = getAddress(d.user);
     const lu = user.toLowerCase();
+    // Audit M-7: no transaction for a spend the vault would credit 0 for, and per-user / per-pass accrual limits.
+    const g = await gate.check(user, s.value);
+    if (!g.ok) {
+      if (!g.skip) {
+        res.notes.push(g.reason);
+        break;
+      }
+      await put(ctx, s, { status: "skipped", userAddress: lu, reason: g.reason });
+      continue;
+    }
     // (txHash, logIndex) stay the accrual key for on-chain spends: the vault has keyed them so since todo 07.
     const o = await accrueSpend(ctx, user, s.txHash, s.logIndex, s.value, async () => {
       await put(ctx, s, { status: "pending", userAddress: lu });
@@ -55,7 +65,10 @@ export async function runRoundups(ctx: Ctx): Promise<JobResult> {
       continue;
     }
     await put(ctx, s, { status: "done", userAddress: lu, reason: o.reason ?? null, accrueTx: o.tx?.toLowerCase() ?? null, added: o.added?.toString() ?? null });
-    if (o.tx) res.actions++;
+    if (o.tx) {
+      gate.record(user, s.value, o.added);
+      res.actions++;
+    }
   }
   return res;
 }

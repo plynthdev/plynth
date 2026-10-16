@@ -138,6 +138,8 @@ export type Ctx = {
   confirmations?: number;
   /** Plaid client (PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV); absent = Plaid sources are not synced. */
   plaid?: PlaidLike | undefined;
+  /** Statement / Plaid / on-chain accrual limits (KEEPER_MAX_ACCRUALS_PER_PASS / _PER_USER_WEEK; audit M-7). */
+  accrueLimits?: { perPass: number; perUserWeek: number } | undefined;
   /** refresh-mock-feeds settings and its mainnet feed reader; absent = the job does nothing. */
   mockFeeds?: MockFeedOptions | undefined;
   log: (m: string) => void;

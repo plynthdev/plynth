@@ -118,6 +118,22 @@ describe("POST /v1/roundups/import", () => {
     expect(n[0]!.n).toBe(0);
   });
 
+  test("audit M-7: new rows per user per 7 days are capped (re-imports of known rows still pass)", async () => {
+    const capped = roundupRoutes({ chainId: CHAIN, db: t.db, maxRowsPerWeek: 5 });
+    const csv = (n: number, from = 0) => `Date,Description,Amount\n${Array.from({ length: n }, (_, i) => `2026-09-01,Shop ${from + i},-1.${String(from + i).padStart(2, "0")}`).join("\n")}\n`;
+    const first = csv(4);
+    const ok = await post("/import", await signed("import", sha256Hex(first), { content: first }, mallory, nowS(), mallory.address), capped);
+    expect(((await ok.json()) as any).imported).toBe(4);
+    const more = csv(3, 4);
+    const r = await post("/import", await signed("import", sha256Hex(more), { content: more }, mallory, nowS(), mallory.address), capped);
+    expect(r.status).toBe(429);
+    expect(((await r.json()) as any).error.message).toMatch(/at most 5 new statement rows per 7 days/);
+    const again = await post("/import", await signed("import", sha256Hex(first), { content: first }, mallory, nowS(), mallory.address), capped);
+    expect(await again.json()).toMatchObject({ imported: 0, duplicates: 4 });
+    const one = csv(1, 4);
+    expect((await post("/import", await signed("import", sha256Hex(one), { content: one }, mallory, nowS(), mallory.address), capped)).status).toBe(200);
+  });
+
   test("oversized upload is refused", async () => {
     const content = "x".repeat(4_100_000);
     const r = await post("/v1/roundups/import", { content, user: alice.address, issuedAt: nowS(), signature: "0x" });

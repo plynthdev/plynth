@@ -16,6 +16,7 @@ export const vaultAbi = parseAbi([
   "function linkedUser(address wallet) view returns (address)",
   "function sourceUsed(bytes32 key) view returns (bool)",
   "function roundUp(uint256 spend, uint8 roundTo, uint8 multiplier) view returns (uint256)",
+  "function unit() view returns (uint256)",
   "function keeper() view returns (address)",
   "function TOP_UP_SPACING() view returns (uint64)",
   "event Accrued(address indexed user, bytes32 indexed sourceTx, uint32 logIndex, uint256 spend, uint256 added, uint64 week)",

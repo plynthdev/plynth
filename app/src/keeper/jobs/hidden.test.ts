@@ -35,10 +35,11 @@ describe("Hidden route", () => {
 });
 
 describe("wiring", () => {
-  test("deliver-hidden runs after deliver-quiet", () => {
+  test("deliver-hidden runs after deliver-quiet; only the statement/Plaid spends job comes after them (audit M-7)", () => {
     const names = JOBS.map(([n]) => n);
-    expect(names.indexOf("deliver-hidden")).toBe(names.length - 1);
-    expect(names.indexOf("deliver-quiet")).toBe(names.length - 2);
+    expect(names.indexOf("deliver-hidden")).toBe(names.length - 2);
+    expect(names.indexOf("deliver-quiet")).toBe(names.length - 3);
+    expect(names.at(-1)).toBe("spends");
   });
 
   test("shieldedPool is optional in the deployment", () => {

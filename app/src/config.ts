@@ -88,6 +88,8 @@ const schema = z.object({
   KEEPER_LOOKAHEAD: int(2, 1),
   KEEPER_CONFIRMATIONS: optInt(),
   KEEPER_JOBS: list,
+  KEEPER_MAX_ACCRUALS_PER_PASS: int(200, 1),
+  KEEPER_MAX_ACCRUALS_PER_USER_WEEK: int(100, 1),
   SPLIT_PARTS: int(2, 1, 3),
   // keeper job refresh-mock-feeds (testnet kit deployments only)
   KEEPER_MOCK_FEED_INTERVAL_S: int(600, 1),
@@ -113,6 +115,7 @@ const schema = z.object({
   API_DEPLOYMENTS_DIR: str(DEFAULT_DEPLOYMENTS_DIR),
   CORS_ORIGINS: opt,
   ROUNDUPS_ENABLED: flag,
+  ROUNDUPS_MAX_ROWS_PER_WEEK: int(2000, 1),
   PLAID_ENV: z.preprocess(blank, z.enum(["sandbox", "production"]).default("sandbox")),
   PLAID_CLIENT_ID: opt,
   PLAID_SECRET: opt,

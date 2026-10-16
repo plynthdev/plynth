@@ -188,7 +188,9 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `KEEPER_KEYSTORE_PASSWORD_FILE` | – |  |
 | `KEEPER_LOOKAHEAD` | `2` | Beacon windows committed ahead. |
 | `KEEPER_CONFIRMATIONS` | – | Quiet delivery proofs (receipts, Delivered/Claimed/Credited logs, the keeper's nonce) are read this many blocks below the head, so a reorg can never release or stop a part. Default 2 (0 on local). |
-| `KEEPER_JOBS` | – | Comma-separated subset of refresh-mock-feeds,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,deliver-hidden (blank = all). |
+| `KEEPER_JOBS` | – | Comma-separated subset of refresh-mock-feeds,fee-push,topups,roundups,sweep,beacon,execute,deliver-quiet,deliver-hidden,spends (blank = all; this is the pass order: statement/Plaid `spends` run last). |
+| `KEEPER_MAX_ACCRUALS_PER_PASS` | `200` | Accrue transactions per job per pass. A spend the vault would credit 0 for (no settings, nothing available, weekly cap used, a whole amount) is skipped without a transaction. |
+| `KEEPER_MAX_ACCRUALS_PER_USER_WEEK` | `100` | Accrue transactions per user in any 7 days; further spends that week are skipped. |
 | `SPLIT_PARTS` | `2` | Quiet delivery: parts per allocation (1-3), released across consecutive crowd executions. |
 | `KEEPER_MOCK_FEED_INTERVAL_S` | `600` | `refresh-mock-feeds` (deployment files with `mockFeeds: true`): a mock feed older than this is re-posted from the real mainnet Chainlink feed of the same stock, read over `RHC_MAINNET_RPC_URL`. The keeper must own the feeds. |
 | `KEEPER_MOCK_FEED_KEEP_ALIVE` | `1` | 1 = when the real feed is stale (market closed), post its last answer anyway, so testnet keeps trading. 0 = the testnet market holds, as mainnet does. |
@@ -211,6 +213,7 @@ All config comes from environment variables and is checked at startup (`app/src/
 | `API_DEPLOYMENTS_DIR` | `app/deployments` |  |
 | `CORS_ORIGINS` | – | Comma-separated exact origins. Blank = the hosted frontend and http://localhost:5173. |
 | `ROUNDUPS_ENABLED` | `0` | Round-up sources beyond on-chain spends (statement import, bank link). `1` mounts `/v1/roundups/*`. The bank link also needs `KEEPER_SECRET_KEY` (tokens are stored sealed with it, so the API and the keeper share it) |
+| `ROUNDUPS_MAX_ROWS_PER_WEEK` | `2000` | New statement rows one user may import in any 7 days (re-imports of known rows do not count); over it the import answers 429. |
 | `PLAID_ENV` | `sandbox` | sandbox (free) \| production |
 | `PLAID_CLIENT_ID` | – |  |
 | `PLAID_SECRET` | – |  |
