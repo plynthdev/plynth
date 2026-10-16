@@ -144,9 +144,15 @@ ensure_env_files() {
   log "split the settings into /etc/plynth/env/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury}.env (the old file is /etc/plynth/plynth.env.pre-split)"
 }
 
+# Settings a newer release added (and the relayer's mainnet fee tables when blank) come from env.example.
+add_new_settings() {
+  bash "$HERE/split-env.sh" --add-missing "$HERE/env.example" /etc/plynth/env
+}
+
 if [[ "$UNITS_ONLY" == 1 ]]; then
   ensure_accounts
   ensure_env_files
+  add_new_settings
   fix_key_permissions
   install_units
   exit 0
@@ -302,6 +308,7 @@ unset db_password
 
 # ---------------------------------------------------------------- settings: one env file per service
 ensure_env_files
+add_new_settings
 fix_key_permissions
 
 # ---------------------------------------------------------------- firewall: 22, 80, 443 only

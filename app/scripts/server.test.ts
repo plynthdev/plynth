@@ -39,6 +39,31 @@ describe("one Unix user and one env file per service", () => {
     for (const k of all) expect(holders(k).length, k).toBeGreaterThan(0);
   });
 
+  test("the live server's old single file: split once, then new settings and the relayer's blank fee tables are filled", () => {
+    const dir = mkdtempSync(join(tmpdir(), "plynth-old-"));
+    const example = readFileSync(join(SERVER, "env.example"), "utf8");
+    // what a server provisioned before this release has: no RELAYER_CLAIM_MIN_RAW / API_TRUST_PROXY, a blank fee table
+    const old = example
+      .split("\n")
+      .filter((l) => !/^(RELAYER_CLAIM_MIN_RAW|API_TRUST_PROXY)=/.test(l))
+      .map((l) => (l.startsWith("RELAYER_WITHDRAW_MIN_FEES=") ? "RELAYER_WITHDRAW_MIN_FEES=" : l.startsWith("CORS_ORIGINS=") ? "CORS_ORIGINS=https://kept.example" : l))
+      .join("\n");
+    Bun.write(join(dir, "plynth.env"), old);
+    const run = (...a: string[]) => Bun.spawnSync(["bash", join(SERVER, "split-env.sh"), ...a], { stdout: "pipe", stderr: "pipe" });
+    expect(run(join(dir, "plynth.env"), join(dir, "env")).exitCode).toBe(0);
+    const add = run("--add-missing", join(SERVER, "env.example"), join(dir, "env"));
+    expect(add.exitCode).toBe(0);
+    const out = add.stdout.toString();
+    expect(out).toContain("added RELAYER_CLAIM_MIN_RAW to relayer.env");
+    expect(out).toContain("added API_TRUST_PROXY to api.env");
+    expect(out).toContain("filled the blank RELAYER_WITHDRAW_MIN_FEES in relayer.env");
+    expect(out).not.toMatch(/0x[0-9a-fA-F]{40}/); // never prints values
+    const relayer = readFileSync(join(dir, "env", "relayer.env"), "utf8");
+    expect(relayer).toMatch(/^RELAYER_WITHDRAW_MIN_FEES=0x/m);
+    expect(relayer).toContain("CORS_ORIGINS=https://kept.example"); // existing values are never changed
+    expect(run("--add-missing", join(SERVER, "env.example"), join(dir, "env")).stdout.toString()).toBe(""); // idempotent
+  });
+
   test("systemd: each service has its own user, its own env file only, and no access to other services' keys", () => {
     const want: Record<string, { user: string; env: string; db: boolean; keys: boolean }> = {
       indexer: { user: "plynth-indexer", env: "indexer", db: true, keys: false },

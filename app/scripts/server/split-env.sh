@@ -4,6 +4,13 @@
 # as one Unix user with one env file").
 #
 #   split-env.sh <source.env> <dest-dir>
+#   split-env.sh --add-missing <env.example> <dest-dir>
+#
+# --add-missing (provision.sh runs it on every deploy, after the split): a variable env.example has and no file in
+# <dest-dir> has yet (a setting added by a newer release) is appended, with env.example's value, to the files of the
+# services that read it. Values already there are never changed, with one exception: a blank
+# RELAYER_WITHDRAW_MIN_FEES or RELAYER_CLAIM_MIN_RAW (the relayer refuses to start on mainnet without them) takes
+# env.example's value. Each change is printed (key and file, never the value).
 #
 # Writes <dest-dir>/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury}.env (mode 0600; provision.sh runs it
 # as root and leaves them root-owned: systemd reads them as root). A line is routed by its key:
@@ -20,7 +27,12 @@
 # warning on stderr. Comments and blank lines are kept in common.env only.
 set -euo pipefail
 
-[[ $# == 2 ]] || { echo "usage: split-env.sh <source.env> <dest-dir>" >&2; exit 2; }
+ADD_MISSING=0
+if [[ "${1:-}" == --add-missing ]]; then
+  ADD_MISSING=1
+  shift
+fi
+[[ $# == 2 ]] || { echo "usage: split-env.sh [--add-missing] <source.env> <dest-dir>" >&2; exit 2; }
 SRC="$1"
 DEST="$2"
 [[ -r "$SRC" ]] || { echo "split-env: cannot read $SRC" >&2; exit 1; }
@@ -53,6 +65,27 @@ routes() {
 }
 
 umask 077
+if [[ "$ADD_MISSING" == 1 ]]; then
+  FILL_BLANK="RELAYER_WITHDRAW_MIN_FEES RELAYER_CLAIM_MIN_RAW"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+    for f in $(routes "$key" 2>/dev/null); do
+      file="$DEST/$f.env"
+      [[ -f "$file" ]] || continue
+      if ! grep -q "^$key=" "$file"; then
+        printf '%s\n' "$line" >>"$file"
+        echo "split-env: added $key to $f.env (new in this release)"
+      elif [[ -n "$val" && " $FILL_BLANK " == *" $key "* ]] && grep -qx "$key=" "$file"; then
+        awk -v k="$key" -v l="$line" '$0 == k "=" { print l; next } { print }' "$file" >"$file.tmp" && cat "$file.tmp" >"$file" && rm -f "$file.tmp"
+        echo "split-env: filled the blank $key in $f.env from env.example"
+      fi
+    done
+  done <"$SRC"
+  exit 0
+fi
+
 tmp="$(mktemp -d "$DEST/.split.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 for f in "${FILES[@]}"; do
