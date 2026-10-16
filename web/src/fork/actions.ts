@@ -354,7 +354,7 @@ export async function claimOpenAll(p?: Progress): Promise<SentTx[]> {
 const stealthMod = () => import("@plynth/sdk/stealth");
 // The vault module (bb.js WASM, Noir) needs Buffer; load the polyfill first, and only when Hidden is used.
 const vaultMod = async () => {
-  await import("./polyfills");
+  (await import("./polyfills")).installBuffer();
   return import("@plynth/sdk/vault");
 };
 
