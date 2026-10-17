@@ -37,6 +37,8 @@ let ctx: Ctx;
 let users: Address[];
 let wallets: Address[];
 let merchant: Address;
+let accounts: Address[];
+let accounts0: Address;
 const rpc = (method: string, params: unknown[] = []) => pub.request({ method: method as any, params: params as any });
 
 async function tx(account: Address, address: Address, abi: any, functionName: string, args: readonly unknown[]) {
@@ -64,11 +66,33 @@ const doneBy = async () => {
   return users.map((u) => rows.find((r) => r.u === u.toLowerCase())?.n ?? 0);
 };
 
+/** Funds `u` (100 USDG deposited, roundTo 1, mTSLA mix) and links spending wallet `w` (funded with 1,000 USDG). */
+async function linkUser(u: Address, w: Address) {
+  const deployer = accounts0;
+  await tx(deployer, dep.usdg, usdgAbi, "mint", [u, 100n * U]);
+  await tx(u, dep.usdg, usdgAbi, "approve", [dep.savingsVault, 100n * U]);
+  await tx(u, dep.savingsVault, userVaultAbi, "deposit", [100n * U]);
+  await tx(u, dep.savingsVault, userVaultAbi, "setSettings", [{ roundTo: 1, multiplier: 1, weeklyCap: 50n * U, fixedTopUp: 0n, mode: 0 }]);
+  await tx(u, dep.savingsVault, userVaultAbi, "setMix", [[{ stockToken: dep.stocks.mTSLA.token, weightBps: 10_000 }]]);
+  await tx(deployer, dep.usdg, usdgAbi, "mint", [w, 1_000n * U]);
+  const nonce = (await pub.readContract({ address: dep.savingsVault, abi: userVaultAbi, functionName: "linkNonce", args: [w] })) as bigint;
+  const deadline = (await pub.getBlock({ blockTag: "latest" })).timestamp + 3600n;
+  const sig = await wc.signTypedData({
+    account: w,
+    domain: { name: "Plynth SavingsVault", version: "1", chainId: 31337, verifyingContract: dep.savingsVault },
+    types: { LinkWallet: [{ name: "user", type: "address" }, { name: "wallet", type: "address" }, { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" }] },
+    primaryType: "LinkWallet",
+    message: { user: u, wallet: w, nonce, deadline },
+  });
+  await tx(u, dep.savingsVault, userVaultAbi, "linkSpendingWallet", [w, deadline, sig]);
+}
+
 beforeAll(async () => {
-  anvil = await startAnvil();
+  anvil = await startAnvil(["--accounts", "120"]); // 3 users + 50 sybils, each with a linked wallet
   pub = createPublicClient({ transport: http(anvil.rpc), pollingInterval: 50 }) as PublicClient;
   wc = createWalletClient({ transport: http(anvil.rpc) });
-  const accounts = (await rpc("eth_accounts")) as Address[];
+  accounts = (await rpc("eth_accounts")) as Address[];
+  accounts0 = accounts[0]!;
   users = [accounts[2]!, accounts[3]!, accounts[4]!];
   wallets = [accounts[5]!, accounts[6]!, accounts[7]!];
   merchant = accounts[8]!;
@@ -90,26 +114,7 @@ beforeAll(async () => {
   const now = (await pub.getBlock({ blockTag: "latest" })).timestamp;
   await rpc("evm_setNextBlockTimestamp", [Number((now / WEEK + 1n) * WEEK + 3_600n)]);
   await rpc("evm_mine");
-  const deployer = accounts[0]!;
-  for (const [i, u] of users.entries()) {
-    await tx(deployer, dep.usdg, usdgAbi, "mint", [u, 100n * U]);
-    await tx(u, dep.usdg, usdgAbi, "approve", [dep.savingsVault, 100n * U]);
-    await tx(u, dep.savingsVault, userVaultAbi, "deposit", [100n * U]);
-    await tx(u, dep.savingsVault, userVaultAbi, "setSettings", [{ roundTo: 1, multiplier: 1, weeklyCap: 50n * U, fixedTopUp: 0n, mode: 0 }]);
-    await tx(u, dep.savingsVault, userVaultAbi, "setMix", [[{ stockToken: dep.stocks.mTSLA.token, weightBps: 10_000 }]]);
-    const w = wallets[i]!;
-    await tx(deployer, dep.usdg, usdgAbi, "mint", [w, 1_000n * U]);
-    const nonce = (await pub.readContract({ address: dep.savingsVault, abi: userVaultAbi, functionName: "linkNonce", args: [w] })) as bigint;
-    const deadline = (await pub.getBlock({ blockTag: "latest" })).timestamp + 3600n;
-    const sig = await wc.signTypedData({
-      account: w,
-      domain: { name: "Plynth SavingsVault", version: "1", chainId: 31337, verifyingContract: dep.savingsVault },
-      types: { LinkWallet: [{ name: "user", type: "address" }, { name: "wallet", type: "address" }, { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" }] },
-      primaryType: "LinkWallet",
-      message: { user: u, wallet: w, nonce, deadline },
-    });
-    await tx(u, dep.savingsVault, userVaultAbi, "linkSpendingWallet", [w, deadline, sig]);
-  }
+  for (const [i, u] of users.entries()) await linkUser(u, wallets[i]!);
   const chain = defineChain({ id: 31337, name: "anvil", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [anvil.rpc] } } });
   const keeperAcct = privateKeyToAccount(ANVIL_KEY_1);
   const kp = createPublicClient({ chain, transport: http(anvil.rpc), pollingInterval: 50 }) as PublicClient;
@@ -155,6 +160,25 @@ describe("on-chain round-ups: fair per pass and across passes (real anvil)", () 
     for (const p of perPass) expect(p.reduce((a, b) => a + b, 0)).toBe(2);
     for (let i = 0; i < 3; i++) expect(perPass.filter((p) => p[i]! > 0).length, `user ${i}`).toBeGreaterThanOrEqual(2);
   }, 180_000);
+
+  test("review v5 R5-SVC-1: 50 fresh sybil wallets cannot delay a returning user's older spend past one pass", async () => {
+    const returning = users[1]!.toLowerCase(); // served in the tests above
+    await spend(1, 1); // the returning user's new spend: older than the flood below
+    indexer();
+    const sybils = Array.from({ length: 50 }, (_, i) => ({ u: accounts[10 + i]!, w: accounts[60 + i]! }));
+    for (const { u, w } of sybils) await linkUser(u, w);
+    for (const { w } of sybils) await tx(w, dep.usdg, usdgAbi, "transfer", [merchant, 1_400_000n]); // 60-cent round-ups
+    indexer();
+    const before = (await t.sql`select count(*)::int as n from keeper_roundups where user_address = ${returning} and status = 'done' and accrue_tx is not null`)[0]!.n as number;
+    // room for 10 accrues in the pass: before the fix the 50 never-served wallets all sorted ahead of the returning user
+    await runRoundups({ ...ctx, accrueLimits: { perPass: 10, perUserWeek: 100 } });
+    const after = (await t.sql`select count(*)::int as n from keeper_roundups where user_address = ${returning} and status = 'done' and accrue_tx is not null`)[0]!.n as number;
+    expect(after - before).toBe(1);
+    const sybilsServed = (await t.sql`select count(distinct user_address)::int as n from keeper_roundups where status = 'done' and accrue_tx is not null and user_address in ${t.sql(sybils.map((x) => x.u.toLowerCase()))}`)[0]!.n as number;
+    // the rest of the pass went to older leftovers of the tests above and then to the flood, in spend order
+    expect(sybilsServed).toBeGreaterThan(0);
+    expect(sybilsServed).toBeLessThanOrEqual(9);
+  }, 600_000);
 
   test("carried dust older than the carry period is dropped with a reason; younger dust stays carried", async () => {
     const lu = users[1]!.toLowerCase();

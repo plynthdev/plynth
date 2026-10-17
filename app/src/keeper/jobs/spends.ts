@@ -12,7 +12,7 @@
 import { getAddress, type Address } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
 import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
-import { leastRecentlyServed } from "@/keeper/jobs/roundups";
+import { longestWaitingFirst } from "@/keeper/jobs/roundups";
 import { sql } from "drizzle-orm";
 import { plaidRowHash, PlaidSource, StatementSource } from "@/keeper/sources/plaid";
 import { activeSources, setEventResult, skipOlderThan } from "@/keeper/sources/store";
@@ -42,9 +42,19 @@ export async function runSpends(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<J
     const g = groups.get(k);
     if (!g || s.createdAt < g.linkedAt) groups.set(k, { user: getAddress(s.userAddress), kind: s.kind, linkedAt: s.createdAt });
   }
-  // Least recently served users first (fix-keeper-fair), so when a pass's budget runs out it is not always the same
-  // users who wait. A user at their per-pass limit stops only their own rows (the break below), never the others'.
-  const rank = new Map((await leastRecentlyServed(ctx, sql`roundup_events`, [...new Set([...groups.values()].map((g) => g.user.toLowerCase()))])).map((u, i) => [u, i]));
+  // Longest waiting first (fix-keeper-fair, review v5 R5-SVC-1): waiting since max(the oldest open row's import time,
+  // the last accrue), so fresh wallets queue behind older imports and nobody is always last. A user at their per-pass
+  // limit stops only their own rows (the break below), never the others'.
+  const lowers = [...new Set([...groups.values()].map((g) => g.user.toLowerCase()))];
+  const pending =
+    lowers.length <= 1
+      ? []
+      : ((await ctx.db.execute(sql`
+          select user_address as u, min(created_at) as t from roundup_events
+          where chain_id = ${ctx.chainId} and status = 'new' and user_address in ${sql`(${sql.join(lowers.map((u) => sql`${u}`), sql`, `)})`}
+          group by user_address`)) as unknown as { u: string; t: Date | string }[]);
+  const oldest = new Map(pending.map((r) => [r.u, new Date(r.t).getTime()]));
+  const rank = new Map((await longestWaitingFirst(ctx, sql`roundup_events`, lowers, oldest)).map((u, i) => [u, i]));
   const ordered = [...groups.values()].sort((a, b) => rank.get(a.user.toLowerCase())! - rank.get(b.user.toLowerCase())!);
   for (const { user, kind, linkedAt } of ordered) {
     if (gate.passFull()) break;

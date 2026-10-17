@@ -58,11 +58,15 @@ export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccr
     if (list) list.push(s);
     else byUser.set(lu, [s]);
   }
-  // Fair order (fix-keeper-fair): users the keeper served least recently go first, and the pass takes one spend per
+  // Fair order (fix-keeper-fair): users who have waited longest go first, and the pass takes one spend per
   // user per round. A user at KEEPER_MAX_ACCRUALS_PER_USER_PASS is skipped for the rest of the pass and everyone else
   // carries on (it used to end the scan for every user after them); only the pass's own budget (count, wall clock,
   // gas) stops it. Spends left over stay open and are scanned again next pass.
-  const order = await leastRecentlyServed(ctx, sql`keeper_roundups`, [...byUser.keys()]);
+  // Review v5 (R5-SVC-1): never-served wallets used to go first, so a supply of fresh linked wallets kept returning
+  // users waiting. Users now go longest-waiting first (see longestWaitingFirst): a fresh wallet queues behind older
+  // pending work, and a user just served queues behind everyone who has been waiting since before that.
+  const oldest = new Map([...byUser].map(([u, list]) => [u, Math.min(...list.map((x) => x.indexedAt?.getTime() ?? 0))]));
+  const order = await longestWaitingFirst(ctx, sql`keeper_roundups`, [...byUser.keys()], oldest);
   const atLimit = new Set<string>();
   scan: for (let round = 0, more = true; more; round++) {
     more = false;
@@ -112,19 +116,23 @@ export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccr
 }
 
 /**
- * `users` (lowercase), least recently served first: never served (no accrue the keeper sent for them in `table`)
- * before anyone, then by the time of their latest keeper accrue. Persistent across passes and restarts, so the same
- * users are not always last when a pass's budget runs out.
+ * `users` (lowercase), longest waiting first. A user has been waiting since max(their oldest pending item, their last
+ * keeper accrue in `table`): an old pending spend puts them early, and being served moves them to the back of the
+ * line behind everyone already waiting. A wallet that was never served waits only from its own first pending item, so
+ * fresh wallets queue behind older pending work instead of ahead of it (review v5 R5-SVC-1), and nobody is always last
+ * (fix-keeper-fair). `oldestPending`: ms since the epoch of each user's oldest pending item (DB time, like the
+ * last-served time). Ties keep the given order (the scan's: oldest spend first). Persistent across restarts.
  */
-export async function leastRecentlyServed(ctx: Ctx, table: ReturnType<typeof sql>, users: string[]): Promise<string[]> {
+export async function longestWaitingFirst(ctx: Ctx, table: ReturnType<typeof sql>, users: string[], oldestPending: Map<string, number>): Promise<string[]> {
   if (users.length <= 1) return users;
   const rows = (await ctx.db.execute(sql`
     select user_address as u, max(updated_at) as last from ${table}
     where chain_id = ${ctx.chainId} and accrue_tx is not null and user_address in ${sql`(${sql.join(users.map((u) => sql`${u}`), sql`, `)})`}
     group by user_address`)) as unknown as { u: string; last: Date | string }[];
   const last = new Map(rows.map((r) => [r.u, new Date(r.last).getTime()]));
-  const first = new Map(users.map((u, i) => [u, i])); // ties keep the scan's order (oldest spend first)
-  return [...users].sort((a, b) => (last.get(a) ?? -1) - (last.get(b) ?? -1) || first.get(a)! - first.get(b)!);
+  const since = (u: string) => Math.max(oldestPending.get(u) ?? 0, last.get(u) ?? 0);
+  const first = new Map(users.map((u, i) => [u, i]));
+  return [...users].sort((a, b) => since(a) - since(b) || first.get(a)! - first.get(b)!);
 }
 
 /** Carried round-ups still under the minimum after this many days are dropped (KEEPER_CARRY_MAX_AGE_DAYS). */
