@@ -107,23 +107,41 @@ async function prepareBetaDeployer(): Promise<{ deployer: Address; token: boolea
   return { deployer, token };
 }
 
+/** Official Safe v1.4.1 deployments on Robinhood Chain mainnet (docs/research/chain-facts.md), present on the fork. */
+export const SAFE_141_SINGLETON = getAddress("0x41675C099F32341bf84BFc5382aF534df5C7461a");
+export const SAFE_141_PROXY_FACTORY = getAddress("0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67");
+const safeAbi = parseAbi([
+  "function setup(address[] _owners, uint256 _threshold, address to, bytes data, address fallbackHandler, address paymentToken, uint256 payment, address paymentReceiver)",
+  "function createProxyWithNonce(address _singleton, bytes initializer, uint256 saltNonce) returns (address proxy)",
+]);
+
 /**
- * OWNER on the beta fork: a 2-of-3 Safe stand-in (contracts/test/mocks/MockSafe.sol) owned by dev accounts 0-2, so
- * the deploy's and verify:deployment's owner pin (a contract with getThreshold() >= 2 and enough owners) is
- * exercised. Its ownership calls are sent by anvil impersonation (a real Safe would collect two signatures).
+ * A real Safe through the official v1.4.1 SafeProxyFactory and singleton on the fork: `owners`, `threshold`, no
+ * modules, no guard, no fallback handler. The mainnet owner pin (MainnetBeta.isMultisigOwner, verify:deployment)
+ * checks exactly this: the official proxy's code hash, an official singleton in slot 0, no guard, no module.
+ */
+export async function deployRealSafe(owners: Address[], threshold: bigint, saltNonce: bigint): Promise<Address> {
+  const { pub, wallet } = clients();
+  const w = wallet(devAccount(ROLE.deployer));
+  const zero = "0x0000000000000000000000000000000000000000" as Address;
+  const initializer = encodeFunctionData({ abi: safeAbi, functionName: "setup", args: [owners, threshold, zero, "0x", zero, zero, 0n, zero] });
+  const { result, request } = await pub.simulateContract({ account: w.account, address: SAFE_141_PROXY_FACTORY, abi: safeAbi, functionName: "createProxyWithNonce", args: [SAFE_141_SINGLETON, initializer, saltNonce] });
+  const rc = await pub.waitForTransactionReceipt({ hash: await w.writeContract(request as never) });
+  if (rc.status !== "success") throw new Error("Safe proxy creation reverted");
+  return getAddress(result as Address);
+}
+
+/**
+ * OWNER on the beta fork: a real 2-of-3 Safe (official v1.4.1 factory and singleton) owned by dev accounts 0-2, so
+ * the deploy's and verify:deployment's owner pin runs against the real thing. The setup and the exercise send its
+ * calls by anvil impersonation (on mainnet two owners sign each Safe transaction).
  */
 async function deployOwnerSafe(): Promise<Address> {
-  const { pub, wallet, rpc } = clients();
-  const art = JSON.parse(readFileSync(join(ROOT, "contracts", "out", "MockSafe.sol", "MockSafe.json"), "utf8")) as { abi: unknown[]; bytecode: { object: Hex } };
-  const owners = [0, 1, 2].map((i) => devAccount(i).address);
-  const w = wallet(devAccount(ROLE.deployer));
-  const hash = await w.deployContract({ abi: art.abi as never, bytecode: art.bytecode.object, args: [owners, 2n] } as never);
-  const rc = await pub.waitForTransactionReceipt({ hash });
-  if (rc.status !== "success" || !rc.contractAddress) throw new Error("MockSafe deploy reverted");
-  const safe = getAddress(rc.contractAddress);
+  const { rpc } = clients();
+  const safe = await deployRealSafe([0, 1, 2].map((i) => devAccount(i).address), 2n, BigInt(Date.now()));
   await rpc("anvil_setBalance", [safe, "0x56bc75e2d63100000"]); // 100 ETH for its own transactions
   writeFileSync(PATHS.ownerSafe, safe);
-  log(`OWNER: 2-of-3 Safe stand-in ${safe} (owners dev accounts 0-2)`);
+  log(`OWNER: 2-of-3 Safe ${safe} (official v1.4.1 factory and singleton; owners dev accounts 0-2)`);
   return safe;
 }
 

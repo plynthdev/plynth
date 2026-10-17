@@ -5,6 +5,7 @@
 import { initVault, approveTx, depositTx, deriveVaultKeys, destroyProver, VAULT_KEY_MESSAGE } from "@plynth/sdk/vault";
 import { decodeFunctionData, getAddress, maxUint256, parseAbi, type Address, type Hex } from "viem";
 import { giveUsdg } from "../fund";
+import { deployRealSafe, SAFE_141_SINGLETON } from "../setup";
 import { abiOf, expect } from "./core";
 import { verifyDeployment, type Deployment, type Reader } from "../../verify-deployment";
 import { events, HOUR, U, usdgOf, type Ctx } from "./context";
@@ -35,15 +36,18 @@ export async function beta(x: Ctx) {
 
   // Review v4 R4-ORC-1: on mainnet OWNER must be a Safe with threshold >= 2 (MainnetBeta.checkConfig and
   // verify:deployment). The fork's OWNER is a 2-of-3 Safe stand-in, so the pin runs against a real contract here.
-  await r.check("OWNER is the fork's 2-of-3 Safe stand-in, not the deployer", async () => {
+  // Review v4/v5 R4-ORC-1, R5-ORC-1: on mainnet OWNER must really be a Safe with threshold >= 2: the official
+  // SafeProxy's code, an official singleton, no guard, no module (MainnetBeta.checkConfig and verify:deployment).
+  // The fork's OWNER is a real 2-of-3 Safe from the official v1.4.1 factory, so the pin runs for real here.
+  await r.check("OWNER is the fork's real 2-of-3 Safe (official v1.4.1 factory), not the deployer", async () => {
     expect(owner === A.owner.address, `OWNER ${owner} is not the exercise's owner ${A.owner.address}`);
     expect(deployer !== owner, "deployer == OWNER");
-    const code = await r.pub.getCode({ address: owner });
-    expect(!!code && code !== "0x", "OWNER has no code");
+    const slot0 = await r.pub.getStorageAt({ address: owner, slot: "0x0" });
+    expect(BigInt(slot0 ?? "0x0") === BigInt(SAFE_141_SINGLETON), `singleton ${slot0}`);
     const t = await r.read<bigint>(owner, parseAbi(["function getThreshold() view returns (uint256)"]), "getThreshold", []);
     const o = await r.read<readonly Address[]>(owner, parseAbi(["function getOwners() view returns (address[])"]), "getOwners", []);
-    expect(t >= 2n && BigInt(o.length) >= t, `${t}-of-${o.length}`);
-    return `OWNER ${owner}: ${t}-of-${o.length}, deployer ${deployer}`;
+    expect(t === 2n && o.length === 3, `${t}-of-${o.length}`);
+    return `OWNER ${owner}: Safe ${t}-of-${o.length} on singleton ${SAFE_141_SINGLETON}, deployer ${deployer}`;
   });
   const pin = async (asOwner: Address) => {
     const read: Reader = (address, signature, args) => {
@@ -54,24 +58,29 @@ export async function beta(x: Ctx) {
       const c = await r.pub.getCode({ address: a });
       return !!c && c !== "0x";
     };
-    const checks = await verifyDeployment({ ...(dep as unknown as Deployment), owner: asOwner, fork: false }, read, codeAt, Number(dep.chainId));
+    const checks = await verifyDeployment({ ...(dep as unknown as Deployment), owner: asOwner, fork: false }, read, codeAt, Number(dep.chainId), {
+      codeOf: async (a) => (await r.pub.getCode({ address: a })) ?? undefined,
+      storageAt: async (a, slot) => (await r.pub.getStorageAt({ address: a, slot })) ?? undefined,
+    });
     return checks.find((c) => c.what === "OWNER is a contract");
   };
-  await r.check("the mainnet owner pin (verify:deployment, as MainnetBeta.checkConfig) accepts the 2-of-3 Safe", async () => {
+  await r.check("the mainnet owner pin (verify:deployment, as MainnetBeta.checkConfig) accepts the real 2-of-3 Safe", async () => {
     const c = await pin(owner);
     expect(c?.status === "ok" && /2-of-3/.test(c.detail), JSON.stringify(c));
     return c!.detail;
   });
-  const oneOfOne = await r.deploy("a 1-of-1 Safe stand-in (one key: must fail the owner pin)", A.deployer, "MockSafe", [[A.deployer.address], 1n]);
-  if (oneOfOne) {
-    await r.check("the mainnet owner pin refuses a 1-of-1 Safe and an EOA", async () => {
-      const one = await pin(oneOfOne);
-      expect(one?.status === "FAIL", `1-of-1: ${JSON.stringify(one)}`);
-      const eoa = await pin(A.deployer.address);
-      expect(eoa?.status === "FAIL", `EOA: ${JSON.stringify(eoa)}`);
-      return `1-of-1: ${one!.detail}; EOA: ${eoa!.detail}`;
-    });
-  }
+  const oneOfOne = await deployRealSafe([A.deployer.address], 1n, BigInt(Date.now()) + 1n).catch(() => undefined);
+  const lookalike = await r.deploy("a contract that only says it is a 2-of-3 Safe (MockSafe)", A.deployer, "MockSafe", [[A.deployer.address, A.keeper.address, A.attester.address], 2n]);
+  await r.check("the mainnet owner pin refuses a real 1-of-1 Safe, a Safe look-alike and an EOA", async () => {
+    expect(!!oneOfOne && !!lookalike, "could not create the negative cases");
+    const one = await pin(oneOfOne!);
+    expect(one?.status === "FAIL", `1-of-1: ${JSON.stringify(one)}`);
+    const fake = await pin(lookalike!);
+    expect(fake?.status === "FAIL", `look-alike: ${JSON.stringify(fake)}`);
+    const eoa = await pin(A.deployer.address);
+    expect(eoa?.status === "FAIL", `EOA: ${JSON.stringify(eoa)}`);
+    return `1-of-1: ${one!.detail}; look-alike: ${fake!.detail}; EOA: ${eoa!.detail}`;
+  });
   await r.check("OWNER owns every contract, nothing is pending, the deployer owns nothing", async () => {
     const list = ownedContracts(dep);
     for (const [name, a] of list) {

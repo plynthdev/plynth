@@ -45,7 +45,9 @@ code on this branch, pending independent re-review.
 
 The weak proving tests the review named were replaced by real-contract ones (`contracts/test/review-v3/`,
 `contracts/test/review3/`): the front-run range for M-3, the held-settle price for V2-L1, the oracle-lag band on the
-real Uniswap v4 pools for V2-L4, a second real proof for V2-L8 and the real PeriodClose for V2-L11.
+real Uniswap v4 pools for V2-L4 (worst-case book loss about pool fee + 10 + 50 bps: 63.9 bps measured on the real SPY
+pool, 59.9 bps on NVDA; the review's "about 60" holds for 1 bps pools only), a second real proof for V2-L8 and the
+real PeriodClose for V2-L11.
 
 ## 2026-10-16: internal v2 review (multi-agent AI), grade 4.9 / 10
 
@@ -114,7 +116,7 @@ outputs and exact rounding; EIP-712 stealth claims; PerpPool reserves; relayer, 
 
 | Audit item | Change |
 | --- | --- |
-| No CI | `.github/workflows/ci.yml`: SHA-pinned actions, `permissions: contents: read`, no secrets, GitHub-hosted runners: forge build and test, coverage, Slither (scoped, triaged), Semgrep, gitleaks over the full history, `nargo test`, verifier freshness and client proving, SDK, web and app tests, and a daily live-deployment check (the workflow has not run on the repository yet) |
+| No CI | `.github/workflows/ci.yml`: SHA-pinned actions, `permissions: contents: read`, no secrets, GitHub-hosted runners: forge build and test, coverage, Slither (scoped, triaged), Semgrep, gitleaks over the full history, `nargo test`, verifier freshness and client proving, SDK, web and app tests, and a daily live-deployment check. On the v2 branch's pull request: run 39006193666 (07943a6) failed the sdk and app jobs; runs 39010934703 (5cb54bd) and 39023579355 (cf624d6) passed |
 | Invariants under 100k calls | Every suite runs at 256 x 500 = 128,000 calls under `FOUNDRY_PROFILE=ci` ([INVARIANTS.md](INVARIANTS.md)) |
 | Invariant gaps | New suites: PlinthStaking, FeeRouter (real staking and insurance), treasury with the real CashSleeve and EquitySleeve; the Hidden Vault suite documented as accounting-only with the real-verifier tests named |
 | No mutation testing | `contracts/script/mutation.sh` (slither-mutate, 2,300 mutants over CrowdBuy, ShieldedPool and PerpMarket) and `contracts/mutation/REPORT.md`: on v1 (commit 106c1a4): score 83.9% from the campaign, 94.7% after 62 new tests that close the real gaps; every remaining survivor classified (90 equivalent). A v2 campaign is pending |

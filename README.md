@@ -478,7 +478,7 @@ Source verification on mainnet goes through Sourcify (`forge verify-contract --v
 Robinhood Chain mainnet (4663) as supported, and Blockscout reads Sourcify matches. `verify:explorer` prints the
 commands; it submits nothing unless run with `--submit`.
 
-The CI workflow (`.github/workflows/ci.yml`) is set to run all of the above on every push and pull request, plus coverage and gitleaks (it has not run on the repository yet).
+The CI workflow (`.github/workflows/ci.yml`) runs all of the above on every push and pull request, plus coverage and gitleaks; on the v2 branch's pull request it passed at 5cb54bd (run 39010934703) and cf624d6 (run 39023579355).
 
 The end-to-end runs use local anvil forks only (nothing is broadcast) and a throwaway `plynth_e2e_*` database.
 

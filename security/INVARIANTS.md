@@ -72,6 +72,6 @@ circuit (`circuits/*/src`, `nargo test`). CI also rebuilds the verifiers from th
 
 ## Live deployment
 
-The same properties are asserted against the chain after a deploy and, once the CI workflow runs, daily: `cd app && bun run
+The same properties are asserted against the chain after a deploy and daily by the CI workflow: `cd app && bun run
 verify:deployment` (owners, roles, wiring, timers, feeds, pools, caps) and `bun run verify:explorer` (runtime
 bytecode equals the recorded source).
