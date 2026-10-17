@@ -12,6 +12,8 @@
 import { getAddress, type Address } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
 import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
+import { leastRecentlyServed } from "@/keeper/jobs/roundups";
+import { sql } from "drizzle-orm";
 import { plaidRowHash, PlaidSource, StatementSource } from "@/keeper/sources/plaid";
 import { activeSources, setEventResult, skipOlderThan } from "@/keeper/sources/store";
 import { accrualKey, usdgUnits, type SourceName, type SpendSource } from "@/keeper/sources/types";
@@ -40,7 +42,11 @@ export async function runSpends(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<J
     const g = groups.get(k);
     if (!g || s.createdAt < g.linkedAt) groups.set(k, { user: getAddress(s.userAddress), kind: s.kind, linkedAt: s.createdAt });
   }
-  for (const { user, kind, linkedAt } of groups.values()) {
+  // Least recently served users first (fix-keeper-fair), so when a pass's budget runs out it is not always the same
+  // users who wait. A user at their per-pass limit stops only their own rows (the break below), never the others'.
+  const rank = new Map((await leastRecentlyServed(ctx, sql`roundup_events`, [...new Set([...groups.values()].map((g) => g.user.toLowerCase()))])).map((u, i) => [u, i]));
+  const ordered = [...groups.values()].sort((a, b) => rank.get(a.user.toLowerCase())! - rank.get(b.user.toLowerCase())!);
+  for (const { user, kind, linkedAt } of ordered) {
     if (gate.passFull()) break;
     const src = sources[kind];
     if (!src) continue;

@@ -130,7 +130,6 @@ export class WebhookDispatcher implements WebhookSink {
   }
 
   private async post(url: string, secret: string, body: string): Promise<{ ok: boolean; status: number | null; attempts: number; error?: string }> {
-    const f = this.opts.fetchImpl ?? fetch;
     const retries = this.opts.retries ?? 2;
     let wait = this.opts.backoffMs ?? 250;
     const headers = { "content-type": "application/json", "x-plinth-signature": sign(secret, body) };
@@ -138,7 +137,7 @@ export class WebhookDispatcher implements WebhookSink {
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
         // The destination is re-checked on every send (DNS can change) and redirects are never followed.
-        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: f, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
+        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: this.opts.fetchImpl, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
         last = { ok: r.ok, status: r.status, attempts: attempt };
         if (r.ok || (r.status < 500 && r.status !== 429)) return last;
       } catch (err) {

@@ -46,45 +46,90 @@ async function put(ctx: Ctx, s: SpendLog, patch: Partial<Row> & { status: string
 // time/gas budgets apply; a batch counts as one keeper transaction.
 export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccrueCents: ctx.accrueLimits?.minOnchainAccrueCents ?? DEFAULT_MIN_ONCHAIN_ACCRUE_CENTS })): Promise<JobResult> {
   const res: JobResult = { job: "roundups", ok: true, actions: 0, notes: [] };
+  // Skips cost nothing: record them first. The rest is grouped per user.
+  const byUser = new Map<string, SpendLog[]>();
   for (const { spend: s, decision: d } of await new OnchainSource(ctx).scan()) {
     if (d.kind === "skip") {
       await put(ctx, s, { status: "skipped", reason: d.reason });
       continue;
     }
-    const user = getAddress(d.user);
-    const lu = user.toLowerCase();
-    // Audit M-7: no transaction for a spend the vault would credit 0 for, and per-user / per-pass accrual limits.
-    const g = await gate.check(user, s.value);
-    if (!g.ok) {
-      if (!g.skip) {
-        res.notes.push(g.reason);
-        break;
-      }
-      if (g.belowMin) {
-        await put(ctx, s, { status: "carried", userAddress: lu, reason: `${g.reason}; carried until this user's carried round-ups reach it` });
+    const lu = getAddress(d.user).toLowerCase();
+    const list = byUser.get(lu);
+    if (list) list.push(s);
+    else byUser.set(lu, [s]);
+  }
+  // Fair order (fix-keeper-fair): users the keeper served least recently go first, and the pass takes one spend per
+  // user per round. A user at KEEPER_MAX_ACCRUALS_PER_USER_PASS is skipped for the rest of the pass and everyone else
+  // carries on (it used to end the scan for every user after them); only the pass's own budget (count, wall clock,
+  // gas) stops it. Spends left over stay open and are scanned again next pass.
+  const order = await leastRecentlyServed(ctx, sql`keeper_roundups`, [...byUser.keys()]);
+  const atLimit = new Set<string>();
+  scan: for (let round = 0, more = true; more; round++) {
+    more = false;
+    for (const lu of order) {
+      const s = byUser.get(lu)![round];
+      if (!s) continue;
+      more = true;
+      if (atLimit.has(lu)) continue;
+      const user = getAddress(lu);
+      // Audit M-7: no transaction for a spend the vault would credit 0 for, and per-user / per-pass accrual limits.
+      const g = await gate.check(user, s.value);
+      if (!g.ok) {
+        if (!g.skip) {
+          if (gate.passFull()) {
+            res.notes.push(g.reason);
+            break scan;
+          }
+          atLimit.add(lu);
+          res.notes.push(`${lu}: ${g.reason}`);
+          continue;
+        }
+        if (g.belowMin) {
+          await put(ctx, s, { status: "carried", userAddress: lu, reason: `${g.reason}; carried until this user's carried round-ups reach it` });
+          continue;
+        }
+        await put(ctx, s, { status: "skipped", userAddress: lu, reason: g.reason });
         continue;
       }
-      await put(ctx, s, { status: "skipped", userAddress: lu, reason: g.reason });
-      continue;
-    }
-    // (txHash, logIndex) stay the accrual key for on-chain spends: the vault has keyed them so since todo 07.
-    const o = await accrueSpend(ctx, user, s.txHash, s.logIndex, s.value, async () => {
-      await put(ctx, s, { status: "pending", userAddress: lu });
-    });
-    if (o.status === "failed") {
-      await put(ctx, s, { status: "failed", userAddress: lu, reason: o.reason }, true);
-      res.notes.push(`accrue ${s.txHash}:${s.logIndex} reverts ${o.reason}`);
-      continue;
-    }
-    await put(ctx, s, { status: "done", userAddress: lu, reason: o.reason ?? null, accrueTx: o.tx?.toLowerCase() ?? null, added: o.added?.toString() ?? null });
-    if (o.tx) {
-      gate.record(user, s.value, o.added, o.gasUsed);
-      res.actions++;
+      // (txHash, logIndex) stay the accrual key for on-chain spends: the vault has keyed them so since todo 07.
+      const o = await accrueSpend(ctx, user, s.txHash, s.logIndex, s.value, async () => {
+        await put(ctx, s, { status: "pending", userAddress: lu });
+      });
+      if (o.status === "failed") {
+        await put(ctx, s, { status: "failed", userAddress: lu, reason: o.reason }, true);
+        res.notes.push(`accrue ${s.txHash}:${s.logIndex} reverts ${o.reason}`);
+        continue;
+      }
+      await put(ctx, s, { status: "done", userAddress: lu, reason: o.reason ?? null, accrueTx: o.tx?.toLowerCase() ?? null, added: o.added?.toString() ?? null });
+      if (o.tx) {
+        gate.record(user, s.value, o.added, o.gasUsed);
+        res.actions++;
+      }
     }
   }
   await flushCarried(ctx, gate, res);
   return res;
 }
+
+/**
+ * `users` (lowercase), least recently served first: never served (no accrue the keeper sent for them in `table`)
+ * before anyone, then by the time of their latest keeper accrue. Persistent across passes and restarts, so the same
+ * users are not always last when a pass's budget runs out.
+ */
+export async function leastRecentlyServed(ctx: Ctx, table: ReturnType<typeof sql>, users: string[]): Promise<string[]> {
+  if (users.length <= 1) return users;
+  const rows = (await ctx.db.execute(sql`
+    select user_address as u, max(updated_at) as last from ${table}
+    where chain_id = ${ctx.chainId} and accrue_tx is not null and user_address in ${sql`(${sql.join(users.map((u) => sql`${u}`), sql`, `)})`}
+    group by user_address`)) as unknown as { u: string; last: Date | string }[];
+  const last = new Map(rows.map((r) => [r.u, new Date(r.last).getTime()]));
+  const first = new Map(users.map((u, i) => [u, i])); // ties keep the scan's order (oldest spend first)
+  return [...users].sort((a, b) => (last.get(a) ?? -1) - (last.get(b) ?? -1) || first.get(a)! - first.get(b)!);
+}
+
+/** Carried round-ups still under the minimum after this many days are dropped (KEEPER_CARRY_MAX_AGE_DAYS). */
+export const DEFAULT_CARRY_MAX_AGE_DAYS = 30;
+export const EXPIRED = "carried round-up expired: still under the keeper minimum after the carry period";
 
 /** Reason of carried rows already weighed and still under the minimum (see flushCarried). */
 export const WAITING = "carried: this user's carried round-ups are still under the keeper minimum";
@@ -125,6 +170,15 @@ async function usedKeys(ctx: Ctx, rows: readonly Carried[]): Promise<Set<string>
  * spend is carried (a settings change alone does not wake them; they are dust, and they wait, never get lost).
  */
 async function flushCarried(ctx: Ctx, gate: AccrueGate, res: JobResult) {
+  // Dust that never reaches the minimum (e.g. 32 round-ups of 1e-6 USDG: the largest batch still under 5 cents) would
+  // otherwise stay carried forever. After KEEPER_CARRY_MAX_AGE_DAYS it is skipped with a recorded reason (nothing is
+  // on-chain for it: the vault never saw these spends, so nothing is lost but dust the keeper would not pay to move).
+  const days = ctx.accrueLimits?.carryMaxAgeDays ?? DEFAULT_CARRY_MAX_AGE_DAYS;
+  const expired = (await ctx.db.execute(sql`
+    update keeper_roundups set status = 'skipped', reason = ${EXPIRED}, updated_at = now()
+    where chain_id = ${ctx.chainId} and status = 'carried' and created_at < now() - make_interval(days => ${days})
+    returning 1`)) as unknown as unknown[];
+  if (expired.length) res.notes.push(`${expired.length} carried round-up(s) expired after ${days} days under the minimum`);
   // Only users with something new to weigh (a newly carried spend, a pass that stopped before them, a failed batch):
   // a user found below the minimum is marked WAITING and costs nothing per pass until their next carried spend, so
   // wallets full of dust cannot spend every pass's budget on re-evaluating themselves. Oldest first.

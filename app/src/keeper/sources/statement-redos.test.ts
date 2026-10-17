@@ -5,8 +5,10 @@ import { describe, expect, test } from "bun:test";
 import { currencyOf, MAX_STATEMENT_BYTES, parseStatement, StatementError } from "./statement";
 import { parseStatementOffThread } from "./statement-offthread";
 
+// CPU time (user + system) of the parse, not wall time: a loaded host preempts long runs disproportionately, which
+// flaked the ratio check; CPU time is what an upload can make the parser spend.
 const time = (s: string) => {
-  const t = performance.now();
+  const t = process.cpuUsage();
   let err = "";
   let rows = 0;
   try {
@@ -14,7 +16,8 @@ const time = (s: string) => {
   } catch (e) {
     err = (e as Error).message.slice(0, 60);
   }
-  return { ms: performance.now() - t, err, rows };
+  const d = process.cpuUsage(t);
+  return { ms: (d.user + d.system) / 1000, err, rows };
 };
 
 const head = "OFXHEADER:100\n<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>USD<BANKTRANLIST>";
@@ -25,11 +28,18 @@ const currencyBomb = (n: number) => head + "<STMTTRN><DTPOSTED>20261001<TRNAMT>-
 describe("V2-M4: OFX parser stays linear on adversarial input", () => {
   test("CURRENCY without CURSYM inside one STMTTRN: 2x input takes at most ~2x time, and 400 KB is fast", () => {
     time(currencyBomb(10_000)); // warm up
-    const a = time(currencyBomb(20_000));
-    const b = time(currencyBomb(40_000));
-    expect(a.rows).toBe(1);
-    expect(b.ms).toBeLessThan(250);
-    expect(b.ms).toBeLessThan(Math.max(a.ms, 5) * 4);
+    // Medians of interleaved runs, so a load spike on one run cannot fake (or hide) a ratio (see statement-worst).
+    const a: number[] = [];
+    const b: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const ra = time(currencyBomb(20_000));
+      expect(ra.rows).toBe(1);
+      a.push(ra.ms);
+      b.push(time(currencyBomb(40_000)).ms);
+    }
+    const med = (xs: number[]) => [...xs].sort((x, y) => x - y)[2]!;
+    expect(med(b)).toBeLessThan(250);
+    expect(med(b)).toBeLessThan(Math.max(med(a), 5) * 4);
   });
 
   test("max-size (2 MB) CURRENCY bomb parses in < 1 s", () => {

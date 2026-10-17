@@ -120,7 +120,7 @@ async function main(c: Checks) {
   const logDir = join(dir, "logs");
   c.step(`starting api :${apiPort} and relayer :${relayerPort} (logs in ${logDir})`);
   await startService("api", "app/src/bin/api.ts", { ...svcEnv, API_CHAIN: "testnet", API_DEPLOYMENTS_DIR: dir, API_PORT: String(apiPort) }, `http://127.0.0.1:${apiPort}/v1/meta/health`, logDir);
-  await startService("relayer", "app/src/bin/relayer.ts", { RELAYER_CHAIN: "testnet", RHC_TESTNET_RPC_URL: anvil.rpc, RELAYER_DEPLOYMENTS_DIR: dir, RELAYER_PRIVATE_KEY: DEV_KEYS.relayer, RELAYER_PORT: String(relayerPort) }, `http://127.0.0.1:${relayerPort}/health`, logDir);
+  await startService("relayer", "app/src/bin/relayer.ts", { RELAYER_CHAIN: "testnet", RHC_TESTNET_RPC_URL: anvil.rpc, RELAYER_DEPLOYMENTS_DIR: dir, RELAYER_PRIVATE_KEY: DEV_KEYS.relayer, RELAYER_PORT: String(relayerPort), RELAYER_TICKET_STORE: join(logDir, "settle-tickets-used") }, `http://127.0.0.1:${relayerPort}/health`, logDir);
   const relayer = privateKeyToAccount(DEV_KEYS.relayer).address;
 
   // ---- Hidden Vault caps apply 48h after the deploy proposed them ----

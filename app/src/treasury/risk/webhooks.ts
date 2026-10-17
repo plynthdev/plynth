@@ -51,7 +51,6 @@ export class Webhooks implements WebhookSink {
   }
 
   private async deliver(url: string, body: string): Promise<Delivery> {
-    const f = this.opts.fetchImpl ?? fetch;
     const retries = this.opts.retries ?? 3;
     let wait = this.opts.backoffMs ?? 500;
     const headers: Record<string, string> = { "content-type": "application/json" };
@@ -59,7 +58,7 @@ export class Webhooks implements WebhookSink {
     let last: Delivery = { url, ok: false, status: null, attempts: 0 };
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: f, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
+        const r = await outboundFetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.opts.timeoutMs ?? 5000) }, { allowPrivate: this.opts.allowPrivate, fetchImpl: this.opts.fetchImpl, ...(this.opts.resolve ? { resolve: this.opts.resolve } : {}) });
         last = { url, ok: r.ok, status: r.status, attempts: attempt };
         if (r.ok || (r.status < 500 && r.status !== 429)) return last;
       } catch (err) {

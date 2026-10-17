@@ -8,6 +8,7 @@
 //   - a swap is charged for its settle too (ShieldedTrade.settle carries no fee): /swap returns a single-use settle
 //     ticket, and /settle is relayed only with one. A buy + settle used to cost ~9M gas for one 0.25 USDG fee.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import type { Address } from "viem";
 
 /** Gas the relayer budgets for a settle that a swap's fee prepays (verify + one insert; measured ~3.85M). */
@@ -62,17 +63,75 @@ export class Economics {
 }
 
 /**
+ * Where burnt ticket ids live between restarts (review v3 R3-SVC-3). The ticket key is derived from the relayer's own
+ * key, so it is the same after a restart; with the used set in memory only, every ticket of the last 7 days could relay
+ * one more settle after each restart (every deploy restarts the relayer).
+ */
+export interface TicketStore {
+  /** Every id burnt and not yet expired, with its expiry (unix seconds). */
+  load(now: number): Map<string, number>;
+  burn(id: string, exp: number): void;
+  release(id: string): void;
+}
+
+/**
+ * An append-only file of `+<id> <exp>` / `-<id>` lines, synced on every write, compacted (expired ids dropped) when it
+ * is loaded. One relayer process per file (the relayer runs once per host, systemd StateDirectory).
+ */
+export class FileTicketStore implements TicketStore {
+  constructor(readonly path: string) {}
+
+  load(now: number): Map<string, number> {
+    const used = new Map<string, number>();
+    if (!existsSync(this.path)) return used;
+    for (const line of readFileSync(this.path, "utf8").split("\n")) {
+      const burn = line.match(/^\+([0-9a-f]{32}) (\d+)$/);
+      if (burn) used.set(burn[1]!, Number(burn[2]));
+      const rel = line.match(/^-([0-9a-f]{32})$/);
+      if (rel) used.delete(rel[1]!);
+    }
+    for (const [k, e] of used) if (e < now) used.delete(k);
+    // Compact: write the live set to a temp file and rename it over the log (atomic on one filesystem).
+    const tmp = `${this.path}.tmp`;
+    writeFileSync(tmp, [...used].map(([k, e]) => `+${k} ${e}\n`).join(""), { mode: 0o600 });
+    renameSync(tmp, this.path);
+    return used;
+  }
+
+  private append(line: string) {
+    const fd = openSync(this.path, "a", 0o600);
+    try {
+      writeSync(fd, line);
+      fsyncSync(fd); // burnt before the settle is sent: a crash right after cannot make the ticket good again
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  burn(id: string, exp: number) {
+    this.append(`+${id} ${exp}\n`);
+  }
+
+  release(id: string) {
+    this.append(`-${id}\n`);
+  }
+}
+
+/**
  * Single-use settle tickets: `<expiry>.<id>.<hmac>`. One per relayed swap, so the relayer relays at most as many
- * settles as swaps it was paid for. Used ids are remembered until they expire (in memory: after a restart a ticket
- * issued before it could be used once more, bounded by the paid swaps and the expiry).
+ * settles as swaps it was paid for. Used ids are remembered until they expire, in `store` when one is given (the
+ * relayer on testnet / mainnet), so a restart does not make a used ticket good again (R3-SVC-3).
  */
 export class SettleTickets {
-  private readonly used = new Map<string, number>();
+  private readonly used: Map<string, number>;
   constructor(
     private readonly key: Buffer = randomBytes(32),
     private readonly ttlS = 7 * 86_400,
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
-  ) {}
+    private readonly store?: TicketStore,
+  ) {
+    this.used = store ? store.load(this.now()) : new Map();
+  }
 
   private mac(body: string) {
     return createHmac("sha256", this.key).update(body).digest("base64url");
@@ -95,12 +154,15 @@ export class SettleTickets {
     if (Number(exp) < t) return "settle ticket expired";
     for (const [k, e] of this.used) if (e < t) this.used.delete(k);
     if (this.used.has(id)) return "settle ticket already used";
+    this.store?.burn(id, Number(exp)); // persisted first: if this throws, the ticket is not accepted
     this.used.set(id, Number(exp));
     return undefined;
   }
 
   /** Gives a ticket back (the settle it was burnt for was refused before sending). */
   release(ticket: string) {
-    this.used.delete(ticket.split(".")[1] ?? "");
+    const id = ticket.split(".")[1] ?? "";
+    if (!this.used.delete(id)) return;
+    this.store?.release(id);
   }
 }

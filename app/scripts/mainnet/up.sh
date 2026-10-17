@@ -72,6 +72,7 @@ start indexer src/bin/indexer.ts http://127.0.0.1:8787/health
 start keeper src/bin/keeper.ts http://127.0.0.1:8788/health
 start api src/bin/api.ts http://127.0.0.1:8789/v1/meta/health
 start eligibility src/bin/eligibility.ts http://127.0.0.1:8790/health
+export RELAYER_TICKET_STORE="${RELAYER_TICKET_STORE:-$MAINNET_DIR/settle-tickets-used}" # burnt settle tickets survive restarts (R3-SVC-3)
 start relayer src/bin/relayer.ts http://127.0.0.1:8791/health
 start mcp src/bin/mcp.ts http://127.0.0.1:8792/health
 start treasury-marks src/bin/treasury-marks.ts http://127.0.0.1:8797/health

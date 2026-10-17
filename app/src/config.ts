@@ -94,6 +94,7 @@ const schema = z.object({
   KEEPER_MAX_ACCRUALS_PER_USER_PASS: int(10, 1),
   KEEPER_MIN_ACCRUE_CENTS: int(25, 0),
   KEEPER_MIN_ONCHAIN_ACCRUE_CENTS: int(5, 0),
+  KEEPER_CARRY_MAX_AGE_DAYS: int(30, 1),
   KEEPER_ACCRUE_PASS_MS: int(10_000, 100),
   KEEPER_ACCRUE_PASS_GAS: int(5_000_000, 100_000),
   SPLIT_PARTS: int(2, 1, 3),
@@ -120,6 +121,8 @@ const schema = z.object({
   RELAYER_MAX_FEE_PER_GAS_WEI: blockNumber,
   RELAYER_ETH_USD: int(5_000, 1),
   RELAYER_FEE_MARGIN_BPS: int(1_000, 0, 100_000),
+  // Review v3 (R3-SVC-3): file of burnt settle-ticket ids (blank = <systemd StateDirectory>/settle-tickets-used).
+  RELAYER_TICKET_STORE: opt,
 
   // api (+ the optional eligibility and round-up routes it mounts)
   API_CHAIN: chain,
@@ -236,6 +239,11 @@ const issues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "en
 
 const toEnvString = (v: unknown): string | undefined =>
   v === undefined ? undefined : typeof v === "boolean" ? (v ? "1" : "0") : Array.isArray(v) ? v.join(",") : String(v);
+
+/** The unit's systemd StateDirectory (systemd sets STATE_DIRECTORY when the unit has StateDirectory=), first entry. */
+export function systemdStateDirectory(source: Record<string, string | undefined> = process.env): string | undefined {
+  return source.STATE_DIRECTORY?.split(":")[0] || undefined;
+}
 
 /** Validates every variable; throws ConfigurationError naming each bad one. */
 export function loadConfig(source: Record<string, string | undefined> = process.env): Config {

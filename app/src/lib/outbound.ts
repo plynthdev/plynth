@@ -5,9 +5,14 @@
 //   - registration / startup: https only, and the host may not be localhost, *.localhost, *.local, *.internal or a
 //     literal private, loopback, link-local, CGNAT, multicast or documentation address;
 //   - every send: the host's DNS answers are checked the same way (a public name pointing inside is refused) and
-//     redirects are not followed.
+//     redirects are not followed;
+//   - review v2/v3/v4 I-4 (DNS rebinding): the name is resolved ONCE, every answer is checked, and the request then
+//     connects to that checked address itself (TLS SNI and the certificate check still use the hostname). fetch()
+//     used to resolve the name again, so a rebinding DNS server could answer public to the check and 127.0.0.1 /
+//     169.254.169.254 to the connection.
 // `allowPrivate` (tests, local development) permits loopback / private targets, http included.
 import { lookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 
 export class OutboundBlocked extends Error {}
@@ -99,22 +104,80 @@ export function assertPublicUrl(url: string, opts: { allowPrivate?: boolean | un
 export type Resolver = (host: string) => Promise<string[]>;
 const dnsResolver: Resolver = async (host) => (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
 
-/** Send-time check: the URL passes assertPublicUrl and every address its host resolves to is public. */
-export async function assertPublicDestination(url: string, opts: { allowPrivate?: boolean | undefined; resolve?: Resolver } = {}): Promise<void> {
+/**
+ * Send-time check: the URL passes assertPublicUrl and every address its host resolves to is public. Returns the
+ * checked addresses (one resolution: connect to these, never resolve the name again).
+ */
+export async function assertPublicDestination(url: string, opts: { allowPrivate?: boolean | undefined; resolve?: Resolver } = {}): Promise<string[]> {
   const u = assertPublicUrl(url, opts);
-  if (opts.allowPrivate) return;
+  if (opts.allowPrivate) return [];
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const addrs = isIP(host) ? [host] : await (opts.resolve ?? dnsResolver)(host);
   if (addrs.length === 0) throw new OutboundBlocked(`webhook host ${host} does not resolve`);
   const bad = addrs.find(isInternalIp);
   if (bad) throw new OutboundBlocked(`webhook host ${host} resolves to internal address ${bad}: refused`);
+  return addrs;
+}
+
+export type OutboundOptions = {
+  allowPrivate?: boolean | undefined;
+  resolve?: Resolver;
+  /** Test seam: a fetch double that receives the URL after the destination check. Production passes none. */
+  fetchImpl?: typeof fetch | undefined;
+  /** Tests only: extra trusted CA (PEM) for the pinned TLS connection. */
+  ca?: string | undefined;
+  /** Tests only: maps the checked address to the one actually dialled (a local TLS server standing in for it). */
+  dial?: ((checkedIp: string) => string) | undefined;
+};
+
+/** POST/GET over https to `ip` (already checked), with SNI and the certificate checked against the URL's host. */
+function pinnedRequest(u: URL, ip: string, init: RequestInit, o: OutboundOptions): Promise<Response> {
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const target = o.dial ? o.dial(ip) : ip;
+  const family = isIP(target) === 6 ? 6 : 4;
+  const headers: Record<string, string> = {};
+  new Headers(init.headers).forEach((v, k) => (headers[k] = v));
+  const body = init.body === undefined || init.body === null ? undefined : typeof init.body === "string" ? init.body : Buffer.from(init.body as ArrayBuffer);
+  if (body !== undefined) headers["content-length"] = String(Buffer.byteLength(body));
+  return new Promise<Response>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        host, // the Host header, SNI (servername) and the certificate check all use the name
+        servername: isIP(host) ? undefined : host,
+        port: u.port ? Number(u.port) : 443,
+        path: `${u.pathname}${u.search}`,
+        method: init.method ?? "GET",
+        headers,
+        ...(o.ca ? { ca: o.ca } : {}),
+        // the connection goes to the checked address: no second DNS lookup can redirect it
+        lookup: (_h: string, opts: { all?: boolean } | undefined, cb: (...a: unknown[]) => void) =>
+          opts && (opts as { all?: boolean }).all ? cb(null, [{ address: target, family }]) : cb(null, target, family),
+        signal: init.signal ?? undefined,
+      } as never,
+      (res) => {
+        // Never follows a redirect: a 3xx comes back as is.
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          const h = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) h.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+          const status = res.statusCode ?? 502;
+          resolve(new Response(status === 204 || status === 304 ? null : Buffer.concat(chunks), { status, headers: h }));
+        });
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
 }
 
 /**
  * fetch for webhooks: checks the destination first (unless allowPrivate), never follows a redirect (a 3xx is
- * returned as is, so a public URL cannot bounce the request inside).
+ * returned as is, so a public URL cannot bounce the request inside), and connects to the address it checked.
  */
-export async function outboundFetch(url: string, init: RequestInit, opts: { allowPrivate?: boolean | undefined; resolve?: Resolver; fetchImpl?: typeof fetch } = {}): Promise<Response> {
-  await assertPublicDestination(url, opts);
-  return (opts.fetchImpl ?? fetch)(url, { ...init, redirect: "manual" });
+export async function outboundFetch(url: string, init: RequestInit, opts: OutboundOptions = {}): Promise<Response> {
+  const addrs = await assertPublicDestination(url, opts);
+  if (opts.allowPrivate || opts.fetchImpl) return (opts.fetchImpl ?? fetch)(url, { ...init, redirect: "manual" });
+  return pinnedRequest(new URL(url), addrs[0]!, init, opts);
 }

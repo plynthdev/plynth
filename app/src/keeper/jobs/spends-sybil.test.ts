@@ -101,7 +101,7 @@ describe("V2-M5: sybils with 1 USDG each cannot buy keeper transactions", () => 
     expect(sent).toHaveLength(0);
     const [r] = (await t.sql`select count(*)::int as n from roundup_events where status = 'skipped' and reason like 'round-up below the keeper minimum%'`) as unknown as { n: number }[];
     expect(r!.n).toBe(2000);
-  });
+  }, 30_000); // 2,000 rows x 3 passes against Postgres: ~3 s alone, past 5 s under a full-suite load
 
   test("sybils choosing $x.01 rows (99-cent round-ups) get at most 2 transactions per USDG locked, then the balance is used", async () => {
     const SYB = Array.from({ length: 20 }, (_, i) => A(0xc000 + i));
@@ -111,7 +111,7 @@ describe("V2-M5: sybils with 1 USDG each cannot buy keeper transactions", () => 
     }
     for (let p = 0; p < 3; p++) await runSpends(ctx);
     expect(sent.length).toBeLessThanOrEqual(2 * SYB.length);
-  });
+  }, 30_000);
 
   test("an honest saver's round-ups of 25 cents and more still accrue; smaller ones are skipped with the reason", async () => {
     const SAVER = A(0x5a7e);

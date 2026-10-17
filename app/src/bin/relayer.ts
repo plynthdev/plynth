@@ -9,14 +9,15 @@
 // local / testnet = defaults for USDG and every Stock Token of the deployment (relayer/chain.ts relayerTables).
 // POST /withdraw is enabled when the deployment has a shieldedPool; POST /swap and /settle (private sell / buy / park)
 // when it also has a shieldedTrade.
-import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
+import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary, systemdStateDirectory } from "@/config";
 import { readDeployment } from "@/indexer";
 import { getConnInfo } from "hono/bun";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadSigner } from "@/keeper/signer";
 import { relayerApp } from "@/relayer/app";
 import { chainDeps, feeValuer, NonceManager, relayerTables, tradeDeps, withdrawDeps } from "@/relayer/chain";
-import { DEFAULT_MAX_FEE_PER_GAS_WEI, Economics, SettleTickets } from "@/relayer/economics";
+import { DEFAULT_MAX_FEE_PER_GAS_WEI, Economics, FileTicketStore, SettleTickets } from "@/relayer/economics";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { RateLimiter } from "@/relayer/ratelimit";
 
@@ -65,7 +66,12 @@ const economics =
 const ticketKey = createHash("sha256")
   .update(await account.signMessage!({ message: `plynth relayer settle tickets v1 chain ${chainId}` }))
   .digest();
-const tickets = economics ? new SettleTickets(ticketKey) : undefined;
+// Burnt ticket ids survive restarts (review v3 R3-SVC-3): RELAYER_TICKET_STORE, else the unit's systemd StateDirectory.
+// Without either on testnet / mainnet the relayer refuses to start rather than make used tickets good again.
+const stateDir = systemdStateDirectory();
+const ticketStorePath = config.RELAYER_TICKET_STORE ?? (stateDir ? join(stateDir, "settle-tickets-used") : undefined);
+if (economics && !ticketStorePath && config.RELAYER_CHAIN !== "local") throw new Error("set RELAYER_TICKET_STORE (or run under systemd with StateDirectory=): settle tickets must stay burnt across restarts");
+const tickets = economics ? new SettleTickets(ticketKey, undefined, undefined, ticketStorePath ? new FileTicketStore(ticketStorePath) : undefined) : undefined;
 const app = relayerApp({
   ...chainDeps({ pub, wallet, account, chain, stealthClaims: getAddress(dep.stealthClaims), plynth, nonces, maxFeePerGas }),
   economics,

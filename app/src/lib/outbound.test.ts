@@ -46,7 +46,7 @@ describe("outbound webhook targets", () => {
   test("a public name that resolves inside is refused at send time; redirects are not followed", async () => {
     await expect(assertPublicDestination("https://evil.example/x", { resolve: async () => ["93.184.216.34", "10.1.2.3"] })).rejects.toThrow(/internal address 10.1.2.3/);
     await expect(assertPublicDestination("https://evil.example/x", { resolve: async () => ["::1"] })).rejects.toThrow(/internal/);
-    await expect(assertPublicDestination("https://ok.example/x", { resolve: async () => ["93.184.216.34"] })).resolves.toBeUndefined();
+    await expect(assertPublicDestination("https://ok.example/x", { resolve: async () => ["93.184.216.34"] })).resolves.toEqual(["93.184.216.34"]); // the checked addresses, to connect to (I-4)
     let seen: RequestInit | undefined;
     const fetchImpl = (async (_u: string, init: RequestInit) => ((seen = init), new Response(null, { status: 302, headers: { location: "http://127.0.0.1/" } }))) as unknown as typeof fetch;
     const r = await outboundFetch("https://ok.example/x", { method: "POST" }, { resolve: async () => ["93.184.216.34"], fetchImpl });
