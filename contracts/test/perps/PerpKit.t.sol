@@ -68,6 +68,8 @@ contract PerpKitTest is Test {
         m.open(false, 5_000e6, 1_000e6, 100);
         m.close();
         vm.stopPrank();
-        assertApproxEqAbs(usdg.balanceOf(alice), 1_000e6 - 10e6, 2); // 10 bps taker in and out
+        // 10 bps taker in and out, plus the open spread (charged on size at the open)
+        uint256 spreadCost = 5_000e6 * m.openSpreadBps() / 10_000;
+        assertApproxEqAbs(usdg.balanceOf(alice), 1_000e6 - 10e6 - spreadCost, 2);
     }
 }

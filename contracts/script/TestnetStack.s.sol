@@ -280,6 +280,7 @@ contract TestnetStack is Script {
             ITierSource(address(staking)),
             templates
         );
+        insurance.bindTreasuryFactory(address(factory)); // only this factory's treasuries may claim (L-7)
         feeRouter.setTemplateFees(ITemplateFeeSource(address(factory)), 2000);
         feeRouter.setKeeper(keeper); // push and observe are keeper-only
         IERC4626[] memory vaults = new IERC4626[](1);
@@ -344,7 +345,7 @@ contract TestnetStack is Script {
 
     /// In-house perp venue: one PerpPool over mUSDG and a market per mock stock, seeded with LP_SEED.
     function _perps() private {
-        perpPool = new PerpPool(IERC20(address(usdg)), deployer, SHORT_DELAY);
+        perpPool = new PerpPool(IERC20(address(usdg)), deployer, SHORT_DELAY, SHORT_DELAY);
         for (uint256 i; i < stocks.length; ++i) {
             PerpMarket m = new PerpMarket(perpPool, valuer, address(stocks[i].token), deployer);
             perpPool.addMarket(address(m));

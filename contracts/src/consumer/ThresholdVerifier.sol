@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {ShieldedPool, IHonkVerifier} from "./ShieldedPool.sol";
 import {Poseidon2} from "./verifiers/Poseidon2.sol";
@@ -12,6 +12,15 @@ import {HiddenConstants} from "./verifiers/HiddenConstants.sol";
 /// Holdings: the proof's root must be a root ShieldedPool has published, and none of the proof's nullifiers may
 /// be spent now. Nullifiers are derived inside the circuit, so a spent note cannot be counted. Padding slots
 /// output a zero nullifier; the verifier learns how many slots were padding.
+///
+/// Accepted risk (external audit L-11): a holdings proof publishes the nullifier of every note it counts, and
+/// that nullifier appears again on-chain (NullifierSpent) when the note is spent, so the verifier, or anyone it
+/// shares the proof with, links that later spend to the prover. Proving non-membership in the spent set without
+/// revealing nullifiers needs a nullifier-set accumulator, a redesign not built here. Mitigation: right after
+/// the verifier has checked a proof, the prover re-shields the counted notes to itself (SDK
+/// `proveUnlinkHoldings`, one private transfer per two notes); the verifier then sees only that those notes were
+/// spent, and nothing after links to the proof. The proof stops verifying at that point (its notes are spent),
+/// so verifiers should check a proof when it is presented.
 ///
 /// Savings: ShieldedPool has no record of which leaves were deposits (transfer outputs and change notes look the
 /// same), so this contract keeps its own append-only Poseidon2 tree of deposit commitments. Anyone calls

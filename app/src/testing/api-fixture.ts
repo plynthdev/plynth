@@ -28,7 +28,7 @@ const userAbi = parseAbi([
   "function linkSpendingWallet(address wallet, uint256 deadline, bytes walletSig)",
   "function linkNonce(address wallet) view returns (uint256)",
   "function claimOpen(address asset, uint256 bookId)",
-  "function book(address asset, uint256 bookId) view returns ((uint256 usdgTotal, uint32 accounts, uint64 openedAt, uint256 rawOut, bool executed))",
+  "function book(address asset, uint256 bookId) view returns ((uint256 usdgTotal, uint32 accounts, uint64 openedAt, uint256 rawOut, bool executed, uint64 crowdSince))",
   "function executeAfter(bytes32 key) view returns (uint64)",
   "function beaconKey(address asset, uint64 windowStart) pure returns (bytes32)",
 ]);

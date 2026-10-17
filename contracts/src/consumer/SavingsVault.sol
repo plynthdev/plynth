@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -11,6 +11,8 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {ISignatureTransfer, IAllowanceTransfer} from "../interfaces/IPermit2.sol";
 import {IEligibility} from "../interfaces/IEligibility.sol";
+import {KeyChecks} from "../libs/KeyChecks.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 interface ICanonicalRegistry {
     function isCanonical(address token) external view returns (bool);
@@ -32,7 +34,7 @@ interface ICanonicalRegistry {
 /// joining a crowd buy (CrowdBuy.join reads `eligibility` here) require `isEligible(user)`. Nothing on the
 /// exit side (withdraw, cancel, claims) ever checks it, so a revoked or expired user can always leave.
 /// Deploy scripts must call setEligibility before Stock Tokens are offered; while unset, buys are ungated.
-contract SavingsVault is Ownable2Step, EIP712 {
+contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
     using SafeERC20 for IERC20;
 
     struct Settings {
@@ -155,9 +157,17 @@ contract SavingsVault is Ownable2Step, EIP712 {
 
     // ---------------------------------------------------------------- owner
 
+    /// A new keeper waits CHANGE_DELAY (48 h) in public; removing the keeper (zero) applies at once (it only stops
+    /// round-ups and fixed top-ups; withdraw never needs the keeper).
     function setKeeper(address keeper_) external onlyOwner {
+        if (keeper_ != address(0) && !_delayed()) return;
         keeper = keeper_;
         emit KeeperSet(keeper_);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     /// One-time: CrowdBuy is deployed after the vault. Fixing it stops the owner from pointing sweep elsewhere.
@@ -232,10 +242,13 @@ contract SavingsVault is Ownable2Step, EIP712 {
     }
 
     /// Registers (or clears, with both zero) the keys Hidden delivery uses. ownerPk must be a bn254 field
-    /// element; zero ownerPk with a non-zero viewing key is rejected. Only the user can set their own keys.
+    /// element; zero ownerPk with a non-zero viewing key is rejected, and so is a low-order x25519 viewing key (every
+    /// note encrypted to it would be readable by anyone, and the keeper's x25519 refuses it: audit M-6). Only the
+    /// user can set their own keys.
     function setHiddenKeys(bytes32 ownerPk, bytes32 viewingPub) external {
         if (uint256(ownerPk) >= BN254_P) revert InvalidSettings();
         if ((ownerPk == 0) != (viewingPub == 0)) revert InvalidSettings();
+        if (viewingPub != 0 && KeyChecks.isLowOrderX25519(viewingPub)) revert InvalidSettings();
         _hiddenKeys[msg.sender] = HiddenKeys(ownerPk, viewingPub);
         emit HiddenKeysSet(msg.sender, ownerPk, viewingPub);
     }

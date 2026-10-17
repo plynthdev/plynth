@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -54,6 +54,16 @@ interface ICloseFeeHook {
 /// The plain `commit` is refused while the sleeve's book is not empty, so a shielded book cannot drop out of a
 /// statement (an empty sleeve proves 0 with an all-padding proof).
 ///
+/// Snapshot close (audit L-4): the live `commit` recomputes the book at inclusion, so anyone could void a signed
+/// Close by sending 1 wei of USDG (or of any tracked token) to the account before it lands. Instead, at or after
+/// the period end the controller of the policy in force calls `snapshot()`, which records the positions hash, NAV,
+/// band weights and the public context of a private close (public NAV and band USD) at that block; the service
+/// builds and signs the Close from that block and `commitSnapshot` / `commitSnapshotWithPrivateSleeve` check the
+/// signed statement against the stored snapshot instead of the live book. A snapshot is valid for
+/// `SNAPSHOT_MAX_AGE`, must be taken at or after the Close's `periodEnd`, is consumed by the next commit, and only
+/// the controller can take (or retake) one, so donations after it change nothing. The live path stays for
+/// callers that can afford a retry.
+///
 /// Deployed either directly (constructor) or as an EIP-1167 clone by TreasuryFactory (`initialize`, once; the
 /// EIP-712 domain uses the clone's own address). All-zero constructor arguments deploy a locked implementation.
 contract PeriodClose is EIP712, IPeriodStartNav {
@@ -76,6 +86,16 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint80 roundId; // Chainlink round of the price; 0 for cash and vault shares
     }
 
+    /// The book the controller pinned for the next commit (`snapshot`). `takenAt == 0`: none.
+    struct BookSnapshot {
+        uint64 takenAt;
+        uint256 navUsd; // public NAV (account.navUsd)
+        uint16 cashBps; // public weights (for a plain commit)
+        uint16 equityBps;
+        bytes32 positionsHash;
+        uint256[3] bandUsd; // public cash / equity / basis USD (the private close's public context)
+    }
+
     bytes32 public constant CLOSE_TYPEHASH = keccak256(
         "Close(uint64 periodEnd,uint256 navUsd,uint16 cashBps,uint16 equityBps,bytes32 positionsHash,bytes32 bundleHash,bytes32 policyHash,uint32 policyVersion)"
     );
@@ -83,6 +103,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     uint256 public constant YEAR = 365 days;
     uint256 private constant BPS = 10_000;
     uint32 public constant WEEKLY_BELOW = 28 days;
+    /// A snapshot older than this cannot be committed (the controller retakes it).
+    uint64 public constant SNAPSHOT_MAX_AGE = 6 hours;
 
     TreasuryAccount public account;
     TreasuryPolicy public policy;
@@ -97,7 +119,9 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     Close[] private _closes;
     uint256 public periodStartNav;
     uint256 public feeOwed; // cash raw units not yet paid
+    BookSnapshot private _snap;
 
+    event BookSnapshotted(uint64 takenAt, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps);
     event PeriodClosed(
         uint256 indexed index, uint64 indexed periodEnd, Close close, uint256 feeRaw, uint256 feePaid, uint256 feeOwed
     );
@@ -116,7 +140,12 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     error AlreadyInitialized();
     error NoPrivateSleeve();
     error PrivateBookOpen(uint256 bookUsd);
+    error NotController();
+    error NoSnapshot();
+    error SnapshotBeforePeriodEnd(uint64 takenAt, uint64 periodEnd);
+    error SnapshotExpired(uint64 takenAt);
 
+    event PrivateBookRefreshed(bytes32 root, uint256 privateNavUsd, bytes32 pricesCommitment, bytes32[8] nullifiers);
     event PrivateSleeveProven(
         uint256 indexed index, bytes32 root, uint256 privateNavUsd, bytes32 pricesCommitment, bytes32[8] nullifiers
     );
@@ -159,7 +188,92 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     // ---------------------------------------------------------------- commit
 
+    /// The live path: the statement is checked against the book at inclusion (any transfer to the account between
+    /// signing and inclusion voids it; prefer `snapshot` + `commitSnapshot`).
     function commit(Close calldata c, bytes calldata controllerSig) external {
+        (bytes32 posHash,) = _positions(true);
+        (uint256 nav,) = account.navUsd();
+        _commitPublic(c, controllerSig, posHash, nav, _bandUsd());
+    }
+
+    /// `commit` for an account with a private sleeve: `c.navUsd` = public NAV + `p.navUsd` (proven lower bound).
+    function commitWithPrivateSleeve(
+        Close calldata c,
+        bytes calldata controllerSig,
+        IPrivateSleeve.PrivateClose calldata p
+    ) external {
+        (bytes32 posHash,) = _positions(true);
+        (uint256 pubNav,) = account.navUsd();
+        _commitPrivate(c, controllerSig, p, posHash, pubNav, _bandUsd());
+    }
+
+    /// Anyone: refreshes the private sleeve's book between closes with a treasury_close proof over the live public
+    /// book and the bands of the policy in force (audit L-6), so a long period does not leave the guard on a stale
+    /// book. The proof is a lower bound of unspent notes at Valuer prices now, so it can only replace the book with
+    /// value that provably exists. Nothing is recorded as a close.
+    function refreshPrivateBook(IPrivateSleeve.PrivateClose calldata p) external {
+        IPrivateSleeve ps = IPrivateSleeve(account.privateSleeve());
+        if (address(ps) == address(0)) revert NoPrivateSleeve();
+        (TreasuryPolicy.Policy memory pol, bytes32 h,) = policy.current();
+        IPrivateSleeve.BookContext memory ctx;
+        (ctx.pubNav,) = account.navUsd();
+        ctx.pubBandUsd = _bandUsd();
+        ctx.policyHash = h;
+        ctx.bandMin = [pol.cash.minBps, pol.equity.minBps, pol.basis.minBps];
+        ctx.bandMax = [pol.cash.maxBps, pol.equity.maxBps, pol.basis.maxBps];
+        bytes32 pc = ps.checkClose(p, ctx);
+        ps.onClose(p.navUsd);
+        emit PrivateBookRefreshed(p.root, p.navUsd, pc, p.nullifiers);
+    }
+
+    /// The controller of the policy in force pins the book for the next commit: positions hash, NAV, weights and
+    /// band USD at this block (reverts HoldAtClose like `commit`). Only from the earliest next period end on; a
+    /// new snapshot replaces the old one.
+    function snapshot() external returns (bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps) {
+        (TreasuryPolicy.Policy memory p,,) = policy.current();
+        if (msg.sender != p.controller) revert NotController();
+        uint64 earliest = nextPeriodEnd();
+        if (block.timestamp < earliest) revert PeriodInFuture(earliest, block.timestamp);
+        (positionsHash,) = _positions(true);
+        (navUsd,) = account.navUsd();
+        uint256[3] memory band = _bandUsd();
+        (cashBps, equityBps) = _weightsOf(band, navUsd);
+        _snap = BookSnapshot(uint64(block.timestamp), navUsd, cashBps, equityBps, positionsHash, band);
+        emit BookSnapshotted(uint64(block.timestamp), positionsHash, navUsd, cashBps, equityBps);
+    }
+
+    /// `commit` checked against the stored snapshot instead of the live book.
+    function commitSnapshot(Close calldata c, bytes calldata controllerSig) external {
+        BookSnapshot memory b = _useSnapshot(c.periodEnd);
+        _commitPublic(c, controllerSig, b.positionsHash, b.navUsd, b.bandUsd);
+    }
+
+    /// `commitWithPrivateSleeve` with the public part (positions, public NAV, band USD) from the stored snapshot.
+    /// The private proof's prices are still pinned from the Valuer at inclusion.
+    function commitSnapshotWithPrivateSleeve(
+        Close calldata c,
+        bytes calldata controllerSig,
+        IPrivateSleeve.PrivateClose calldata p
+    ) external {
+        BookSnapshot memory b = _useSnapshot(c.periodEnd);
+        _commitPrivate(c, controllerSig, p, b.positionsHash, b.navUsd, b.bandUsd);
+    }
+
+    function _useSnapshot(uint64 periodEnd) private returns (BookSnapshot memory b) {
+        b = _snap;
+        if (b.takenAt == 0) revert NoSnapshot();
+        if (b.takenAt < periodEnd) revert SnapshotBeforePeriodEnd(b.takenAt, periodEnd);
+        if (block.timestamp > b.takenAt + SNAPSHOT_MAX_AGE) revert SnapshotExpired(b.takenAt);
+        delete _snap; // consumed once
+    }
+
+    function _commitPublic(
+        Close calldata c,
+        bytes calldata controllerSig,
+        bytes32 posHash,
+        uint256 nav,
+        uint256[3] memory band
+    ) private {
         uint64 prevEnd = _checkTiming(c.periodEnd);
         address controller = _checkPolicy(c);
         _checkTier(prevEnd, c.periodEnd);
@@ -169,10 +283,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
             if (book != 0) revert PrivateBookOpen(book);
         }
 
-        (bytes32 posHash,) = _positions(true);
-        (uint256 nav,) = account.navUsd();
         if (c.navUsd != nav) revert NavMismatch(nav, c.navUsd);
-        (uint16 cashBps, uint16 equityBps) = _weightsOf(_bandUsd(), nav);
+        (uint16 cashBps, uint16 equityBps) = _weightsOf(band, nav);
         if (c.cashBps != cashBps || c.equityBps != equityBps) revert WeightsMismatch(cashBps, equityBps);
         if (c.positionsHash != posHash) revert PositionsMismatch(posHash);
 
@@ -182,21 +294,22 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         (periodStartNav,) = account.navUsd();
     }
 
-    /// `commit` for an account with a private sleeve: `c.navUsd` = public NAV + `p.navUsd` (proven lower bound).
-    function commitWithPrivateSleeve(
+    function _commitPrivate(
         Close calldata c,
         bytes calldata controllerSig,
-        IPrivateSleeve.PrivateClose calldata p
-    ) external {
+        IPrivateSleeve.PrivateClose calldata p,
+        bytes32 posHash,
+        uint256 pubNav,
+        uint256[3] memory pubBand
+    ) private {
         uint64 prevEnd = _checkTiming(c.periodEnd);
         address controller = _checkPolicy(c);
         _checkTier(prevEnd, c.periodEnd);
         IPrivateSleeve ps = IPrivateSleeve(account.privateSleeve());
         if (address(ps) == address(0)) revert NoPrivateSleeve();
 
-        (bytes32 posHash,) = _positions(true);
         if (c.positionsHash != posHash) revert PositionsMismatch(posHash);
-        bytes32 pc = _checkPrivate(c, p, ps);
+        bytes32 pc = _checkPrivate(c, p, ps, pubNav, pubBand);
         if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
 
         uint256 index = _record(c, prevEnd);
@@ -216,17 +329,19 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the
     /// bands of the policy version the close names (already checked to be the one in force).
-    function _checkPrivate(Close calldata c, IPrivateSleeve.PrivateClose calldata p, IPrivateSleeve ps)
-        private
-        view
-        returns (bytes32)
-    {
+    function _checkPrivate(
+        Close calldata c,
+        IPrivateSleeve.PrivateClose calldata p,
+        IPrivateSleeve ps,
+        uint256 pubNav,
+        uint256[3] memory pubBand
+    ) private view returns (bytes32) {
         IPrivateSleeve.BookContext memory ctx;
-        (ctx.pubNav,) = account.navUsd();
-        uint256 nav = ctx.pubNav + p.navUsd;
+        ctx.pubNav = pubNav;
+        uint256 nav = pubNav + p.navUsd;
         if (c.navUsd != nav) revert NavMismatch(nav, c.navUsd);
-        ctx.pubBandUsd = _bandUsd();
-        uint256[3] memory withPrivate = _bandUsd(); // a fresh copy: memory arrays alias on assignment
+        ctx.pubBandUsd = pubBand;
+        uint256[3] memory withPrivate = [pubBand[0], pubBand[1], pubBand[2]]; // a copy: memory arrays alias
         withPrivate[ps.band()] += p.navUsd;
         (uint16 cashBps, uint16 equityBps) = _weightsOf(withPrivate, nav);
         if (c.cashBps != cashBps || c.equityBps != equityBps) revert WeightsMismatch(cashBps, equityBps);
@@ -239,6 +354,11 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     }
 
     // ---------------------------------------------------------------- views
+
+    /// The pinned book the next `commitSnapshot*` checks against (`takenAt == 0`: none).
+    function bookSnapshot() external view returns (BookSnapshot memory) {
+        return _snap;
+    }
 
     function latest() external view returns (Close memory c) {
         if (_closes.length != 0) c = _closes[_closes.length - 1];

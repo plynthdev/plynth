@@ -86,8 +86,8 @@ export async function hidden(x: Ctx) {
 
     // 2. deposit -> 1h queue -> insert
     await sendTx("shielder deposits 1,000 USDG", A.shielder, depositTx(pool, usdg, 1_000n * U, ks));
-    await r.check("warp 1h (pending queue delay)", async () => {
-      await r.warp(HOUR + 30n);
+    await r.check("warp 2h (pending queue delay for a small batch)", async () => {
+      await r.warp(2n * HOUR + 30n); // a lone deposit waits MIN_PENDING_DELAY + SOLO_INSERT_DELAY (audit M-5)
       return `chain time ${await r.now()}`;
     });
     try {
@@ -111,7 +111,7 @@ export async function hidden(x: Ctx) {
     const change = await r.until("800 change note", async () => (await mine(ks)).find((n) => n.asset === usdg && n.raw === 800n * U));
     const fresh = privateKeyToAccount(bytesToHex(crypto.getRandomValues(new Uint8Array(32)))).address;
     r.names.set(fresh.toLowerCase(), "fresh address");
-    const w = await proveWithdraw({ keys: ks, tree: state!.tree, note: change, amount: 150n * U, recipient: fresh, relayerFee: 1n * U });
+    const w = await proveWithdraw({ keys: ks, tree: state!.tree, note: change, amount: 150n * U, recipient: fresh, relayerFee: 1n * U, relayer: A.relayer.address });
     await r.external("relayer submits the shielder's withdraw of 150 USDG to a fresh address", "relayer", async () => {
       const res = await api("/withdraw", { method: "POST", port: PORTS.relayer, body: JSON.stringify(withdrawRequest(w)) });
       expect(res.status === 200 && res.body.txHash, `relayer ${res.status} ${j(res.body)}`);

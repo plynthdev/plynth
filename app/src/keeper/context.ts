@@ -27,7 +27,25 @@ export type KeeperDeployment = {
   mock: MockFeedDeployment;
   /** FeeRouter (job fee-push); absent when the token stack is not deployed. */
   feeRouter?: Address | undefined;
+  /** In-house perp markets (job liquidate): `perpMarkets` in the file (symbol -> address, or that map as JSON). */
+  perpMarkets: Address[];
 };
+
+/** `perpMarkets` of a deployment file: a symbol -> address map (the deploy scripts write it as an object or as a JSON string). */
+export function perpMarketsOf(dep: Deployment): Address[] {
+  let raw: unknown = dep.perpMarkets;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!raw || typeof raw !== "object") return [];
+  return Object.values(raw as Record<string, unknown>)
+    .filter((v): v is string => typeof v === "string" && isAddress(v))
+    .map((v) => getAddress(v));
+}
 
 /** One mock Stock Token of a testnet kit: its feed and v4 pool (as TestnetKit.s.sol writes them). */
 export type MockStock = {
@@ -116,6 +134,7 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     shieldedPool: typeof dep.shieldedPool === "string" ? getAddress(dep.shieldedPool) : undefined,
     mock: mockFeedDeployment(dep),
     feeRouter: typeof dep.feeRouter === "string" ? getAddress(dep.feeRouter) : undefined,
+    perpMarkets: perpMarketsOf(dep),
   };
 }
 

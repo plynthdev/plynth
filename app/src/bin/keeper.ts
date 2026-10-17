@@ -4,7 +4,7 @@
 // Env (config.ts): KEEPER_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // KEEPER_DEPLOYMENTS_DIR (default app/deployments), KEEPER_SECRET_KEY (32 bytes hex/base64, seals beacon secrets),
 // KEEPER_PRIVATE_KEY or KEEPER_KEYSTORE + KEEPER_KEYSTORE_PASSWORD_FILE, KEEPER_LOOKAHEAD (windows, default 2),
-// KEEPER_JOBS (comma-separated subset of refresh-mock-feeds,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,
+// KEEPER_JOBS (comma-separated subset of refresh-mock-feeds,liquidate,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,
 // deliver-hidden; default all), KEEPER_MOCK_FEED_* (refresh-mock-feeds on testnet kit deployments; mainnet feeds are
 // read over RHC_MAINNET_RPC_URL),
 // PLAID_CLIENT_ID + PLAID_SECRET (+ PLAID_ENV=sandbox|production, default sandbox) to sync linked Plaid items,

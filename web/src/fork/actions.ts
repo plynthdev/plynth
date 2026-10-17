@@ -649,7 +649,7 @@ export async function hiddenWithdraw(to: string, p?: Progress): Promise<SentTx> 
   const note = usable[0];
   if (!note)
     throw new Error(
-      "No spendable USDG note yet (a deposit waits about an hour before the keeper inserts it).",
+      "No spendable USDG note yet (a deposit waits one to two hours before it is inserted into the tree).",
     );
   p?.("Proving the withdraw in your browser (UltraHonk)…");
   const w = await v.proveWithdraw({

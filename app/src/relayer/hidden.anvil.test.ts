@@ -220,7 +220,7 @@ describe("Hidden delivery on anvil", () => {
   }, 240_000);
 
   test("after MIN_PENDING_DELAY the keeper batches the pending notes into the tree", async () => {
-    await warpTo((await now()) + 3601n);
+    await warpTo((await now()) + 7201n); // two deposits: under MIN_INSERT_BATCH, so MIN_PENDING_DELAY + SOLO_INSERT_DELAY
     expect(keeper("deliver-hidden")).toContain("deliver-hidden: ok actions=1");
     expect(await read(pool(), shieldedPoolAbi, "nextLeaf")).toBe(2n);
   }, 120_000);
@@ -249,10 +249,11 @@ describe("Hidden delivery on anvil", () => {
     const received = after1.find((n) => n.raw === part)!;
     const fresh = privateKeyToAccount(bytesToHex(crypto.getRandomValues(new Uint8Array(32)))).address;
     const fee = part / 100n;
-    const w = await proveWithdraw({ keys: keys[1]!, tree: state.tree, note: received, amount: part, recipient: fresh, relayerFee: fee });
-
     const chain = defineChain({ id: 31337, name: "anvil", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [anvil.rpc] } } });
     const account = privateKeyToAccount(RELAYER_KEY);
+    // The fee is bound to the relayer's sending address (audit L-9): a proof bound elsewhere is refused.
+    const w = await proveWithdraw({ keys: keys[1]!, tree: state.tree, note: received, amount: part, recipient: fresh, relayerFee: fee, relayer: account.address });
+    const wrong = await proveWithdraw({ keys: keys[1]!, tree: state.tree, note: received, amount: part, recipient: fresh, relayerFee: fee, relayer: fresh });
     const wallet = createWalletClient({ chain, account, transport: http(anvil.rpc) });
     const plynth = Object.values(dep).filter((v): v is string => typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v));
     const app = relayerApp({
@@ -262,6 +263,9 @@ describe("Hidden delivery on anvil", () => {
     const post = (b: unknown) => app.request("/withdraw", { method: "POST", body: JSON.stringify(b) });
     const body = withdrawRequest(w);
     expect((await post({ ...body, pub: { ...body.pub, recipient: dep.savingsVault } })).status).toBe(400); // Plynth contract
+    const bad = await post(withdrawRequest(wrong));
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as any).error).toContain("must bind this relayer");
     const relayerBefore = (await read(tsla(), tokenAbi, "balanceOf", [account.address])) as bigint;
     const r = await post(body);
     const j = (await r.json()) as any;

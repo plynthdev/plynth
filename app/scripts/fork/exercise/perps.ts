@@ -96,12 +96,21 @@ export async function perps(x: Ctx) {
   await r.reverts("an account's operator cannot liquidate it", A.operator, { address: aaplM, abi: PM, functionName: "liquidate", args: [A.shortT.address] }, "NotAuthorized");
 
   // ---- liquidation by a third party (borrow fee raised by the market owner to make it reachable on frozen prices)
-  await r.send("trader opens a 45x long AAPL (10k on 222 USDG)", A.trader2, { address: aaplM, abi: PM, functionName: "open", args: [true, 10_000n * U, 222n * U, 100n] });
+  // 300 USDG in, 50 bps of it to the taker fee and the open spread (audit M-3): 10k on ~250 USDG of margin, ~40x.
+  await r.send("trader opens a ~40x long AAPL (10k on 300 USDG)", A.trader2, { address: aaplM, abi: PM, functionName: "open", args: [true, 10_000n * U, 300n * U, 100n] });
   await r.reverts("a healthy position cannot be liquidated", A.liquidator, { address: aaplM, abi: PM, functionName: "liquidate", args: [A.trader2.address] }, "NotLiquidatable");
   const params = await Promise.all(["takerFeeBps", "makerFeeBps", "offHoursSpreadBps", "borrowBpsPerHour", "fundingK", "oiCapBps", "maxProfitBps", "liquidationFee"].map((f) => r.read<bigint>(aaplM, PM, f)));
   const raised = [...params];
   raised[3] = 100n; // 1%/h borrow
-  await r.send("market owner raises the AAPL borrow fee to 1%/h", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: raised });
+  // A live market's params wait the pool's 48 h timelock (audit privileged finding): propose, wait, apply.
+  await r.send("market owner proposes raising the AAPL borrow fee to 1%/h (pool timelock)", A.deployer, { address: aaplM, abi: PM, functionName: "proposeParams", args: raised });
+  await r.reverts("the raise cannot apply before the timelock", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: raised }, "TimelockActive");
+  const lock = await r.read<bigint>(pool, PP, "TIMELOCK");
+  await r.check("warp past the pool's params timelock", async () => {
+    await r.warp(lock + 1n);
+    return `chain time ${await r.now()}`;
+  });
+  await r.send("market owner applies the raised borrow fee", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: raised });
   await r.check("warp 2h: borrow eats the thin margin", async () => {
     await r.warp(2n * HOUR);
     expect(await r.read<boolean>(aaplM, PM, "isLiquidatable", [A.trader2.address]), "not liquidatable yet");
@@ -113,7 +122,7 @@ export async function perps(x: Ctx) {
     expect(got > 0n && (await pos(aaplM, A.trader2.address)).size === 0n, `reward ${got}`);
     return `position gone; liquidator earned ${Number(got) / 1e6} USDG`;
   });
-  await r.send("market owner restores the borrow fee", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: params });
+  await r.send("market owner proposes restoring the borrow fee (applies after the timelock)", A.deployer, { address: aaplM, abi: PM, functionName: "proposeParams", args: params });
   await r.send("long closes the rest", A.longT, { address: aaplM, abi: PM, functionName: "close" });
 
   // ---- LP redeem after the cooldown
@@ -179,8 +188,8 @@ export async function perps(x: Ctx) {
     expect(delta === 0n, `pair delta ${delta}`);
     return { tx: (o as { tx: Hex }).tx, assertion: `pair 0: ${Number(p.perpTokens) / 1e18} TSLA short vs equal spot; pairDelta = 0` };
   });
-  await r.check("warp 3h: the pair earns funding", async () => {
-    await r.warp(3n * HOUR);
+  await r.check("warp 12h: the pair earns funding (past the open spread it paid)", async () => {
+    await r.warp(12n * HOUR);
     const carry = await r.read<bigint>(t.basis!, abiOf("BasisSleeve"), "pairCarry", [0n]);
     expect(carry > 0n, `carry ${carry}`);
     return `pairCarry ${Number(carry) / 1e18} USD`;
@@ -211,8 +220,8 @@ export async function perps(x: Ctx) {
   const controller = key(ROLE.controller);
   const post = async (label: string) => {
     const ts = await r.now();
-    const s = await signSnapshot(controller, FORK_CHAIN_ID, mirror, t.mirrorVenue!, { positions: [], equityUsd: 0n, flowInSeen: await r.read<bigint>(t.mirrorVenue!, abiOf("MirroredPerpVenue"), "flowIn") }, ts);
-    return r.send(label, A.controller, { address: mirror, abi: abiOf("PositionMirror"), functionName: "post", args: [s.venue, s.positions, s.equityUsd, s.flowInSeen, s.ts, s.signature] }, async () => `snapshot at ${ts}`);
+    const s = await signSnapshot(controller, FORK_CHAIN_ID, mirror, t.mirrorVenue!, { positions: [], equityUsd: 0n, flowInSeen: await r.read<bigint>(t.mirrorVenue!, abiOf("MirroredPerpVenue"), "flowIn"), flowOutSeen: await r.read<bigint>(t.mirrorVenue!, abiOf("MirroredPerpVenue"), "flowOut") }, ts);
+    return r.send(label, A.controller, { address: mirror, abi: abiOf("PositionMirror"), functionName: "post", args: [s.venue, s.positions, s.equityUsd, s.flowInSeen, s.flowOutSeen, s.ts, s.signature] }, async () => `snapshot at ${ts}`);
   };
   await post("controller posts a signed PositionMirror snapshot for the off-chain venue");
   const dep = (amt: bigint) => ({
@@ -240,8 +249,10 @@ export async function perps(x: Ctx) {
     return run.out.split("\n").find((l) => l.includes("pass done")) ?? "clean";
   }, "reconciler");
   await r.external("hedge desk places an order whose fill never reaches the ledger", "hedge desk", async () => {
-    const o = await hedge.placeOrder({ underlying: tsla, side: "sell", tokens: E18 / 10n, reduceOnly: false, maxSlippageBps: 100 });
-    return { tx: o.id as Hex, assertion: "0.1 TSLA short added at the venue, not recorded" };
+    // A reduce, not an increase: increasing a short in profit restarts its minimum hold (audit M-3), which the guard
+    // sees as a NAV loss beyond the op bound and refuses.
+    const o = await hedge.placeOrder({ underlying: tsla, side: "buy", tokens: E18 / 10n, reduceOnly: true, maxSlippageBps: 100 });
+    return { tx: o.id as Hex, assertion: "0.1 TSLA of the short bought back at the venue, not recorded" };
   });
   await r.check("reconciler opens a break", async () => {
     const run = await runOnce("src/bin/treasury-reconciler.ts", ["--once"], treasuryEnv({ TREASURY_RECONCILE_CONFIG: recCfg }));

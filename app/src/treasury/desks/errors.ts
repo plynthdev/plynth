@@ -18,6 +18,9 @@ export const GUARD_CODES: Record<number, string> = {
   14: "R6_VENUE_NOT_ALLOWED",
   15: "R6_VENUE_CAP",
   16: "R6_STALE_VENUE",
+  17: "R10_PRIVATE_DESK",
+  18: "R10_PRIVATE_STALE",
+  19: "R6_DAY_LOSS",
 };
 
 export type Rejection = { code: number | null; reason: string; args?: unknown[] | undefined };

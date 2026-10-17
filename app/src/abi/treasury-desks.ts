@@ -60,10 +60,13 @@ export const accountAbi = [
 ] as const;
 
 export const guardAbi = parseAbi([
-  "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; }",
-  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; uint256 privateUsd; }",
+  "struct Pos { address underlying; uint256 notional; uint256 margin; }",
+  "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; Pos[] positions; }",
+  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; uint256 privateUsd; bool privateStale; }",
   "function snapshot(address account) view returns (Snapshot)",
   "function dayTotal(address account) view returns (uint256)",
+  "function dayLoss(address account) view returns (uint256)",
+  "function DAY_LOSS_BPS() view returns (uint256)",
   "function maxOpLossBps() view returns (uint16)",
 ]);
 

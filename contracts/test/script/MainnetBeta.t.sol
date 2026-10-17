@@ -261,7 +261,7 @@ contract MainnetBetaTest is Test {
         assertEq(Ownable(_a(json, "jitterBeacon")).owner(), owner);
         assertEq(TemplateRegistry(_a(json, "templateRegistry")).committee(), owner);
         address[] memory p = vm.parseJsonAddressArray(json, ".acceptOwnership");
-        assertEq(p.length, 10); // registry, vault, crowd, pool, trade, perp pool + 4 markets
+        assertEq(p.length, 11); // registry, vault, crowd, pool, trade, perp pool, valuer + 4 markets
         for (uint256 i; i < p.length; ++i) {
             assertEq(IOwned2(p[i]).pendingOwner(), owner);
             assertEq(IOwned2(p[i]).owner(), dep);
@@ -271,6 +271,12 @@ contract MainnetBetaTest is Test {
             assertEq(IOwned2(p[i]).owner(), owner);
             assertEq(IOwned2(p[i]).pendingOwner(), address(0));
         }
+        // The post-deploy check passes after OWNER's accepts too.
+        MainnetBeta v = new MainnetBeta();
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        vm.writeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f), json);
+        v.verifyDeployment(f);
+        vm.removeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f));
         // The deployer keeps nothing: its admin calls now revert.
         ShieldedPool pool = ShieldedPool(_a(json, "shieldedPool"));
         vm.prank(dep);
@@ -376,15 +382,21 @@ contract MainnetBetaTest is Test {
         vm.stopPrank();
     }
 
-    function test_perpOpenInterestCapIsTheMaximum() public {
+    /// v2: a conservative OI cap (audit PERP-4), the M-3 spread / minimum hold and the M-4 liquidation guards.
+    function test_perpRiskParamsAreTheV2Ones() public {
         string memory json = _mainnetDeploy();
         string[4] memory syms = ["TSLA", "AAPL", "NVDA", "SPY"];
         for (uint256 i; i < syms.length; ++i) {
             PerpMarket m = PerpMarket(_a(json, string.concat("perpMarkets.", syms[i])));
-            assertEq(m.oiCapBps(), 10_000);
+            assertEq(m.oiCapBps(), 2_000);
+            assertEq(m.openSpreadBps(), 40);
+            assertEq(m.minHoldSeconds(), 30 minutes);
+            assertEq(m.minLiquidationReward(), 1e6);
+            assertEq(m.minCollateral(), 100e6);
             assertEq(m.takerFeeBps(), 10); // everything else untouched
             assertEq(m.maxProfitBps(), 10_000);
         }
+        assertEq(PerpPool(_a(json, "perpPool")).TIMELOCK(), 48 hours);
         assertEq(PerpPool(_a(json, "perpPool")).totalSupply(), 0); // no LP seed from the deployer
     }
 
@@ -398,8 +410,10 @@ contract MainnetBetaTest is Test {
         assertFalse(vm.parseJsonBool(json, ".deployToken"));
     }
 
-    function test_registryListsTheNineStockTokens() public {
+    function test_registryListsTheFourteenStockTokens() public {
         string memory json = _mainnetDeploy();
+        assertEq(script.stocks().length, 14);
+        assertEq(StockTokenRegistry(_a(json, "stockTokenRegistry")).tokens().length, 14);
         StockTokenRegistry reg = StockTokenRegistry(_a(json, "stockTokenRegistry"));
         StockRouter router = StockRouter(_a(json, "stockRouter"));
         MainnetBeta.Stock[] memory s = script.stocks();
@@ -452,4 +466,43 @@ contract MainnetBetaTest is Test {
         assertEq(f.feeRecipient(), _a(json, "feeRouter"));
         assertEq(address(f.tiers()), _a(json, "staking"));
     }
+
+    /// v2 oracle and crowd settings: calendar on (M-1), windows end 19:30 UTC so the public fallback hour is in US
+    /// regular hours, valuer handed to OWNER, the tightened guard loss bound.
+    function test_v2OracleCrowdAndGuardSettings() public {
+        string memory json = _mainnetDeploy();
+        Valuer v = Valuer(_a(json, "valuer"));
+        assertTrue(v.marketCalendar());
+        assertEq(IOwned2(address(v)).pendingOwner(), owner);
+        uint64 g = uint64(vm.parseJsonUint(json, ".genesis"));
+        assertEq(g % 1 days, 19 hours + 30 minutes);
+        assertLe(g, block.timestamp);
+        assertGt(g + 1 days, block.timestamp);
+        assertEq(CrowdBuy(_a(json, "crowdBuy")).GENESIS(), g);
+        assertEq(PolicyGuardLike(_a(json, "policyGuard")).maxOpLossBps(), 50);
+    }
+
+    /// The post-deploy check fails on a mismatch: a feed swapped after the delay is caught.
+    function test_verifyDeploymentFailsOnAFeedMismatch() public {
+        string memory json = _mainnetDeploy();
+        _acceptAll(json);
+        StockTokenRegistry reg = StockTokenRegistry(_a(json, "stockTokenRegistry"));
+        MainnetBeta.Stock[] memory s = script.stocks();
+        vm.prank(owner);
+        reg.list(s[0].token, s[1].feed, true);
+        vm.warp(block.timestamp + 48 hours);
+        vm.prank(owner);
+        reg.list(s[0].token, s[1].feed, true);
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", f);
+        vm.writeFile(path, json);
+        MainnetBeta v = new MainnetBeta();
+        vm.expectRevert(abi.encodeWithSelector(MainnetBeta.HandoffIncomplete.selector, s[0].token, "TSLA feed"));
+        v.verifyDeployment(f);
+        vm.removeFile(path);
+    }
+}
+
+interface PolicyGuardLike {
+    function maxOpLossBps() external view returns (uint16);
 }

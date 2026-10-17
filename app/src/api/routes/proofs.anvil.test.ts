@@ -73,7 +73,7 @@ async function deposit(user: Address, keys: VaultKeys, raw: bigint) {
   await send(user, depositTx(pool(), usdg(), raw, keys));
 }
 async function insertAll() {
-  await warp(3601n);
+  await warp(7201n); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: batches under MIN_INSERT_BATCH (4) may be inserted
   await send(relayer, insertPendingTx(pool(), 100n));
 }
 const app = (d = dep) => createApp({ chainId: 31337, pub, db: undefined as any, dep: apiDeployment(d as any, 31337), blockTimes: new BlockTimes(pub) });

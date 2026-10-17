@@ -35,6 +35,10 @@ contract TierWiringTest is TreasuryFixture {
         policy.activate();
     }
 
+    function _wireMockPeriodClose() internal pure override returns (bool) {
+        return false;
+    }
+
     function _newClose(ITierSource tiers) internal returns (PeriodClose pc) {
         pc = new PeriodClose(account, IERC20Metadata(address(usdg)), makeAddr("feeRouter"), tiers);
         vm.prank(board);

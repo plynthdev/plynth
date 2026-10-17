@@ -6,7 +6,8 @@
 //   private sleeve notes (shield order = tree order): AAPL 250 | AAPL 200 | NVDA 300  -> $120k at $200 / $100
 //   public book after the shields: USDG 600k (cash) + AAPL 1,550 + NVDA 200 (equity)  -> $930k
 //   policy bands: cash 40-70%, equity 30-60%, basis 0-0; the sleeve counts in equity (band 1).
-// Also writes a withdraw proof that unshields the AAPL 200 note in full to the account (relayer fee 0).
+// Also writes a withdraw proof that unshields the AAPL 200 note in full to the sleeve (relayer fee 0); the sleeve
+// forwards it to the account (PrivateSleeve.unshield requires recipient == the sleeve, audit L-10).
 // Hex is written without 0x and field elements in decimal so public-guard's key pattern does not fire.
 import { writeFileSync } from "node:fs";
 import { keccak256 } from "viem";
@@ -23,6 +24,7 @@ const E18 = 10n ** 18n;
 export const AAPL = 0x2e234dae75c793f67a35089c9d99245e1c58470bn;
 export const NVDA = 0xf62849f9a0b5bf2913b396098f7c7019b51a820an;
 export const ACCOUNT = 0x1af7f588a501ea2b5bb3feefa744892aa2cf00e6n;
+export const SLEEVE = 0x22b24e3bba3087f537d2e35f8e2f1e9a257eaa98n; // PrivateSleeveTest's sleeve: the unshield recipient
 const POLICY_HASH = BigInt("0x" + "a6ecf73b7cb874b7c1ee398477676bda" + "6f471522d16128a6d1cbaaf67ca194e9"); // TreasuryPolicy.current() hash
 
 const SECRET = 0x7a11n; // test spending secret (the controller's derived key in production)
@@ -90,7 +92,7 @@ if (import.meta.main) {
     change_commitment: s(0n), // a full unshield: zero change is commitment 0, no leaf
     asset_id: s(AAPL),
     amount: s(200n * E18),
-    recipient: s(ACCOUNT),
+    recipient: s(SLEEVE),
     relayer_fee: s(0n),
     ext_hash: s(BigInt(keccak256("0x")) % P), // the sleeve's unshield publishes no encrypted change
     in_amount: s(200n * E18),
@@ -112,6 +114,7 @@ if (import.meta.main) {
   const d = (x: bigint) => x.toString();
   const fixture = {
     account: "0x" + ACCOUNT.toString(16).padStart(40, "0"),
+    sleeve: "0x" + SLEEVE.toString(16).padStart(40, "0"),
     assets: [AAPL, NVDA].map((a) => "0x" + a.toString(16).padStart(40, "0")),
     ownerPk: d(pk),
     root: d(tree.root),

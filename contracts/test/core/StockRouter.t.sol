@@ -132,7 +132,11 @@ contract StockRouterTest is Test {
 
     function test_R3_minOutAppliesMultiplierOnceWhenFeedIsPerShare() public {
         vm.prank(board);
+        reg.list(address(tok), address(feed), false); // a listed token's feed/flag change waits 48 h (ChangeDelay)
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
+        vm.prank(board);
         reg.list(address(tok), address(feed), false);
+        vm.warp(block.timestamp - 48 hours);
         tok.setMultiplier(1.25e18); // token = 1.25 shares -> $312.5
         (uint256 minOut,) = router.quoteMinOut(address(tok), 312.5e6, true, 0);
         assertEq(minOut, 1e18);

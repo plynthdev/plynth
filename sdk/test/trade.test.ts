@@ -35,12 +35,14 @@ import {
   verifyCircuitProof,
   extHashOf,
   encodeTwoNotes,
+  swapExtData,
   type OwnedNote,
 } from "../src/vault";
 
 const STOCK = getAddress("0x5fbdb2315678afecb367f032d93f642f64180aa3");
 const USDG = getAddress("0xe7f1725e7734ce288f8367e1bb143e90bb3f0512");
 const TRADE = getAddress("0x0000000000000000000000000000000000007a0e");
+const RELAYER = getAddress("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc");
 const sig = (b: string) => `0x${b.repeat(65)}` as Hex;
 const alice = () => deriveVaultKeys(sig("a1"));
 const bob = () => deriveVaultKeys(sig("b0"));
@@ -104,20 +106,24 @@ describe("v2 note model", () => {
 describe("swap and settle proofs", () => {
   test("private sell: proof verifies, change opens for the owner, output is a partial note", async () => {
     const { tree, note } = seeded(STOCK, 10n ** 18n);
-    const s = await proveSwap({ keys: alice(), tree, note, amountIn: 4n * 10n ** 17n, assetOut: USDG, minOut: 99_000_000n, deadline: 1_800_000_000n, relayerFee: 10n ** 15n });
+    const s = await proveSwap({ keys: alice(), tree, note, amountIn: 4n * 10n ** 17n, assetOut: USDG, minOut: 99_000_000n, deadline: 1_800_000_000n, relayerFee: 10n ** 15n, relayer: RELAYER });
     expect(s.pub).toMatchObject({ assetIn: STOCK, assetOut: USDG, amountIn: 4n * 10n ** 17n, relayerFee: 10n ** 15n, minOut: 99_000_000n, deadline: 1_800_000_000n });
     expect(s.pub.root).toBe(toBytes32(tree.root()));
     expect(s.pub.nullifier).toBe(toBytes32(nullifierOf(note.commitment, alice().spendingSecret, 1n)));
     expect(BigInt(s.pub.outPartial)).toBe(partialCommitmentOf(BigInt(USDG), alice().ownerPk, s.out.blinding));
     expect(decryptNote(s.encryptedChange, alice().viewingSecret)).toMatchObject({ asset: STOCK, raw: 6n * 10n ** 17n });
     expect(decryptNoteAny(s.encryptedOut, alice().viewingSecret)).toMatchObject({ asset: USDG, version: 2, blinding: s.out.blinding });
-    const ext = extHashOf(encodeTwoNotes(s.encryptedChange, s.encryptedOut));
+    const ext = extHashOf(swapExtData(s.encryptedChange, s.encryptedOut, s.pub.relayerFee, RELAYER));
     const inputs = [s.pub.root, s.pub.nullifier, s.pub.changeCommitment, BigInt(STOCK), s.pub.amountIn, s.pub.relayerFee, BigInt(USDG), s.pub.minOut, s.pub.outPartial, s.pub.deadline, ext].map((x) => BigInt(x));
     expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(true);
     inputs[7] = 1n; // a relayer lowering minOut
     expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
     inputs[7] = s.pub.minOut;
-    inputs[10] = extHashOf(encodeTwoNotes("0x00", s.encryptedOut)); // S7: a relayer replacing the encrypted change
+    inputs[10] = extHashOf(swapExtData("0x00", s.encryptedOut, s.pub.relayerFee, RELAYER)); // S7: a relayer replacing the encrypted change
+    expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
+    inputs[10] = extHashOf(swapExtData(s.encryptedChange, s.encryptedOut, s.pub.relayerFee, TRADE)); // L-9: a copier submitting it
+    expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
+    inputs[10] = extHashOf(encodeTwoNotes(s.encryptedChange, s.encryptedOut)); // the fee-less encoding
     expect(await verifyCircuitProof(swapArtifact, s.proof, inputs)).toBe(false);
 
     const tx = swapTx(TRADE, s, 150);
@@ -151,6 +157,7 @@ describe("swap and settle proofs", () => {
     await expect(proveSwap({ ...base, amountIn: 1001n })).rejects.toThrow(/cannot swap/);
     await expect(proveSwap({ ...base, amountIn: 0n })).rejects.toThrow(/cannot swap/);
     await expect(proveSwap({ ...base, amountIn: 10n, relayerFee: 10n })).rejects.toThrow(/relayer fee/);
+    await expect(proveSwap({ ...base, amountIn: 10n, relayerFee: 1n })).rejects.toThrow(/relayer's address/);
     await expect(proveSwap({ ...base, amountIn: 10n, assetOut: STOCK })).rejects.toThrow(/same asset/);
     await expect(proveSettle({ keys: alice(), tree, note })).rejects.toThrow(/only v2/);
     await expect(proveSwap({ ...base, amountIn: 10n, note: { ...note, spent: true } })).rejects.toThrow(/already spent/);

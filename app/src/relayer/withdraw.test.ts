@@ -90,7 +90,10 @@ describe("POST /withdraw", () => {
     expect((await s.post(req({ recipient: POOL }))).status).toBe(400);
     const sim = await s.post(req());
     expect(sim.status).toBe(400);
-    expect(((await sim.json()) as any).error).toContain("InvalidProof");
+    const simJson = (await sim.json()) as any;
+    expect(simJson.error).toContain("InvalidProof");
+    // L-9: a fee-paying proof that fails tells the user which address the proof must bind
+    expect(simJson.error).toContain("must bind this relayer: 0x0000000000000000000000000000000000000001");
     expect(s.sent).toHaveLength(0);
   });
 

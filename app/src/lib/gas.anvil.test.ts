@@ -30,7 +30,7 @@ beforeAll(async () => {
   await kit.setup(mkdtempSync(join(tmpdir(), "plynth-gas-")), 1_000n * E6);
   const d = kit.deployer.address;
   const tsla = kit.stocks.find((s) => s.sym === "mTSLA")!;
-  const pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n]);
+  const pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n, 172_800n]);
   market = await kit.deploy("PerpMarket.sol", "PerpMarket", [pool, kit.a.valuer, tsla.token, d]);
   await kit.send(pool, "PerpPool.sol", "PerpPool", "addMarket", [market]);
   // Same parameters as t2: skew funding (fundingK 1e13), 10 bps taker fee.

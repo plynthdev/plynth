@@ -86,7 +86,7 @@ contract ThresholdVerifierTest is Test {
     }
 
     function _insertAll() internal {
-        vm.warp(block.timestamp + 1 hours + 1);
+        vm.warp(block.timestamp + 2 hours + 1); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: any batch size
         pool.insertPending(100);
     }
 

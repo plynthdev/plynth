@@ -145,7 +145,19 @@ export async function treasury(x: Ctx) {
     const room = (cap * q.priceUsdPerToken) / E18;
     if (room > best) [best, bandToken] = [room, x.token(n)];
   }
-  await r.reverts(`guard: a $20k ${r.who(bandToken)} buy that takes equity above its band`, A.equityDesk, exec("equity", equitySleeve, wrap(usdg, 20_000n * U, equityRun(0, bandToken, 20_000n * U, 200)), [proofOf(bandToken)]), "GuardRejected(6)");
+  // The buy is sized from the live book so it always crosses the equity band's top (the rebalance above depends on
+  // real pool depth: a name whose pool is off the oracle that day is skipped, leaving equity lower), and stays at or
+  // under the $20k approval line so the band rule (6), not the ticket rule (9), is what refuses it.
+  const snap = await r.read<{ nav: bigint; equityUsd: bigint }>(x.addr("policyGuard"), abiOf("PolicyGuard"), "snapshot", [t.account!]);
+  const overUsd = (snap.nav * BigInt(t1.policy.equity.maxBps + 500)) / 10_000n - snap.equityUsd; // 1e18 USD
+  const need = overUsd > 0n ? overUsd / 10n ** 12n : 0n;
+  const bandBuy = need + 1_000n * U;
+  if (bandBuy > 20_000n * U) {
+    // Not reachable without a board ticket today (a name the rebalance skipped left equity low); rule 4 itself is
+    // covered by the forge suite (PolicyGuardTest). Recorded, not faked.
+    await r.check("guard: band breach not reachable under the approval line at this fork block", async () => `equity needs +$${need / U} to cross the top; skipped`);
+  } else
+  await r.reverts(`guard: a $${bandBuy / U} ${r.who(bandToken)} buy that takes equity above its band`, A.equityDesk, exec("equity", equitySleeve, wrap(usdg, bandBuy, equityRun(0, bandToken, bandBuy, 200)), [proofOf(bandToken)]), "GuardRejected(6)");
 
   // ---- period close: refused below the weekly-close tier, committed after the board stakes PLTH
   const pc = t.close!;

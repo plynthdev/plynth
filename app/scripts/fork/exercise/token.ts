@@ -87,6 +87,11 @@ export async function token(x: Ctx) {
     await r.reverts("only the treasury's board may file a claim", A.outsider, { address: ins, abi: IP, functionName: "fileClaim", args: [t.account!, 1_000n * E18, keccak256(toBytes("x"))] }, "NotBoard");
     let id = await r.read<bigint>(ins, IP, "claimCount");
     await r.send("board files a $1,000 policy-bug claim for its treasury", A.deployer, { address: ins, abi: IP, functionName: "fileClaim", args: [t.account!, 1_000n * E18, keccak256(toBytes("fork run: guard let a breach through (drill)"))] });
+    await r.reverts("the committee cannot approve inside the public review delay", A.committee, { address: ins, abi: IP, functionName: "approveClaim", args: [id] }, "InReview");
+    await r.check("warp past the claim's review delay (3 days)", async () => {
+      await r.warp(3n * DAY + 60n);
+      return `chain time ${await r.now()}`;
+    });
     await r.send("committee approves the claim (not paid yet: the controller must attest)", A.committee, { address: ins, abi: IP, functionName: "approveClaim", args: [id] }, async () => {
       const c = await r.read<{ paid: bigint; status: number }>(ins, IP, "claim", [id]);
       expect(c.paid === 0n, `paid ${c.paid}`);

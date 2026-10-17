@@ -207,6 +207,15 @@ export async function crowd(x: Ctx) {
       return { tx: e.transactionHash, assertion: `Committed(key(${r.who(a)}, ${wStart}))` };
     });
   }
+  // The current (uncommitted) window falls back to public execution from windowEnd - GRACE (audit L-1): if real time
+  // already sits in that last hour, move to the committed next window so the timing checks below are deterministic.
+  const grace = await r.read<bigint>(beacon, x.abi("JitterBeacon"), "GRACE");
+  if ((await r.now()) >= wStart - grace) {
+    await r.check("warp to the committed window (now is inside the current window's public fallback hour)", async () => {
+      await r.warp(wStart + 1n - (await r.now()));
+      return `chain time ${await r.now()}`;
+    });
+  }
   await r.reverts("execute before the window's beacon time reverts (keeper)", A.keeper, { address: crowd, abi: C, functionName: "execute", args: [TSLA] }, "TooEarly");
   await r.reverts("an outsider cannot execute a book (keeper-only until windowEnd - GRACE)", A.outsider, { address: crowd, abi: C, functionName: "execute", args: [TSLA] }, "NotKeeper");
 

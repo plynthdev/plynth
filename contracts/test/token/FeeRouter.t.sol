@@ -227,6 +227,10 @@ contract FeeRouterTest is TokenFixture {
     function test_perPushCapCarriesTheRest() public {
         vm.prank(owner);
         router.setBuyParams(100, 100e6);
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
+        vm.prank(owner);
+        router.setBuyParams(100, 100e6);
+        vm.warp(block.timestamp - 48 hours);
         _lpDeposit(1e6);
         _fees(1000e6);
         _push();
@@ -340,6 +344,27 @@ contract FeeRouterTest is TokenFixture {
         _push();
         assertEq(staking.queued(1), 0);
         assertEq(router.buyCarry(), 500e6);
+    }
+
+    /// Audit privileged finding: the deploy wires the keeper once at once; a later rotation and any buy-param change
+    /// wait 48 h in public.
+    function test_PRIV_feeRouterKeeperAndBuyParamsAreDelayedAfterWiring() public {
+        address k1 = makeAddr("k1");
+        address k2 = makeAddr("k2");
+        vm.startPrank(owner);
+        router.setKeeper(k1);
+        assertEq(router.keeper(), k1);
+        router.setKeeper(k2);
+        assertEq(router.keeper(), k1, "keeper rotated instantly");
+        uint16 slip = router.maxSlippageBps();
+        router.setBuyParams(slip + 1, 1);
+        assertEq(router.maxSlippageBps(), slip, "buy params changed instantly");
+        vm.warp(block.timestamp + 48 hours);
+        router.setKeeper(k2);
+        router.setBuyParams(slip + 1, 1);
+        vm.stopPrank();
+        assertEq(router.keeper(), k2);
+        assertEq(router.maxSlippageBps(), slip + 1);
     }
 
     function test_S3_onlyTheKeeperPushesAndObserves() public {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -7,6 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IPoolManager, IUnlockCallback, PoolKey, SwapParams, V4Constants} from "../interfaces/IUniswapV4.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 interface IStakingRewards {
     function notifyReward(address token, uint256 amount) external;
@@ -49,7 +50,7 @@ interface IInsuranceFees {
 /// Whatever is not spent (over the cap, no observation, or a buy that would breach the bound, which is
 /// skipped instead of reverting the push) is carried in `buyCarry` for the next push and is never re-split.
 /// The router keeps no other balance between pushes (besides the authors' set-aside USDG).
-contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
+contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback, ChangeDelay {
     using SafeERC20 for IERC20;
     using V4Constants for int256;
 
@@ -79,6 +80,9 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     uint256 public buyCarry; // USDG earmarked for buys, not yet spent
     uint64 public lastPush;
     address public keeper;
+    /// The deploy wires the real keeper and the template source once (at once); every later change waits CHANGE_DELAY.
+    bool public keeperWired;
+    bool public templateWired;
     uint160 public obsSqrtPriceX96; // pool price recorded by observe()
     uint64 public obsAt;
 
@@ -154,6 +158,8 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
     /// treasury's fee (at most 20%). `source` zero turns it off.
     function setTemplateFees(ITemplateFeeSource source, uint16 bps) external onlyOwner {
         if (bps > MAX_AUTHOR_BPS || (address(source) == address(0) && bps != 0)) revert BadParams();
+        if (templateWired && !_delayed()) return;
+        templateWired = true;
         templateSource = source;
         authorBps = bps;
         emit TemplateFeesSet(address(source), bps);
@@ -161,12 +167,22 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback {
 
     function setKeeper(address keeper_) external onlyOwner {
         if (keeper_ == address(0)) revert ZeroAddress();
+        if (keeperWired && !_delayed()) return;
+        keeperWired = true;
         keeper = keeper_;
         emit KeeperSet(keeper_);
     }
 
+    /// Waits CHANGE_DELAY (48 h) in public: the slippage bound protects the buyback from being sandwiched.
     function setBuyParams(uint16 maxSlippageBps_, uint256 perPushCap_) external onlyOwner {
+        if (maxSlippageBps_ > MAX_SLIPPAGE_BPS || perPushCap_ == 0) revert BadParams();
+        if (!_delayed()) return;
         _setBuyParams(maxSlippageBps_, perPushCap_);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     // ---------------------------------------------------------------- template authors

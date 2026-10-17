@@ -78,11 +78,16 @@ abstract contract CrowdBuyBase is Test {
         return 1 hours;
     }
 
+    /// Valuer staleness (the mainnet deploy uses 26 h; most suites keep a tight 2 h).
+    function _maxStaleness() internal pure virtual returns (uint256) {
+        return 2 hours;
+    }
+
     function setUp() public virtual {
         vm.warp(T0);
         usdg = new MockUSDG();
         registry = new StockTokenRegistry(address(this));
-        valuer = new Valuer(registry, 2 hours);
+        valuer = new Valuer(registry, _maxStaleness());
         tokA = new HookStock("TSLA");
         tokB = new HookStock("NVDA");
         feedA = new MockFeed(8, int256(PRICE_A / 1e10), "A");
@@ -161,6 +166,7 @@ abstract contract CrowdBuyBase is Test {
     function _joinA(address user, uint256 amount) internal {
         (address[] memory a, uint16[] memory w) = _one(address(tokA));
         _prepare(user, a, w, amount);
+        vm.prank(user);
         crowd.join(user);
     }
 

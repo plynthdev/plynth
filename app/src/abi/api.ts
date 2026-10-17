@@ -21,7 +21,7 @@ export const vaultAbi = parseAbi([
 ]);
 
 export const crowdAbi = parseAbi([
-  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; }",
+  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; uint64 crowdSince; }",
   "function openBook(address asset) view returns (uint256 bookId, Book b)",
   "function book(address asset, uint256 bookId) view returns (Book)",
   "function allocationOf(address asset, uint256 bookId, address user) view returns (uint256)",

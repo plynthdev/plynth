@@ -11,7 +11,10 @@
 // without one is not relayed; audit M-8) -> one in flight per
 // nullifier -> nullifier unspent and root known (on-chain reads) -> eth_call simulation -> send -> { txHash }.
 // The proof binds recipient, amount, fee and the encrypted change (ext_hash), so the relayer cannot redirect
-// funds or strand the change note by swapping its ciphertext; it keeps pub.relayerFee.
+// funds or strand the change note by swapping its ciphertext; it keeps pub.relayerFee. A fee-paying proof also
+// binds this relayer's sending address (GET /health `relayer`; SDK proveWithdraw({ relayer })): only it can
+// land the proof, so nobody copying the request from the mempool takes the fee (audit L-9). A proof bound to
+// another address fails the simulation (InvalidProof) and is refused before anything is sent.
 import { claimDomain, claimTypes, type ClaimMessage } from "@plynth/sdk/stealth";
 import type { PublicSwap, PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";
@@ -285,7 +288,10 @@ export function relayerApp(d: RelayerDeps) {
       if (await w.nullifierSpent(a.pub.nullifier)) return c.json({ error: "note already spent" }, 409);
       if (!(await w.isKnownRoot(a.pub.root))) return c.json({ error: "unknown or expired root: sync and prove again" }, 400);
       const sim = await w.simulate(a);
-      if (!sim.ok) return c.json({ error: `simulation reverted: ${sim.error}` }, 400);
+      if (!sim.ok) {
+        const hint = sim.error === "InvalidProof" && a.pub.relayerFee !== 0n ? ` (a fee-paying proof must bind this relayer: ${d.relayer})` : "";
+        return c.json({ error: `simulation reverted: ${sim.error}${hint}` }, 400);
+      }
       const txHash = await w.send(a);
       log(`withdraw sent ${txHash}`);
       return c.json({ txHash });

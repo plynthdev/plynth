@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -9,6 +9,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IPoolManager, IUnlockCallback, PoolKey, SwapParams, V4Constants} from "../interfaces/IUniswapV4.sol";
 import {StockTokenRegistry} from "./StockTokenRegistry.sol";
 import {Valuer} from "./Valuer.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 /// Buys and sells canonical Stock Tokens for USDG through one Uniswap v4 pool per token.
 /// Exact-input swaps only. The minimum output comes from the oracle (Valuer), never from the pool,
@@ -16,7 +17,9 @@ import {Valuer} from "./Valuer.sol";
 /// USDG is valued at exactly 1 USD (the USDG/USD feed has sat at 1.0001; depeg handling is out of scope).
 /// The router never keeps a balance: input is pulled from the caller and output goes to `recipient`
 /// in the same transaction; a partial fill reverts so no input can be left behind.
-contract StockRouter is Ownable, IUnlockCallback {
+/// Admin: setting a token's first pool applies at once; replacing a pool waits CHANGE_DELAY (48 h) in public, so the
+/// owner cannot switch a token to a pool it controls under users' pending trades.
+contract StockRouter is Ownable, IUnlockCallback, ChangeDelay {
     using SafeERC20 for IERC20;
     using V4Constants for int256;
 
@@ -72,8 +75,16 @@ contract StockRouter is Ownable, IUnlockCallback {
         bool ok = (key.currency0 == address(usdg) && key.currency1 == stockToken)
             || (key.currency0 == stockToken && key.currency1 == address(usdg));
         if (!ok || stockToken == address(0)) revert BadPoolKey();
+        PoolKey memory cur = _pools[stockToken];
+        if (keccak256(abi.encode(cur)) == keccak256(abi.encode(key))) return; // unchanged: nothing to delay
+        if ((cur.currency0 != address(0) || cur.currency1 != address(0)) && !_delayed()) return;
         _pools[stockToken] = key;
         emit PoolSet(stockToken, keccak256(abi.encode(key)));
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     function poolOf(address stockToken) external view returns (PoolKey memory) {

@@ -33,7 +33,11 @@ contract ValuerTest is Test {
 
     function test_embeddedFeedNeverDoubleApplies() public {
         vm.prank(board);
+        reg.list(address(tok), address(feed), true); // a listed token's feed/flag change waits 48 h (ChangeDelay)
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
+        vm.prank(board);
         reg.list(address(tok), address(feed), true);
+        vm.warp(block.timestamp - 48 hours);
         tok.setUiMultiplier(1.5e18);
         assertEq(valuer.quote(address(tok)).priceUsdPerToken, 250e18);
     }

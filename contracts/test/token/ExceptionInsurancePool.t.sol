@@ -7,6 +7,39 @@ import {ExceptionInsurancePool} from "../../src/token/ExceptionInsurancePool.sol
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 
+/// A contract that looks like a treasury to the pool: its "board" and its policy's "controller" are one attacker.
+contract FakeTreasury {
+    address public board;
+    FakePolicy public policy;
+
+    constructor(address attacker) {
+        board = attacker;
+        policy = new FakePolicy(attacker);
+    }
+}
+
+contract FakePolicy {
+    address immutable controller;
+
+    constructor(address c) {
+        controller = c;
+    }
+
+    function current() external view returns (TreasuryPolicy.Policy memory p, bytes32, uint32) {
+        p.controller = controller;
+        return (p, bytes32(0), 1);
+    }
+}
+
+/// Stands in for the TreasuryFactory's `isTreasury`.
+contract MockTreasuryRegistry {
+    mapping(address => bool) public isTreasury;
+
+    function set(address a, bool on) external {
+        isTreasury[a] = on;
+    }
+}
+
 contract ExceptionInsurancePoolTest is TreasuryFixture {
     ExceptionInsurancePool pool;
     address committee = makeAddr("committee");
@@ -18,6 +51,23 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         super.setUp();
         pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
         pool.bindFeeRouter(address(this)); // this test plays the FeeRouter
+        registry_ = new MockTreasuryRegistry();
+        registry_.set(address(account), true);
+        pool.bindTreasuryFactory(address(registry_));
+        periodClose.set(4e33); // a large period-start NAV: the per-claim cap does not bind in the older tests
+    }
+
+    MockTreasuryRegistry registry_;
+
+    /// Past the claim's review period (the committee may approve from then on).
+    function _reviewed(uint256 id) internal {
+        uint256 at = pool.claim(id).filedAt + pool.REVIEW_DELAY();
+        if (block.timestamp < at) vm.warp(at);
+    }
+
+    /// Router fees vest into the share price over FEE_VESTING (L-8): let them.
+    function _vest() internal {
+        vm.warp(block.timestamp + pool.FEE_VESTING());
     }
 
     /// Router fees (this contract is the bound FeeRouter).
@@ -35,12 +85,18 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         vm.stopPrank();
     }
 
+    function _fileNow(uint256 lossUsd) internal returns (uint256 id) {
+        vm.prank(board);
+        id = pool.fileClaim(account, lossUsd, EVIDENCE);
+    }
+
     function _file(uint256 lossUsd) internal returns (uint256 id) {
         vm.prank(board);
         id = pool.fileClaim(account, lossUsd, EVIDENCE);
     }
 
     function _approveBoth(uint256 id) internal {
+        _reviewed(id);
         vm.prank(committee);
         pool.approveClaim(id);
         vm.prank(controller);
@@ -62,11 +118,73 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         assertEq(uint8(c.status), uint8(ExceptionInsurancePool.Status.Filed));
     }
 
+    // ------------------------------------------------------------ L-7: who may claim, how much, when
+
+    /// L-7: any contract with `board()` and `policy().current().controller` could file, its own "controller"
+    /// attested the policy bug, and nothing capped the amount: one committee slip paid out the whole pool, at once.
+    function test_poc_claimNeedsFactoryTreasuryCapAndReview() public {
+        _lp(lp2, 100_000e6);
+        address attacker = makeAddr("attacker");
+        FakeTreasury fake = new FakeTreasury(attacker);
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.NotATreasury.selector, address(fake)));
+        pool.fileClaim(TreasuryAccount(payable(address(fake))), 100_000e18, EVIDENCE);
+
+        periodClose.set(0); // the fixture treasury's NAV basis is its live $1M
+        assertEq(pool.claimCapUsd(account), 250_000e18, "25% of the $1M NAV");
+        vm.prank(board);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.ClaimTooLarge.selector, 250_000e18));
+        pool.fileClaim(account, 250_000e18 + 1, EVIDENCE);
+
+        uint256 id = _fileNow(1000e18);
+        uint64 at = uint64(block.timestamp + pool.REVIEW_DELAY());
+        assertEq(pool.REVIEW_DELAY(), 3 days);
+        vm.prank(committee);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.InReview.selector, at));
+        pool.approveClaim(id);
+        vm.warp(at);
+        vm.prank(committee);
+        pool.approveClaim(id);
+    }
+
+    function test_unboundFactoryRefusesEveryClaim() public {
+        ExceptionInsurancePool fresh = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
+        vm.prank(board);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.NotATreasury.selector, address(account)));
+        fresh.fileClaim(account, 1e18, EVIDENCE);
+    }
+
+    function test_bindTreasuryFactoryOnceByDeployer() public {
+        ExceptionInsurancePool fresh = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
+        vm.prank(stranger);
+        vm.expectRevert(ExceptionInsurancePool.NotDeployer.selector);
+        fresh.bindTreasuryFactory(address(registry_));
+        vm.expectRevert(ExceptionInsurancePool.ZeroAddress.selector);
+        fresh.bindTreasuryFactory(address(0));
+        fresh.bindTreasuryFactory(address(registry_));
+        assertEq(fresh.treasuryFactory(), address(registry_));
+        vm.expectRevert(ExceptionInsurancePool.AlreadyDone.selector);
+        fresh.bindTreasuryFactory(stranger);
+    }
+
+    function test_claimCapUsesTheLargerOfLiveAndPeriodStartNav() public {
+        periodClose.set(2_000_000e18); // the period started at $2M; the treasury now holds $1M
+        assertEq(pool.claimCapUsd(account), 500_000e18);
+        periodClose.set(10e18);
+        assertEq(pool.claimCapUsd(account), 250_000e18);
+    }
+
+    function test_reviewDelayIsShortOnShortDelayPools() public {
+        ExceptionInsurancePool fast = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 15 minutes);
+        assertEq(fast.REVIEW_DELAY(), 15 minutes);
+    }
+
     // ------------------------------------------------------------ both approvals
 
     function test_committeeAloneDoesNotPay() public {
         _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
+        _reviewed(id);
         vm.prank(committee);
         pool.approveClaim(id);
         assertEq(uint8(pool.claim(id).status), uint8(ExceptionInsurancePool.Status.Filed));
@@ -87,6 +205,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         uint256 id = _file(1000e18);
         vm.prank(controller);
         pool.attest(id, true);
+        _reviewed(id);
         vm.prank(committee);
         pool.approveClaim(id); // order does not matter
         assertEq(uint8(pool.claim(id).status), uint8(ExceptionInsurancePool.Status.Paid));
@@ -97,6 +216,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     function test_marketMoveAttestationRejects() public {
         _lp(lp2, 10_000e6); // LP capital backs the claims
         uint256 id = _file(1000e18);
+        _reviewed(id);
         vm.prank(committee);
         pool.approveClaim(id);
         vm.prank(controller);
@@ -127,6 +247,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
 
     function test_doubleApprovalReverts() public {
         uint256 id = _file(1e18);
+        _reviewed(id);
         vm.startPrank(committee);
         pool.approveClaim(id);
         vm.expectRevert(ExceptionInsurancePool.AlreadyDone.selector);
@@ -213,8 +334,69 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
     function test_feesRaiseShareValue() public {
         _lp(lp, 1000e6);
         _fund(100e6);
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 1000e6, 1, "fees vest, they do not jump");
+        _vest();
         uint256 s = pool.sharesOf(lp);
         assertApproxEqAbs(pool.previewRedeem(s), 1100e6, 1);
+    }
+
+    /// L-8: fee income could be captured just in time: deposit right before the router's depositFees, request
+    /// the withdrawal right after, and the fees were mostly the newcomer's (no warm-up, unlike staking).
+    function test_poc_justInTimeDepositCapturesNoFees() public {
+        _lp(lp, 10_000e6); // the incumbent LP
+        address jit = makeAddr("jit");
+        uint256 s = _lp(jit, 1_000_000e6); // right before the fees
+        _fund(10_000e6);
+        vm.prank(jit);
+        pool.requestWithdraw(s); // right after
+        vm.warp(block.timestamp + pool.WITHDRAW_DELAY());
+        vm.prank(jit);
+        uint256 out = pool.withdraw();
+        assertLe(out, 1_000_000e6 + 1, "the just-in-time LP gains ~0");
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 20_000e6, 2, "the fees are the incumbent's");
+    }
+
+    function test_feesVestLinearly() public {
+        _lp(lp, 10_000e6);
+        _fund(1_000e6);
+        assertEq(pool.unvestedFees(), 1_000e6);
+        vm.warp(block.timestamp + pool.FEE_VESTING() / 2);
+        assertApproxEqAbs(pool.unvestedFees(), 500e6, 1);
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 10_500e6, 2);
+        _fund(1_000e6); // a new fee restarts the clock for what is still unvested
+        assertApproxEqAbs(pool.unvestedFees(), 1_500e6, 1);
+        _vest();
+        assertEq(pool.unvestedFees(), 0);
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 12_000e6, 2);
+    }
+
+    /// A newcomer pays for fees still vesting (they are the incumbents'); a leaver leaves its unvested share.
+    function test_newcomerCannotBuyIntoUnvestedFees() public {
+        _lp(lp, 10_000e6);
+        _fund(10_000e6);
+        uint256 s2 = _lp(lp2, 10_000e6); // right after the fee
+        _vest();
+        assertApproxEqAbs(pool.previewRedeem(s2), 10_000e6, 2, "the newcomer got none of the earlier fee");
+        assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 20_000e6, 2);
+    }
+
+    function test_leaverLeavesUnvestedFeesToStayers() public {
+        _lp(lp, 10_000e6);
+        uint256 s2 = _lp(lp2, 10_000e6);
+        _fund(2_000e6);
+        _requestAll(lp); // at once: its 1,000 of fees has not vested
+        assertApproxEqAbs(pool.pendingValueOf(lp), 10_000e6, 1);
+        _vest();
+        assertApproxEqAbs(pool.previewRedeem(s2), 12_000e6, 2, "the stayer gets the leaver's unvested share");
+    }
+
+    function test_unvestedFeesReturnWhenNoLpIsLeft() public {
+        _lp(lp, 10_000e6);
+        _fund(1_000e6);
+        uint256 routerBefore = usdg.balanceOf(address(this));
+        _requestAll(lp);
+        assertEq(usdg.balanceOf(address(this)) - routerBefore, 1_000e6, "nobody is left to vest them to");
+        assertEq(pool.unvestedFees(), 0);
     }
 
     function test_queuedOwedNotCountedForLps() public {
@@ -232,6 +414,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         _fund(10_000e6); // attacker "donates" via fees
         uint256 victimShares = _lp(lp2, 10_000e6);
         assertGt(victimShares, 0);
+        _vest();
         assertApproxEqRel(pool.previewRedeem(victimShares), 10_000e6, 0.001e18);
     }
 
@@ -254,6 +437,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         vm.stopPrank();
 
         _fund(10_000e6); // 2,000 to the claim, 8,000 free: all of it belongs to the existing LP
+        _vest();
         assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 8_000e6, 10);
         uint256 s = _lp(lp2, 8_000e6); // once the queue is clear, deposits are fair again
         assertApproxEqAbs(pool.previewRedeem(s), 8_000e6, 10);
@@ -319,6 +503,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         uint256 s2 = _lp(lp2, 10_000e6);
         assertApproxEqAbs(pool.previewRedeem(s2), 10_000e6, 1);
         _fund(10_000e6);
+        _vest();
         assertApproxEqAbs(pool.previewRedeem(s2), 20_000e6, 2, "the new LP gets every fee it insures");
     }
 
@@ -342,6 +527,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         uint256 s2 = _lp(lp2, 10_000e6);
         _requestAll(lp);
         _fund(10_000e6); // all of it is lp2's: lp stopped earning at the request
+        _vest();
         assertApproxEqAbs(pool.previewRedeem(s2), 20_000e6, 2);
 
         address attacker = makeAddr("attacker");
@@ -365,6 +551,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         assertApproxEqAbs(pool.pendingValueOf(lp), 750e6, 1);
         assertApproxEqAbs(pool.previewRedeem(s2), 750e6, 1);
         _fund(1_000e6); // fees: only lp2
+        _vest();
         assertApproxEqAbs(pool.previewRedeem(s2), 1_750e6, 2);
         (uint256 requested, uint256 now_,) = pool.pendingOf(lp);
         assertEq(requested, v);
@@ -438,6 +625,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         assertEq(pool.sharesOf(attacker), 0);
 
         _fund(5_000e6); // the next router push restores the LPs who carried the claim
+        _vest();
         assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(lp)), 5_000e6, 2);
         assertTrue(_tryDeposit(attacker, 1_000e6), "reopened once the price is back at the floor");
         assertApproxEqAbs(pool.previewRedeem(pool.sharesOf(attacker)), 1_000e6, 1, "at a fair price");

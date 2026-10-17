@@ -225,7 +225,7 @@ async function main(c: Checks) {
   c.eq("Hidden user's only note is her allocation", notes.map((n) => n.raw), [alloc[2]!]);
   const hiddenTo = privateKeyToAccount(bytesToHex(crypto.getRandomValues(new Uint8Array(32)))).address;
   const fee = alloc[2]! / 100n;
-  const w = await proveWithdraw({ keys: vaultKeys!, tree: state.tree, note: notes[0]!, amount: alloc[2]!, recipient: hiddenTo, relayerFee: fee });
+  const w = await proveWithdraw({ keys: vaultKeys!, tree: state.tree, note: notes[0]!, amount: alloc[2]!, recipient: hiddenTo, relayerFee: fee, relayer });
   {
     const r = await fetch(`http://127.0.0.1:${relayerPort}/withdraw`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withdrawRequest(w)) });
     const j = await r.json();

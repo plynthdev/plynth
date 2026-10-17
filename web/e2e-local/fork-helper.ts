@@ -381,9 +381,9 @@ export async function applyHiddenUsdgCap(log: (s: string) => void = () => {}) {
   log("Hidden Vault USDG cap applied (48 h timelock passed)");
 }
 
-/** After a Hidden deposit: warp past the 1 h pending queue and make sure the deposit is inserted. */
+/** After a Hidden deposit: warp past the pending queue (2 h for a batch under 4, audit M-5) and insert it. */
 export async function insertHidden(log: (s: string) => void = () => {}) {
-  await warp(3_700n);
+  await warp(7_300n);
   try {
     await send(devAccount(31), dep.shieldedPool, poolAbi, "insertPending", [100n]);
     log("insertPending sent by the helper");

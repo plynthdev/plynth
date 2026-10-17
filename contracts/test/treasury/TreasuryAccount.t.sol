@@ -72,6 +72,74 @@ contract TreasuryAccountTest is TreasuryFixture {
         account.setPeriodClose(stranger);
     }
 
+    /// Audit "privileged": setPeriodClose(0) switched the drawdown rule off instantly, outside the 48 h timelock.
+    function test_poc_setPeriodCloseCannotSwitchOffDrawdownInstantly() public {
+        periodClose.set(_nav() * 2); // -50%: DERISK, a buy is refused
+        vm.prank(board);
+        (bool ok,) = address(account).call(abi.encodeCall(TreasuryAccount.setPeriodClose, (address(0))));
+        assertFalse(ok, "setPeriodClose(0) must revert");
+        assertEq(account.periodClose(), address(periodClose));
+        vm.prank(board);
+        (ok,) = address(account).call(abi.encodeCall(TreasuryAccount.setPeriodClose, (stranger)));
+        assertFalse(ok, "an instant swap to another PeriodClose must revert");
+        assertEq(account.periodClose(), address(periodClose));
+        _expectCode(10); // R8_DERISK still applies
+        vm.prank(eqKey);
+        account.execute(EQUITY_DESK, address(eqSleeve), _buyData(address(nvda), 1_000e6), _allow(address(nvda)), 0);
+    }
+
+    function test_periodClose_replaceWaitsTimelock() public {
+        address next = makeAddr("nextClose");
+        vm.expectRevert(TreasuryAccount.NotBoard.selector);
+        account.proposePeriodClose(next);
+        vm.startPrank(board);
+        vm.expectRevert(TreasuryAccount.ZeroAddress.selector);
+        account.proposePeriodClose(address(0));
+        account.proposePeriodClose(next);
+        vm.stopPrank();
+        uint64 eta = uint64(block.timestamp) + policy.TIMELOCK();
+        assertEq(account.pendingPeriodClose(), next);
+        assertEq(account.pendingPeriodCloseEta(), eta);
+        vm.warp(eta - 1);
+        vm.expectRevert(abi.encodeWithSelector(TreasuryAccount.TimelockActive.selector, eta));
+        account.applyPeriodClose();
+        assertEq(account.periodClose(), address(periodClose));
+        vm.warp(eta);
+        vm.prank(stranger); // anyone applies after the timelock
+        account.applyPeriodClose();
+        assertEq(account.periodClose(), next);
+        assertEq(account.pendingPeriodClose(), address(0));
+        vm.expectRevert(TreasuryAccount.NothingPending.selector);
+        account.applyPeriodClose();
+    }
+
+    function test_periodClose_cancel() public {
+        vm.startPrank(board);
+        vm.expectRevert(TreasuryAccount.NothingPending.selector);
+        account.cancelPeriodClose();
+        account.proposePeriodClose(stranger);
+        account.cancelPeriodClose();
+        vm.stopPrank();
+        vm.warp(block.timestamp + policy.TIMELOCK());
+        vm.expectRevert(TreasuryAccount.NothingPending.selector);
+        account.applyPeriodClose();
+        assertEq(account.periodClose(), address(periodClose));
+    }
+
+    function test_periodClose_firstSetIsInstantThenLocked() public {
+        TreasuryAccount d = new TreasuryAccount(board, policy, guard, address(approvals));
+        vm.startPrank(board);
+        vm.expectRevert(TreasuryAccount.PeriodCloseNotSet.selector);
+        d.proposePeriodClose(stranger);
+        vm.expectRevert(TreasuryAccount.ZeroAddress.selector);
+        d.setPeriodClose(address(0));
+        d.setPeriodClose(stranger);
+        vm.expectRevert(TreasuryAccount.PeriodCloseAlreadySet.selector);
+        d.setPeriodClose(board);
+        vm.stopPrank();
+        assertEq(d.periodClose(), stranger);
+    }
+
     function test_opHash_bindsEveryInput() public view {
         bytes memory d = _buyData(address(nvda), 1e6);
         bytes32 h = account.opHashOf(EQUITY_DESK, address(eqSleeve), d);

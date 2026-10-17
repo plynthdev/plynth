@@ -58,7 +58,7 @@ export async function treasurySetup(x: Ctx) {
   const tpl = forkTemplate(A.controller.address);
   const compiled = compileTemplate(tpl as never, { controller: A.controller.address, network: "mainnet" });
   x.state.t1 = compiled;
-  const [pAccount] = await r.read<[Address, Address, Address, Address]>(factory, F, "predict", [board.address]);
+  const [pAccount] = await r.read<[Address, Address, Address, Address]>(factory, F, "predict", [board.address, board.address]);
   const t: Record<string, Address> = {};
   await r.send("board deploys a treasury from the balanced template (TreasuryFactory)", board, { address: factory, abi: F, functionName: "deploy", args: [encodeAbiParameters([policyAbiParam], [compiled.policy]), board.address] }, async (rc) => {
     const ev = created(x, rc.logs as never);

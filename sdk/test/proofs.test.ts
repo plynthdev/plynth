@@ -12,6 +12,7 @@ import {
   ThresholdNotMet,
   checkThresholdShape,
   proveHoldingsAtLeast,
+  proveUnlinkHoldings,
   proveSavingsAtLeast,
   verifierNonce,
   verifyHoldings,
@@ -94,6 +95,21 @@ describe("holdings", () => {
       [3, 2].map((i) => toBytes32(nullifierOf(setup.mine.find((n) => n.leafIndex === i)!.commitment, me.spendingSecret, BigInt(i)))),
     );
   });
+
+  test("L-11 mitigation: the counted notes re-shield to self, so their later spends carry fresh nullifiers", async () => {
+    const ts = await proveUnlinkHoldings({ keys: me, tree: setup.tree, notes: setup.mine, proof });
+    expect(ts).toHaveLength(1); // two counted notes, merged by one transfer
+    const t = ts[0]!;
+    const counted = proof.claim.nullifiers.filter((n) => BigInt(n) !== 0n);
+    expect([...t.pub.nullifiers].sort()).toEqual([...counted].sort()); // spends exactly the proven notes
+    expect(t.outputs[0]).toMatchObject({ raw: 500_000n, ownerPk: me.ownerPk });
+    expect(t.outputs[1]!.raw).toBe(0n);
+    expect(BigInt(t.pub.outCommitments[1])).toBe(0n);
+    // the fresh note's nullifier is unrelated to anything in the holdings proof
+    const nextLeaf = 5n; // where the pool would insert it (the tree holds 5 leaves)
+    expect(counted).not.toContain(toBytes32(nullifierOf(BigInt(t.pub.outCommitments[0]), me.spendingSecret, nextLeaf)));
+    await expect(proveUnlinkHoldings({ keys: me, tree: setup.tree, notes: [], proof })).rejects.toThrow(/notes it was made from/);
+  }, 60_000);
 
   test("proof for verifier A is rejected for verifier B (and for another request)", async () => {
     expect(await verifyProofOnly(proof, reqB)).toBe(false);

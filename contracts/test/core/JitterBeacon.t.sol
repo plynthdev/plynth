@@ -112,6 +112,10 @@ contract JitterBeaconTest is Test {
         vm.prank(anyone);
         beacon.setKeeper(anyone);
         vm.prank(board);
+        beacon.setKeeper(anyone); // queued (ChangeDelay)
+        assertEq(beacon.keeper(), keeper);
+        vm.warp(block.timestamp + 48 hours);
+        vm.prank(board);
         beacon.setKeeper(anyone);
         assertEq(beacon.keeper(), anyone);
     }

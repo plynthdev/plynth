@@ -52,7 +52,7 @@ beforeAll(async () => {
   a.tsla = tsla.token;
   a.mirror = await kit.deploy("PositionMirror.sol", "PositionMirror", [kit.a.policy]);
   a.sleeve = await kit.deploy("PerpSleeve.sol", "PerpSleeve", [kit.a.account, kit.a.usdg, 0]);
-  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n]);
+  a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n, 172_800n]);
   a.market = await kit.deploy("PerpMarket.sol", "PerpMarket", [a.pool, kit.a.valuer, tsla.token, d]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "addMarket", [a.market]);
   a.inHouse = await kit.deploy("InHousePerpVenue.sol", "InHousePerpVenue", [a.sleeve, a.pool, [a.market]]);
@@ -73,7 +73,7 @@ afterAll(async () => {
 describe("risk service on anvil", () => {
   test("mirror push, NAV with venue equity, drawdown webhook, stale alert", async () => {
     if (!ready) return;
-    const reader = new StaticVenueReader(a.off!, { positions: [{ underlying: a.tsla!, tokens: -10n * E18 }], equityUsd: 3_000n * E18, flowInSeen: 0n });
+    const reader = new StaticVenueReader(a.off!, { positions: [{ underlying: a.tsla!, tokens: -10n * E18 }], equityUsd: 3_000n * E18, flowInSeen: 0n, flowOutSeen: 0n });
     const wallet = kit.wallet(kit.deployer); // the kit policy's controller is the deployer
     const pusher = new MirrorPusher(kit.pub, wallet, kit.deployer, a.mirror!);
     const webhooks = new Webhooks({ urls: [`http://127.0.0.1:${server!.port}/hook`], secret: "test", backoffMs: 5, allowPrivate: true });
@@ -82,7 +82,7 @@ describe("risk service on anvil", () => {
     const navBefore = (await kit.pub.readContract({ address: kit.a.guard!, abi: guardAbi, functionName: "snapshot", args: [kit.a.account!] })).nav;
     const r1 = await svc.tick();
     expect(r1.pushes).toEqual([expect.objectContaining({ venue: a.off, posted: true })]);
-    const [pos, eq, , ts] = await kit.pub.readContract({ address: a.mirror!, abi: positionMirrorAbi, functionName: "latest", args: [a.off!] });
+    const [pos, eq, , , ts] = await kit.pub.readContract({ address: a.mirror!, abi: positionMirrorAbi, functionName: "latest", args: [a.off!] });
     expect(pos).toEqual([{ underlying: a.tsla!, tokens: -10n * E18 }]);
     expect(eq).toBe(3_000n * E18);
     expect(ts).toBe(r1.pushes[0]!.ts!);

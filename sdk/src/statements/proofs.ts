@@ -24,7 +24,7 @@ import holdingsArtifact from "../vault/artifacts/threshold_holdings.json" with {
 import savingsArtifact from "../vault/artifacts/threshold_savings.json" with { type: "json" };
 import type { VaultKeys } from "../vault/keys";
 import { MAX_RAW, P, TREE_DEPTH, ZERO_LEAF, nullifierOf, toBytes32 } from "../vault/note";
-import { proveCircuit, verifyCircuitProof } from "../vault/prover";
+import { proveCircuit, proveTransfer, verifyCircuitProof } from "../vault/prover";
 import type { OwnedNote } from "../vault/sync";
 import { NoteTree } from "../vault/tree";
 import { logsChunked } from "./scan";
@@ -148,6 +148,30 @@ export async function proveHoldingsAtLeast(p: VerifierRequest & {
     proof,
     claim: { root: f(root), asset, threshold: p.threshold.toString(), nullifiers: nullifiers.map(f) },
   };
+}
+
+/**
+ * Accepted risk (external audit L-11): a holdings proof publishes the nullifier of every note it counts, so a
+ * later spend of such a note is linked to whoever made the proof. Mitigation: once the verifier has checked the
+ * proof, re-shield the counted notes to yourself. Each returned transfer merges up to two counted notes into one
+ * fresh note (new commitment, new nullifier, zero-value second output). The verifier sees the counted nullifiers
+ * spent by these transfers, and so learns the proof is stale, but nothing afterwards links to it. Submit each
+ * with `transferTx(pool, t)` from any account. The proofs may all be made now: the pool accepts every root it
+ * ever published. Do this only once the verifier is done: a spent note makes `checkHoldings` fail.
+ */
+export async function proveUnlinkHoldings(p: { keys: VaultKeys; tree: NoteTree; notes: OwnedNote[]; proof: HoldingsProof }) {
+  const wanted = new Set(p.proof.claim.nullifiers.filter((n) => BigInt(n) !== 0n).map((n) => BigInt(n)));
+  const counted = p.notes.filter(
+    (n) => n.leafIndex !== null && !n.spent && wanted.has(nullifierOf(n.commitment, p.keys.spendingSecret, BigInt(n.leafIndex))),
+  );
+  if (counted.length !== wanted.size) throw new Error(`found ${counted.length} of the proof's ${wanted.size} notes: pass the notes it was made from`);
+  const transfers: Awaited<ReturnType<typeof proveTransfer>>[] = [];
+  for (let i = 0; i < counted.length; i += 2) {
+    const inputs = counted.slice(i, i + 2);
+    const raw = inputs.reduce((a, n) => a + n.raw, 0n);
+    transfers.push(await proveTransfer({ keys: p.keys, tree: p.tree, inputs, to: p.keys, raw }));
+  }
+  return transfers;
 }
 
 // ---------------------------------------------------------------- deposit tree (ThresholdVerifier)

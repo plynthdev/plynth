@@ -261,6 +261,7 @@ contract ForkMainnet is Script {
             ITierSource(address(staking)),
             templates
         );
+        insurance.bindTreasuryFactory(address(factory)); // only this factory's treasuries may claim (L-7)
         feeRouter.setTemplateFees(ITemplateFeeSource(address(factory)), 2000);
         feeRouter.setKeeper(keeper); // push and observe are keeper-only
         IERC4626[] memory vaults = new IERC4626[](1);
@@ -328,7 +329,9 @@ contract ForkMainnet is Script {
     /// In-house perp venue: one PerpPool over real USDG and a market for each of the four deepest names,
     /// priced by the same Valuer (real feeds), seeded with LP_SEED of the deployer's USDG.
     function _perps() private {
-        perpPool = new PerpPool(IERC20(USDG), deployer, 24 hours);
+        // Fork only: a 1 h perps timelock so the exercise can apply a param change and stay inside the fork's 7-day
+        // feed staleness (mainnet: 48 h, MainnetBeta).
+        perpPool = new PerpPool(IERC20(USDG), deployer, 24 hours, 1 hours);
         Stock[] memory s = stocks();
         uint256[4] memory pick = [uint256(0), 1, 2, 8]; // TSLA, AAPL, NVDA, SPY
         for (uint256 i; i < pick.length; ++i) {

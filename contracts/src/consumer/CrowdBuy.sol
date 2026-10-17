@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -10,6 +10,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SavingsVault} from "./SavingsVault.sol";
 import {StockRouter} from "../core/StockRouter.sol";
 import {Valuer} from "../core/Valuer.sol";
+import {StockTokenRegistry} from "../core/StockTokenRegistry.sol";
+import {KeyChecks} from "../libs/KeyChecks.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 import {StealthClaims} from "./StealthClaims.sol";
 
 /// The part of ShieldedPool (todo 16) Hidden delivery uses.
@@ -65,7 +68,12 @@ interface IExecuteBeacon {
 /// user is the deposit's origin, so a note the user cannot open (bad encryption) can be refunded to them
 /// while it is pending.
 /// Nobody can move pooled USDG anywhere except into the router for that book or back to the vault on cancel.
-contract CrowdBuy is Ownable2Step, ReentrancyGuard {
+///
+/// MIN_CROWD and sybils (audit lead, accepted): MIN_CROWD counts distinct eligible accounts, and one person can
+/// fund several attested accounts, so it is an anonymity-set heuristic, not a proof of distinct savers. A sybil crowd
+/// can only thin its co-savers' anonymity set; it cannot move prices or funds: the keeper picks its own (secret) time,
+/// and the public fallback needs the crowd complete before the fallback opened plus a fresh oracle round (M-1).
+contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
     using SafeERC20 for IERC20;
 
     struct Book {
@@ -74,6 +82,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         uint64 openedAt;
         uint256 rawOut;
         bool executed;
+        uint64 crowdSince; // when `accounts` last reached MIN_CROWD (0 while below it)
     }
 
     struct Settlement {
@@ -88,11 +97,14 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     /// Hard floor for the deploy-time WINDOW; it must also exceed the beacon's GRACE (checked at deploy).
     uint64 public constant MIN_WINDOW = 1 hours;
     uint256 private constant BPS = 10_000;
+    /// The public fallback only runs on a price round published after it opened and at most this old (audit M-1).
+    uint64 public constant PUBLIC_FRESHNESS = 15 minutes;
 
     SavingsVault public immutable vault;
     StockRouter public immutable router;
     IExecuteBeacon public immutable beacon;
     Valuer public immutable valuer;
+    StockTokenRegistry public immutable registry;
     IERC20 public immutable usdg;
     uint32 public immutable MIN_CROWD;
     uint16 public immutable slippageBps;
@@ -138,6 +150,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     error TooEarly(uint64 executeAfter);
     error AlreadyExecutedThisWindow(uint64 windowStart);
     error MarketOnHold(address asset);
+    error StalePrice(uint256 updatedAt, uint64 openedAt);
+    error CrowdTooLate(uint64 crowdSince, uint64 openedAt);
     error BeforeGenesis();
     error NotYet();
     error AlreadySet();
@@ -149,6 +163,9 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     error HiddenNotConfigured();
     error NotHidden(address user);
     error NoHiddenKeys(address user);
+    error NoCanonicalMix(address user);
+    error BadMetaAddress(address user);
+    error NotUserOrKeeper();
 
     modifier onlyKeeper() {
         if (msg.sender != keeper) revert NotKeeper();
@@ -176,6 +193,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         router = router_;
         beacon = beacon_;
         valuer = router_.valuer();
+        registry = router_.registry();
         usdg = vault_.usdg();
         if (address(router_.usdg()) != address(usdg)) revert BadParam();
         MIN_CROWD = minCrowd_;
@@ -185,9 +203,17 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         emit KeeperSet(keeper_);
     }
 
+    /// A new keeper waits CHANGE_DELAY (48 h) in public; removing the keeper (zero) applies at once: books then run
+    /// through the public fallback only.
     function setKeeper(address keeper_) external onlyOwner {
+        if (keeper_ != address(0) && !_delayed()) return;
         keeper = keeper_;
         emit KeeperSet(keeper_);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     /// Set once: CrowdBuy is deployed first, then StealthClaims(crowd), then this.
@@ -210,20 +236,34 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- orders
 
-    /// Anyone may call for any user: it only moves that user's own pending USDG into that user's own orders.
-    /// Split by mix weight (floor); the last mix entry takes the remainder so the whole sweep is placed.
+    /// Moves `user`'s own pending USDG into `user`'s own orders. Only the user or the keeper may call: a stranger
+    /// joining for someone could front-run that saver's withdraw of pending USDG and force them to cancel a book
+    /// order to get it back (audit L-3). The keeper sweeps many users at once with `joinBatch`.
+    /// Split by mix weight (floor); the last placed entry takes the remainder so the whole sweep is placed.
+    /// A mix entry whose token is no longer canonical (delisted after the saver chose it) gets nothing: its weight is
+    /// shared among the still-canonical entries, so no USDG feeds a book that can never execute (audit L-2). With no
+    /// canonical entry left the join reverts and the USDG stays withdrawable in the vault.
     /// Deliberately not nonReentrant: a join that lands while a book is executing goes to the new book (R8).
     /// Buying: the user must pass the vault's eligibility gate (exits below never check it).
     function join(address user) external {
+        if (msg.sender != user && msg.sender != keeper) revert NotUserOrKeeper();
         if (!vault.canBuy(user)) revert SavingsVault.NotEligible(user);
         (SavingsVault.MixEntry[] memory mix, uint256 amount) = vault.sweep(user);
         if (amount == 0) revert NothingPending();
-        uint256 n = mix.length;
-        uint256 placed;
-        for (uint256 i; i < n; ++i) {
-            uint256 part = i == n - 1 ? amount - placed : amount * mix[i].weightBps / BPS;
-            placed += part;
-            if (part != 0) _addOrder(mix[i].stockToken, user, part);
+        _place(user, mix, amount);
+    }
+
+    /// Keeper: joins every user that can join now and skips (never reverts on) the rest, so one saver's state never
+    /// blocks the others. Returns how many joined.
+    function joinBatch(address[] calldata users) external onlyKeeper returns (uint256 joined) {
+        for (uint256 i; i < users.length; ++i) {
+            address user = users[i];
+            if (!vault.canBuy(user)) continue;
+            (, uint256 pending) = vault.balancesOf(user);
+            if (pending == 0 || _canonicalWeight(vault.mixOf(user)) == 0) continue;
+            (SavingsVault.MixEntry[] memory mix, uint256 amount) = vault.sweep(user);
+            _place(user, mix, amount);
+            ++joined;
         }
     }
 
@@ -236,6 +276,7 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         orderOf[asset][bookId][msg.sender] = 0;
         b.usdgTotal -= order;
         b.accounts -= 1;
+        if (b.accounts < MIN_CROWD) b.crowdSince = 0;
         usdg.forceApprove(address(vault), order);
         vault.refundFromCrowd(msg.sender, order);
         emit Cancelled(asset, bookId, msg.sender, order);
@@ -256,12 +297,18 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
     }
 
     /// The keeper. Requires: crowd >= MIN_CROWD, the window's beacon time has passed, not yet executed this
-    /// window, and the oracle is not on hold (stale/off-hours). The router enforces an oracle-based minOut.
+    /// window, and the oracle is not on hold (stale, market closed, sequencer down). The router enforces an
+    /// oracle-based minOut.
     /// Keeper-only because whoever executes picks the block: a stranger could move the pool, execute the whole
-    /// book against it up to the slippage band and move it back in one transaction. So a dead keeper never
+    /// book against it up to the slippage band and move it back in one transaction. So that a dead keeper never
     /// blocks a book, anyone may execute from `windowEnd - beacon.GRACE()` on (the beacon's own fallback time),
-    /// with half the slippage band: that moment is public, so a sandwich around it is worth half as much, and
-    /// a pool too far off simply waits (savers can always cancel).
+    /// with half the slippage band, and only when (audit M-1):
+    ///   - the oracle round was published after the fallback opened and is at most PUBLIC_FRESHNESS old, so the
+    ///     book is never bought at a stale-but-"fresh" price (Friday's close on a weekend) that a sandwich could
+    ///     push the pool back to; and
+    ///   - the book already had MIN_CROWD accounts before the fallback opened, so a sybil cannot hold a book under
+    ///     the minimum (keeping the keeper out) and complete the crowd in the same transaction as the execution.
+    /// A pool too far off, or no fresh round, simply waits (savers can always cancel).
     function execute(address asset) external nonReentrant {
         uint256 bookId = currentBookId[asset];
         Book storage b = _books[asset][bookId];
@@ -269,15 +316,24 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         if (b.accounts < MIN_CROWD) revert CrowdTooSmall(b.accounts, MIN_CROWD);
         (uint64 start, uint64 end) = windowOf(block.timestamp);
         uint16 slip = slippageBps;
-        if (msg.sender != keeper) {
-            if (block.timestamp < end - beacon.GRACE()) revert NotKeeper();
+        bool fallback_ = msg.sender != keeper;
+        uint64 publicFrom = end - beacon.GRACE();
+        if (fallback_) {
+            if (block.timestamp < publicFrom) revert NotKeeper();
+            if (b.crowdSince == 0 || b.crowdSince >= publicFrom) revert CrowdTooLate(b.crowdSince, publicFrom);
             slip = slip / 2;
         }
         if (lastExecutedWindow[asset] == start + 1) revert AlreadyExecutedThisWindow(start);
         uint64 after_ = beacon.executeAfter(beaconKey(asset, start));
+        // A window the keeper never committed (keeper dead from the start) falls back to the same public time as an
+        // unrevealed commitment, so a dead keeper never blocks a book (audit L-1).
+        if (after_ > publicFrom) after_ = publicFrom;
         if (block.timestamp < after_) revert TooEarly(after_);
         Valuer.Quote memory q = valuer.quote(asset);
         if (q.hold) revert MarketOnHold(asset);
+        if (fallback_ && (q.updatedAt < publicFrom || block.timestamp > q.updatedAt + PUBLIC_FRESHNESS)) {
+            revert StalePrice(q.updatedAt, publicFrom);
+        }
 
         // Effects before the swap: from here on, joins land in the next book.
         uint256 total = b.usdgTotal;
@@ -329,7 +385,9 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
         StealthClaims sc = stealthClaims;
         if (address(sc) == address(0)) revert QuietNotConfigured();
         if (vault.settingsOf(user).mode != MODE_QUIET) revert NotQuiet(user);
-        if (sc.registry().stealthMetaAddressOf(user, STEALTH_SCHEME).length == 0) revert NoMetaAddress(user);
+        bytes memory meta = sc.registry().stealthMetaAddressOf(user, STEALTH_SCHEME);
+        if (meta.length == 0) revert NoMetaAddress(user);
+        if (!KeyChecks.isValidMetaAddress(meta)) revert BadMetaAddress(user);
         uint256 raw = _settle(asset, bookId, user);
         if (raw != 0) {
             IERC20(asset).safeTransfer(address(sc), raw);
@@ -373,6 +431,14 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- views
 
+    /// Whether `user`'s ERC-6538 scheme-1 meta-address is well formed (66 bytes, two on-curve compressed secp256k1
+    /// keys). `deliver` refuses a Quiet user without one; the keeper checks this first and skips them (audit M-6).
+    function metaAddressValid(address user) external view returns (bool) {
+        StealthClaims sc = stealthClaims;
+        if (address(sc) == address(0)) return false;
+        return KeyChecks.isValidMetaAddress(sc.registry().stealthMetaAddressOf(user, STEALTH_SCHEME));
+    }
+
     function book(address asset, uint256 bookId) external view returns (Book memory) {
         return _books[asset][bookId];
     }
@@ -388,6 +454,28 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- internal
 
+    function _canonicalWeight(SavingsVault.MixEntry[] memory mix) private view returns (uint256 weightSum) {
+        for (uint256 i; i < mix.length; ++i) {
+            if (registry.isCanonical(mix[i].stockToken)) weightSum += mix[i].weightBps;
+        }
+    }
+
+    function _place(address user, SavingsVault.MixEntry[] memory mix, uint256 amount) private {
+        uint256 weightSum = _canonicalWeight(mix);
+        if (weightSum == 0) revert NoCanonicalMix(user);
+        uint256 lastLive;
+        for (uint256 i; i < mix.length; ++i) {
+            if (registry.isCanonical(mix[i].stockToken)) lastLive = i;
+        }
+        uint256 placed;
+        for (uint256 i; i <= lastLive; ++i) {
+            if (!registry.isCanonical(mix[i].stockToken)) continue;
+            uint256 part = i == lastLive ? amount - placed : amount * mix[i].weightBps / weightSum;
+            placed += part;
+            if (part != 0) _addOrder(mix[i].stockToken, user, part);
+        }
+    }
+
     function _addOrder(address asset, address user, uint256 amount) private {
         uint256 bookId = currentBookId[asset];
         Book storage b = _books[asset][bookId];
@@ -396,7 +484,10 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard {
             emit BookOpened(asset, bookId, b.openedAt);
         }
         mapping(address => uint256) storage orders = orderOf[asset][bookId];
-        if (orders[user] == 0) b.accounts += 1;
+        if (orders[user] == 0) {
+            b.accounts += 1;
+            if (b.accounts == MIN_CROWD) b.crowdSince = uint64(block.timestamp);
+        }
         orders[user] += amount;
         b.usdgTotal += amount;
         emit Joined(asset, bookId, user, amount);

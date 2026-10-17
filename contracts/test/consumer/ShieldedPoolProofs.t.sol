@@ -9,13 +9,14 @@ import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 
 /// ShieldedPool with the real UltraHonk verifiers and proofs made by the SDK (sdk/scripts/pool-fixtures.ts):
 /// alice deposits 1_000_000 + 250_000, transfers 900_000 to bob (350_000 change), bob withdraws 600_000 to
-/// RECIPIENT through a relayer that keeps a 1_000 fee. The on-chain tree must reproduce the SDK's roots.
+/// RECIPIENT through a relayer that keeps a 1_000 fee (the proof binds that relayer, audit L-9). The on-chain tree
+/// must reproduce the SDK's roots.
 contract ShieldedPoolProofsTest is Test {
     ShieldedPool pool;
     MockUSDG token;
     address owner = makeAddr("owner");
     address alice = makeAddr("alice");
-    address relayer = makeAddr("relayer");
+    address relayer; // the fixture's RELAYER: the only address that may submit the fee-paying withdraw
     string json;
     address asset;
     address recipient;
@@ -24,6 +25,7 @@ contract ShieldedPoolProofsTest is Test {
         json = vm.readFile(string.concat(vm.projectRoot(), "/test/consumer/fixtures/shielded_pool.json"));
         asset = vm.parseJsonAddress(json, ".asset");
         recipient = vm.parseJsonAddress(json, ".recipient");
+        relayer = vm.parseJsonAddress(json, ".relayer");
         deployCodeTo("MockUSDG.sol:MockUSDG", asset);
         token = MockUSDG(asset);
         pool = new ShieldedPool(
@@ -60,7 +62,7 @@ contract ShieldedPoolProofsTest is Test {
         vm.stopPrank();
         assertEq(pool.pending(0).commitment, _b(".depositCommitments[0]"), "on-chain commitment == SDK commitment");
         assertEq(pool.pending(1).commitment, _b(".depositCommitments[1]"));
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(block.timestamp + 2 hours); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a batch of two
         pool.insertPending(10);
         assertEq(pool.currentRoot(), _b(".rootAfterDeposits"), "on-chain root == SDK root");
     }
@@ -131,20 +133,23 @@ contract ShieldedPoolProofsTest is Test {
 
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         w.recipient = makeAddr("thief");
+        vm.prank(relayer); // even the bound relayer
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.withdraw(proof, w);
         w = _withdrawPub();
         w.relayerFee = 2_000;
+        vm.prank(relayer); // even the bound relayer
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.withdraw(proof, w);
         w = _withdrawPub();
         w.amount = 700_000;
+        vm.prank(relayer); // even the bound relayer
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.withdraw(proof, w);
 
-        // anyone submitting the honest values (including the encrypted change, bound too) succeeds
+        // the bound relayer submitting the honest values (including the encrypted change, bound too) succeeds
         w = _withdrawPub();
-        vm.prank(makeAddr("anyRelayer"));
+        vm.prank(relayer);
         pool.withdraw(proof, w);
         assertEq(token.balanceOf(recipient), 599_000);
     }
@@ -167,10 +172,11 @@ contract ShieldedPoolProofsTest is Test {
         bytes memory proof = _hex(".withdraw.proofHex");
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         w.encryptedChange = hex"00";
-        vm.prank(makeAddr("relayer"));
+        vm.prank(relayer);
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.withdraw(proof, w);
         assertFalse(pool.nullifierSpent(w.nullifier));
+        vm.prank(relayer);
         pool.withdraw(proof, _withdrawPub());
     }
 
@@ -186,5 +192,77 @@ contract ShieldedPoolProofsTest is Test {
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         pool.transfer(proof, t, junk);
         pool.transfer(proof, t, e);
+    }
+
+    // ------------------------------------------------------------ M-5 (external audit 2026-10): roots never expire
+
+    /// `n` tiny deposits funded by `from`, then inserted one per insertPending call by a stranger: n new roots.
+    function _churnRoots(address from, uint256 n) internal {
+        vm.prank(token.owner());
+        token.mint(from, n);
+        vm.startPrank(from);
+        token.approve(address(pool), n);
+        for (uint256 i; i < n; ++i) {
+            pool.deposit(asset, 1, bytes32(i + 1), bytes32(i + 1000), "");
+        }
+        vm.stopPrank();
+        vm.warp(block.timestamp + 2 hours + 1); // past every insert delay, so one-entry inserts are allowed
+        vm.startPrank(makeAddr("mallory"));
+        for (uint256 i; i < n; ++i) {
+            pool.insertPending(1);
+        }
+        vm.stopPrank();
+    }
+
+    /// Variant 1: the attacker's own (refundable) deposits push 101 roots in front of a relayed withdraw proven
+    /// against an older root. The proof must still verify and pay out.
+    function test_M5_inFlightWithdrawSurvivesRootChurnFromOwnDeposits() public {
+        _depositAndInsert();
+        (ShieldedPool.PublicTransfer memory t, bytes[2] memory e) = _transferPub();
+        pool.transfer(_hex(".transfer.proofHex"), t, e);
+        ShieldedPool.PublicWithdraw memory w = _withdrawPub();
+        uint256 seq = pool.rootSeq(w.root);
+        _churnRoots(makeAddr("mallory"), 101);
+        assertGt(pool.rootCount() - seq, 100, "more newer roots than the old history kept");
+        assertTrue(pool.isKnownRoot(w.root));
+        vm.prank(relayer);
+        pool.withdraw(_hex(".withdraw.proofHex"), w);
+        assertEq(token.balanceOf(recipient), 599_000);
+        assertEq(token.balanceOf(relayer), 1_000);
+    }
+
+    /// Variant 2: other people's pending deposits, inserted one at a time by a stranger, push 101 roots in front
+    /// of a transfer proven against the root after alice's deposits.
+    function test_M5_inFlightTransferSurvivesRootChurnFromOthersDeposits() public {
+        _depositAndInsert();
+        (ShieldedPool.PublicTransfer memory t, bytes[2] memory e) = _transferPub();
+        uint256 seq = pool.rootSeq(t.root);
+        _churnRoots(makeAddr("savers"), 101);
+        assertGt(pool.rootCount() - seq, 100);
+        pool.transfer(_hex(".transfer.proofHex"), t, e);
+        assertTrue(pool.nullifierSpent(t.nullifiers[0]));
+        assertTrue(pool.nullifierSpent(t.nullifiers[1]));
+    }
+
+    // ------------------------------------------------------------ L-9 (external audit 2026-10): fee bound to relayer
+
+    /// A copier who front-runs the relayer with the same calldata used to take the fee. The proof now binds the
+    /// relayer (ext hash includes msg.sender when relayerFee != 0): the copy fails, the bound relayer is paid.
+    function test_L9_copiedWithdrawCannotTakeTheRelayerFee() public {
+        _depositAndInsert();
+        (ShieldedPool.PublicTransfer memory t, bytes[2] memory e) = _transferPub();
+        pool.transfer(_hex(".transfer.proofHex"), t, e);
+        bytes memory proof = _hex(".withdraw.proofHex");
+        ShieldedPool.PublicWithdraw memory w = _withdrawPub();
+        address copier = makeAddr("copier");
+        vm.prank(copier);
+        vm.expectRevert(ShieldedPool.InvalidProof.selector);
+        pool.withdraw(proof, w);
+        assertEq(token.balanceOf(copier), 0);
+        assertFalse(pool.nullifierSpent(w.nullifier));
+        vm.prank(relayer);
+        pool.withdraw(proof, w);
+        assertEq(token.balanceOf(relayer), 1_000);
+        assertEq(token.balanceOf(recipient), 599_000);
     }
 }

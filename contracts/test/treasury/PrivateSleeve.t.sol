@@ -47,6 +47,10 @@ contract PrivateSleeveTest is TreasuryFixture {
     TreasuryCloseVerifier closeVerifier;
     string json;
 
+    function _wireMockPeriodClose() internal pure override returns (bool) {
+        return false;
+    }
+
     function setUp() public override {
         super.setUp();
         json = vm.readFile(string.concat(vm.projectRoot(), "/test/treasury/fixtures/private_sleeve.json"));
@@ -119,7 +123,7 @@ contract PrivateSleeveTest is TreasuryFixture {
                 _b(string.concat(k, ".blinding"))
             );
         }
-        _warp(block.timestamp + 1 hours + 1);
+        _warp(block.timestamp + 2 hours + 1); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a batch of three
         pool.insertPending(10);
         assertEq(pool.currentRoot(), _b(".root"), "fixture tree != pool tree");
     }
@@ -178,7 +182,7 @@ contract PrivateSleeveTest is TreasuryFixture {
         w.changeCommitment = _b(".withdraw.changeCommitment");
         w.asset = address(aapl);
         w.amount = _u(".withdraw.amount");
-        w.recipient = address(account);
+        w.recipient = address(sleeve);
     }
 
     // ------------------------------------------------------------ fixture == chain
@@ -187,6 +191,7 @@ contract PrivateSleeveTest is TreasuryFixture {
         assertEq(vm.parseJsonAddress(json, ".assets[0]"), address(aapl), "aapl address");
         assertEq(vm.parseJsonAddress(json, ".assets[1]"), address(nvda), "nvda address");
         assertEq(vm.parseJsonAddress(json, ".account"), address(account), "account address");
+        assertEq(vm.parseJsonAddress(json, ".sleeve"), address(sleeve), "sleeve address (the unshield recipient)");
         (, bytes32 h,) = policy.current();
         assertEq(_u(".policyHashModP"), uint256(h) % Poseidon2.P, "policy hash");
         _shieldBook();
@@ -226,6 +231,59 @@ contract PrivateSleeveTest is TreasuryFixture {
         assertEq(a.nav, b.nav);
         assertEq(sleeve.bookUsd(), usd);
         assertEq(a.privateUsd, usd);
+    }
+
+    /// L-6: between closes the guard counts the private book at its last proven value plus flows; nothing on-chain
+    /// sees private trades or price moves. A book whose last proof is older than the policy period + grace must not
+    /// take NEW private risk (more shields) until a fresh proven close or refresh.
+    function test_poc_staleBookRefusesNewShields() public {
+        _shieldBook();
+        _warp(block.timestamp + PERIOD + 4 days + 1); // no proven close since the book opened
+        vm.expectRevert(abi.encodeWithSelector(TreasuryAccount.GuardRejected.selector, uint8(18)));
+        vm.prank(privKey);
+        account.execute(PRIVATE_DESK, address(sleeve), _shieldData(address(aapl), 10e18, bytes32(uint256(0x77))), new bytes32[](0), 0);
+    }
+
+    function test_staleBookStillUnshieldsAndProvenRefreshReopensShields() public {
+        _shieldBook();
+        uint256 opened = block.timestamp;
+        assertEq(sleeve.lastProvenAt(), opened - 2 hours - 1, "clock starts when the book opened from empty");
+        _warp(block.timestamp + PERIOD + 4 days + 1);
+        assertTrue(sleeve.bookStale());
+        // Anyone refreshes with a proof over the live public book (the fixture's close proof).
+        IPrivateSleeve.PrivateClose memory p = _private();
+        vm.prank(stranger);
+        pc.refreshPrivateBook(p);
+        assertEq(sleeve.bookUsd(), p.navUsd);
+        assertEq(sleeve.lastProvenAt(), block.timestamp);
+        assertFalse(sleeve.bookStale());
+        assertEq(pc.closeCount(), 0, "a refresh is not a close");
+        _shield(address(aapl), 10e18, bytes32(uint256(0x77)));
+    }
+
+    function test_refreshNeedsAValidProof() public {
+        _shieldBook();
+        IPrivateSleeve.PrivateClose memory p = _private();
+        p.navUsd += 1e18;
+        vm.expectRevert(PrivateSleeve.InvalidProof.selector);
+        pc.refreshPrivateBook(p);
+    }
+
+    function test_provenCloseResetsStaleness() public {
+        _shieldBook();
+        _warp(block.timestamp + PERIOD + 4 days + 1);
+        IPrivateSleeve.PrivateClose memory p = _private();
+        PeriodClose.Close memory c = _build(p.navUsd);
+        pc.commitWithPrivateSleeve(c, _sign(c), p);
+        assertFalse(sleeve.bookStale());
+        assertEq(sleeve.lastProvenAt(), block.timestamp);
+    }
+
+    function test_emptyBookIsNeverStale() public {
+        _warp(block.timestamp + 365 days);
+        assertFalse(sleeve.bookStale());
+        _shield(address(aapl), 10e18, bytes32(uint256(0x77))); // opens from empty: the clock starts now
+        assertEq(sleeve.lastProvenAt(), block.timestamp);
     }
 
     function test_onlyPrivateDeskMayShield() public {
@@ -385,6 +443,24 @@ contract PrivateSleeveTest is TreasuryFixture {
         pc.commitWithPrivateSleeve(c, sig, p);
     }
 
+    /// L-4 on the private close: a dust donation after the controller's snapshot no longer voids the proof
+    /// (its public inputs pub_nav / pub_band_usd come from the snapshot).
+    function test_snapshotKeepsProofValidAfterDonation() public {
+        _shieldBook();
+        IPrivateSleeve.PrivateClose memory p = _private();
+        PeriodClose.Close memory c = _build(p.navUsd);
+        vm.prank(controller);
+        pc.snapshot();
+        usdg.mint(address(account), 1);
+        aapl.mint(address(account), 1);
+        bytes memory sig = _sign(c);
+        vm.expectPartialRevert(PeriodClose.PositionsMismatch.selector);
+        pc.commitWithPrivateSleeve(c, sig, p); // the live path is voided
+        pc.commitSnapshotWithPrivateSleeve(c, sig, p);
+        assertEq(pc.closeCount(), 1);
+        assertEq(sleeve.bookUsd(), p.navUsd);
+    }
+
     function test_priceMoveInvalidatesProof() public {
         _shieldBook();
         IPrivateSleeve.PrivateClose memory p = _private();
@@ -484,16 +560,55 @@ contract PrivateSleeveTest is TreasuryFixture {
         sleeve.checkClose(p, ctx);
     }
 
-    function test_unshieldOnlyToAccountWithoutFee() public {
+    /// L-10: the sleeve's unshield proof submitted straight to ShieldedPool.withdraw (not through `unshield`)
+    /// skipped the book debit, so the account's balance and the book both counted the AAPL 200 note ($40k twice
+    /// in guard NAV until the next close). Its proceeds must reach the account only through a path that debits.
+    function test_poc_directPoolWithdrawCannotSkipBookDebit() public {
+        _shieldBook();
+        uint256 navBefore = guard.snapshot(address(account)).nav;
+        uint256 before = aapl.balanceOf(address(account));
+        vm.prank(stranger);
+        pool.withdraw(_hex(".withdraw.proofHex"), _withdrawPub()); // around the sleeve
+        vm.prank(stranger);
+        assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the proof pays the sleeve, not the account");
+        vm.prank(stranger);
+        sleeve.sweep(address(aapl));
+        assertEq(aapl.balanceOf(address(account)) - before, 200e18, "paid to the account");
+        assertEq(sleeve.bookUsd(), 80_000e18, "book debited: the note is not counted twice");
+        assertEq(guard.snapshot(address(account)).nav, navBefore, "guard NAV unchanged by an unshield");
+    }
+
+    function test_unshieldOnlyToSleeveWithoutFee() public {
         _shieldBook();
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         w.recipient = stranger;
+        vm.expectRevert(PrivateSleeve.BadRecipient.selector);
+        sleeve.unshield(_hex(".withdraw.proofHex"), w);
+        w.recipient = address(account); // straight to the account would skip the book debit (L-10)
         vm.expectRevert(PrivateSleeve.BadRecipient.selector);
         sleeve.unshield(_hex(".withdraw.proofHex"), w);
         w = _withdrawPub();
         w.relayerFee = 1;
         vm.expectRevert(PrivateSleeve.FeeNotAllowed.selector);
         sleeve.unshield(_hex(".withdraw.proofHex"), w);
+    }
+
+    function test_sweepForwardsTransfersAndDebitsTheirValue() public {
+        _shieldBook();
+        nvda.mint(address(sleeve), 10e18); // a transfer to the sleeve
+        (uint256 usd,) = valuer.value(address(nvda), 10e18);
+        uint256 book = sleeve.bookUsd();
+        uint256 before = nvda.balanceOf(address(account));
+        vm.expectEmit(address(sleeve));
+        emit PrivateSleeve.Swept(address(nvda), 10e18, usd);
+        sleeve.sweep(address(nvda));
+        assertEq(nvda.balanceOf(address(account)) - before, 10e18);
+        assertEq(sleeve.bookUsd(), book - usd);
+        sleeve.sweep(address(nvda)); // nothing left: no-op
+        assertEq(sleeve.bookUsd(), book - usd);
+        usdg.mint(address(sleeve), 5e6); // not a private asset: forwarded, counts 0 against the book
+        sleeve.sweep(address(usdg));
+        assertEq(sleeve.bookUsd(), book - usd);
     }
 
     function test_refundReturnsPendingShieldToAccount() public {

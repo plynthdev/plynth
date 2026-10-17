@@ -5,7 +5,7 @@
 //   TREASURY_ACCOUNT                 the TreasuryAccount address
 //   TREASURY_POSITION_MIRROR         PositionMirror address (optional; needed to push snapshots)
 //   TREASURY_CONTROLLER_KEY | _KEYSTORE + _PASSWORD(_FILE)   the policy controller (signs mirror snapshots)
-//   RISK_STATIC_READERS              optional JSON file: [{ venue, positions:[{underlying,tokens}], equityUsd, flowInSeen }]
+//   RISK_STATIC_READERS              optional JSON file: [{ venue, positions:[{underlying,tokens}], equityUsd, flowInSeen, flowOutSeen? }]
 //   RISK_WEBHOOK_URLS                comma-separated URLs for drawdown.state / risk.alert
 //   RISK_WEBHOOK_SECRET              HMAC secret for x-plinth-signature
 //   DATABASE_URL                     optional: also deliver drawdown.state/risk.alert to treasury_webhooks subscribers
@@ -31,13 +31,14 @@ function need<K extends "TREASURY_RPC_URL" | "TREASURY_ACCOUNT">(config: Config,
 
 function staticReaders(path: string | undefined): VenueReader[] {
   if (!path) return [];
-  const rows = JSON.parse(readFileSync(path, "utf8")) as { venue: string; positions: { underlying: string; tokens: string }[]; equityUsd: string; flowInSeen: string }[];
+  const rows = JSON.parse(readFileSync(path, "utf8")) as { venue: string; positions: { underlying: string; tokens: string }[]; equityUsd: string; flowInSeen: string; flowOutSeen?: string }[];
   return rows.map(
     (r) =>
       new StaticVenueReader(getAddress(r.venue), {
         positions: r.positions.map((p) => ({ underlying: getAddress(p.underlying), tokens: BigInt(p.tokens) })),
         equityUsd: BigInt(r.equityUsd),
         flowInSeen: BigInt(r.flowInSeen),
+        flowOutSeen: BigInt(r.flowOutSeen ?? "0"),
       }),
   );
 }

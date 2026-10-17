@@ -165,6 +165,30 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         trade.swap("", s, BPS, "", "");
     }
 
+    /// M-5 (external audit 2026-10): 101 newer roots (busy honest transfers) do not expire the root a swap or a
+    /// settle was proven against; tradeSpend inherits the pool's "every published root" rule.
+    function test_M5_inFlightSwapAndSettleSurviveRootChurn() public {
+        _note(address(stock), 2e18);
+        ShieldedTrade.PublicSwap memory s = _pub(address(stock), 1e18, 0, address(usdg), 0);
+        bytes32 old = s.root;
+        uint256 seq = pool.rootSeq(old);
+        for (uint256 i; i < 101; ++i) {
+            ShieldedPool.PublicTransfer memory t;
+            t.root = pool.currentRoot();
+            t.nullifiers = [bytes32(5000 + i * 2), bytes32(5001 + i * 2)];
+            t.outCommitments = [bytes32(7000 + i * 2), bytes32(7001 + i * 2)];
+            t.asset = address(stock);
+            bytes[2] memory e;
+            pool.transfer("", t, e);
+        }
+        assertGt(pool.rootCount() - seq, 100);
+        _swap(s);
+        assertTrue(pool.nullifierSpent(s.nullifier));
+        vm.prank(relayer);
+        trade.settle("", old, bytes32(uint256(31337)), bytes32(uint256(31338)), "");
+        assertTrue(pool.nullifierSpent(bytes32(uint256(31337))));
+    }
+
     function test_badPairsRejected() public {
         vm.expectRevert(abi.encodeWithSelector(ShieldedTrade.BadPair.selector, address(stock), address(stock)));
         trade.kindOf(address(stock), address(stock));
@@ -218,7 +242,7 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         stock.approve(address(p2), type(uint256).max);
         vm.prank(alice);
         p2.deposit(address(stock), 1e18, bytes32(uint256(1)), bytes32(uint256(2)), "");
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(block.timestamp + 2 hours); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a lone deposit
         p2.insertPending(1);
         _refreshFeed();
 
@@ -235,7 +259,8 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         inputs[7] = bytes32(uint256(7));
         inputs[8] = s.outPartial;
         inputs[9] = bytes32(uint256(s.deadline));
-        inputs[10] = bytes32(uint256(keccak256(abi.encode(bytes(""), bytes("")))) % Poseidon2.P); // ext_hash
+        // ext_hash; fee 5 != 0, so it binds the submitter (this test contract), audit L-9
+        inputs[10] = bytes32(uint256(keccak256(abi.encode(bytes(""), bytes(""), address(this)))) % Poseidon2.P);
         ev.expect_(inputs);
         t2.swap("", s, BPS, "", "");
         assertTrue(p2.nullifierSpent(s.nullifier));
@@ -245,6 +270,58 @@ contract ShieldedTradeTest is ShieldedTradeBase {
         s2.root = p2.currentRoot();
         vm.expectRevert(ShieldedTrade.InvalidProof.selector);
         t2.swap("", s2, BPS, "", "");
+    }
+
+    /// L-9 (external audit 2026-10): a swap's relayer fee goes to the address bound in the ext hash. A copier who
+    /// lands the same calldata first fails verification; the note stays unspent for the real relayer.
+    function test_L9_swapRelayerFeeBoundToSubmitter() public {
+        ExpectVerifier ev = new ExpectVerifier();
+        ShieldedPool p2 = new ShieldedPool(tv, wv, owner, 48 hours);
+        ShieldedTrade t2 = new ShieldedTrade(p2, ev, stv, router, owner, 48 hours);
+        vm.prank(owner);
+        p2.setTrade(address(t2));
+        vm.prank(owner);
+        p2.proposeCap(address(stock), 1e30);
+        vm.prank(owner);
+        p2.proposeCap(address(usdg), 1e30);
+        vm.warp(block.timestamp + 48 hours);
+        p2.applyCap(address(stock));
+        p2.applyCap(address(usdg));
+        vm.prank(alice);
+        stock.approve(address(p2), type(uint256).max);
+        vm.prank(alice);
+        p2.deposit(address(stock), 1e18, bytes32(uint256(1)), bytes32(uint256(2)), "");
+        vm.warp(block.timestamp + 2 hours);
+        p2.insertPending(1);
+        _refreshFeed();
+
+        ShieldedTrade.PublicSwap memory s = _pub(address(stock), 1e18, 0.01e18, address(usdg), 0);
+        s.root = p2.currentRoot();
+        bytes memory encC = hex"aa";
+        bytes memory encO = hex"bbbb";
+        bytes32[] memory inputs = new bytes32[](11);
+        inputs[0] = s.root;
+        inputs[1] = s.nullifier;
+        inputs[2] = s.changeCommitment;
+        inputs[3] = bytes32(uint256(uint160(address(stock))));
+        inputs[4] = bytes32(uint256(1e18));
+        inputs[5] = bytes32(uint256(0.01e18));
+        inputs[6] = bytes32(uint256(uint160(address(usdg))));
+        inputs[7] = bytes32(0);
+        inputs[8] = s.outPartial;
+        inputs[9] = bytes32(uint256(s.deadline));
+        inputs[10] = bytes32(uint256(keccak256(abi.encode(encC, encO, relayer))) % Poseidon2.P); // relayer bound
+        ev.expect_(inputs);
+
+        address copier = makeAddr("copier");
+        vm.prank(copier);
+        vm.expectRevert(ShieldedTrade.InvalidProof.selector);
+        t2.swap("", s, BPS, encC, encO);
+        assertFalse(p2.nullifierSpent(s.nullifier));
+        vm.prank(relayer);
+        t2.swap("", s, BPS, encC, encO);
+        assertEq(stock.balanceOf(relayer), 0.01e18);
+        assertEq(stock.balanceOf(copier), 0);
     }
 
     // ------------------------------------------------------------ caps, pause, hooks

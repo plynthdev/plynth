@@ -9,9 +9,13 @@ pragma solidity ^0.8.28;
 ///   positions and equity come from the controller-signed PositionMirror.
 interface IPerpVenue {
     /// A position in one underlying: `tokens` are Stock Token base units, positive long, negative short.
+    /// `marginUsd` (USD 1e18) is the equity that backs this position before it is liquidated: an isolated position's
+    /// own collateral + PnL - fees, floored at 0 (in-house); a cross-margined venue account's equity (off-chain venues,
+    /// where every position draws on the whole account). The PolicyGuard bounds notional / marginUsd per position.
     struct Position {
         address underlying;
         int256 tokens;
+        uint256 marginUsd;
     }
 
     function sleeve() external view returns (address);

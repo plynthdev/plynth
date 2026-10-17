@@ -111,6 +111,24 @@ contract PerpHandler is Test {
         pool.redeem(max * bound(frac, 1, 100) / 100, who, who);
     }
 
+    /// Independent per-position LP valuation: each position's PnL clamped to [-collateral, max payout], or the
+    /// reserve once the market has been on hold past its grace.
+    function clampedPnl(uint256 m) external view returns (int256 sum) {
+        PerpMarket mk = markets[m];
+        if (mk.heldFor() > mk.HELD_GRACE()) return int256(mk.reserve());
+        (uint256 pr,) = mk.price();
+        for (uint256 i; i < 4; i++) {
+            PerpMarket.Position memory p = mk.position(actors[i]);
+            if (p.size == 0) continue;
+            int256 value = int256(p.tokens * pr / mk.ONE());
+            int256 v = p.isLong ? value - int256(p.size) : int256(p.size) - value;
+            int256 cap = int256(p.size * mk.maxProfitBps() / 10_000);
+            if (v > cap) v = cap;
+            if (v < -int256(p.collateral)) v = -int256(p.collateral);
+            sum += v;
+        }
+    }
+
     /// Independent sum of every open position's maximum payout above its collateral.
     function maxTraderProfit() external view returns (uint256 sum, uint256 coll) {
         for (uint256 m; m < 2; m++) {
@@ -134,7 +152,7 @@ contract PerpInvariantTest is Test {
         usdg = new MockUSDG();
         StockTokenRegistry registry = new StockTokenRegistry(address(this));
         Valuer valuer = new Valuer(registry, 30 minutes);
-        pool = new PerpPool(usdg, address(this), 24 hours);
+        pool = new PerpPool(usdg, address(this), 24 hours, 48 hours);
         MockFeed[2] memory feeds;
         for (uint256 i; i < 2; i++) {
             MockStockToken t = new MockStockToken("Mock", "mX");
@@ -182,6 +200,17 @@ contract PerpInvariantTest is Test {
         assertGe(usdg.balanceOf(address(pool)), pool.traderCollateral());
     }
 
+    /// PERP-7: LP equity values each position on its own (no netting of one trader's bad debt against another's
+    /// gain), so it never exceeds pool cash plus what traders can lose (their collateral).
+    /// forge-config: default.invariant.runs = 64
+    /// forge-config: default.invariant.depth = 80
+    function invariant_lpEquityFloorsEachPosition() public view {
+        for (uint256 i; i < 2; i++) {
+            assertApproxEqAbs(markets[i].traderPnl(), handler.clampedPnl(i), 8, "per-position clamp");
+        }
+        assertLe(pool.totalAssets(), pool.liquidAssets() + pool.traderCollateral());
+    }
+
     /// The handler really trades: opens, liquidates and closes happen (guards against an all-revert run).
     function test_handlerReachesOpenLiquidateClose() public {
         handler.open(0, 0, true, 100_000e6, 40);
@@ -194,5 +223,6 @@ contract PerpInvariantTest is Test {
         assertEq(handler.closes(), 1);
         invariant_poolCoversMaxTraderProfit();
         invariant_bookkeepingMatches();
+        invariant_lpEquityFloorsEachPosition();
     }
 }

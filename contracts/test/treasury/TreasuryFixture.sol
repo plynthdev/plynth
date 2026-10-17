@@ -112,7 +112,7 @@ abstract contract TreasuryFixture is Test {
         approvals.bindAccount(address(account));
         account.registerDesk(CASH_DESK, cashKey, _one(address(cashSleeve)));
         account.registerDesk(EQUITY_DESK, eqKey, _one(address(eqSleeve)));
-        account.setPeriodClose(address(periodClose));
+        if (_wireMockPeriodClose()) account.setPeriodClose(address(periodClose));
         vm.stopPrank();
 
         usdg.mint(address(account), FUNDING);
@@ -122,6 +122,20 @@ abstract contract TreasuryFixture is Test {
         nvda.mint(address(eqSleeve), 1e30);
         del.mint(address(eqSleeve), 1e30);
         bad.mint(address(eqSleeve), 1e30);
+    }
+
+    /// Suites that wire a real PeriodClose in their own setUp return false (the account's PeriodClose is set once
+    /// instantly; replacing it waits the policy TIMELOCK).
+    function _wireMockPeriodClose() internal virtual returns (bool) {
+        return true;
+    }
+
+    /// Replaces `acc`'s PeriodClose through the timelock (propose, warp TIMELOCK, apply).
+    function _replacePeriodClose(TreasuryAccount acc, address pc) internal {
+        vm.prank(acc.board());
+        acc.proposePeriodClose(pc);
+        _warp(block.timestamp + acc.policy().TIMELOCK());
+        acc.applyPeriodClose();
     }
 
     // ------------------------------------------------------------ merkle

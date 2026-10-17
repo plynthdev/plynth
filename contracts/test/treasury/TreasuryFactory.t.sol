@@ -60,7 +60,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
     // ------------------------------------------------------------ wiring
 
     function test_deployWiresEverything() public {
-        (address pa, address pp, address pc, address papp) = factory.predict(board);
+        (address pa, address pp, address pc, address papp) = factory.predict(address(this), board);
         bytes memory enc = abi.encode(_policy());
 
         vm.expectEmit(true, true, true, true, address(factory));
@@ -101,7 +101,8 @@ contract TreasuryFactoryTest is TreasuryFixture {
         assertTrue(factory.isTreasury(a));
         assertEq(factory.treasuryCount(), 1);
         assertEq(factory.treasuryAt(0), a);
-        assertEq(factory.nonceOf(board), 1);
+        assertEq(factory.nonceOf(address(this), board), 1);
+        assertEq(factory.nonceOf(board, board), 0);
     }
 
     function test_clonesAreEip1167() public {
@@ -190,7 +191,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
         factory.deploy(abi.encode(p), board);
 
         assertEq(factory.treasuryCount(), 0);
-        assertEq(factory.nonceOf(board), 0);
+        assertEq(factory.nonceOf(address(this), board), 0);
     }
 
     function test_revertBadEncoding() public {
@@ -244,16 +245,34 @@ contract TreasuryFactoryTest is TreasuryFixture {
         assertEq(factory.treasuryCount(), 2);
     }
 
+    /// Lead (audit): anyone could deploy for a board onto the addresses `predict` showed it (same board, same
+    /// nonce), with their own policy and controller; the board's Safe, having been shown those addresses, could
+    /// fund a treasury whose controller is the attacker's. Salts are bound to the caller now.
+    function test_poc_frontRunCannotTakePredictedAddresses() public {
+        (address predicted,,,) = factory.predict(board, board); // the board's Safe sends its own deploy
+        TreasuryPolicy.Policy memory evil = _policy();
+        evil.controller = stranger;
+        vm.prank(stranger);
+        factory.deploy(abi.encode(evil), board); // front-runs the board's own transaction
+        vm.prank(board);
+        (address mine,,) = factory.deploy(abi.encode(_policy()), board);
+        assertEq(mine, predicted, "the board gets the addresses it was shown");
+        (TreasuryPolicy.Policy memory cur,,) = TreasuryAccount(payable(predicted)).policy().current();
+        assertEq(cur.controller, controller, "with its own controller");
+    }
+
     function test_frontRunDeployDoesNotBlockBoard() public {
-        (address predicted,,,) = factory.predict(board);
+        (address predicted,,,) = factory.predict(board, board);
+        (address theirs,,,) = factory.predict(stranger, board);
         bytes memory enc = abi.encode(_policy());
         vm.prank(stranger);
         (address first,,) = factory.deploy(enc, board); // someone else, same board
-        assertEq(first, predicted);
+        assertEq(first, theirs);
+        assertTrue(first != predicted);
         assertEq(TreasuryAccount(payable(first)).board(), board); // still the board's
         vm.prank(board);
         (address second,,) = factory.deploy(enc, board);
-        assertTrue(second != first);
+        assertEq(second, predicted);
         assertEq(TreasuryAccount(payable(second)).board(), board);
     }
 

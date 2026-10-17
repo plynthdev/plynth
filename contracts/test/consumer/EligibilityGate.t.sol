@@ -70,6 +70,7 @@ contract EligibilityGateTest is CrowdBuyBase {
         vm.warp(block.timestamp + 1 days); // attestation expired
         assertFalse(reg.isEligible(u));
         vm.expectRevert(abi.encodeWithSelector(SavingsVault.NotEligible.selector, u));
+        vm.prank(u);
         crowd.join(u);
         // exit: the whole balance (pending) is withdrawable
         vm.prank(u);
@@ -101,6 +102,7 @@ contract EligibilityGateTest is CrowdBuyBase {
 
         // u joins the next book while still eligible, then is revoked
         _accrue(u, 7 * U);
+        vm.prank(u);
         crowd.join(u);
         vm.prank(att);
         reg.revoke(u);
@@ -109,6 +111,7 @@ contract EligibilityGateTest is CrowdBuyBase {
         // buying is blocked
         _accrue(u, 3 * U);
         vm.expectRevert(abi.encodeWithSelector(SavingsVault.NotEligible.selector, u));
+        vm.prank(u);
         crowd.join(u);
         vm.expectRevert(abi.encodeWithSelector(SavingsVault.NotEligible.selector, u));
         vm.prank(u);

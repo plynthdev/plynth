@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -18,7 +18,9 @@ interface IHonkVerifier {
 ///
 /// A note is the Poseidon2 commitment of (asset, raw, ownerPk, blinding) (circuits/hidden). Deposits are
 /// computed on-chain from those four values and wait in a pending queue for at least MIN_PENDING_DELAY; anyone
-/// may then batch them into the depth-20 commitment tree (`insertPending`).
+/// may then batch them into the depth-20 commitment tree (`insertPending`). A batch holds at least
+/// MIN_INSERT_BATCH deposits, unless its oldest deposit has waited SOLO_INSERT_DELAY longer, so nobody can mint
+/// a root per deposit and a lone deposit still gets in without a keeper.
 ///
 /// Tree capacity never gates an exit. A spend's zero-value new note (full withdraw, zero change, zero transfer
 /// output) has commitment 0 and inserts no leaf. When a tree's 2^20 leaves are used, the next leaf starts a new
@@ -28,7 +30,9 @@ interface IHonkVerifier {
 /// costs real notes. Until a pending deposit is inserted
 /// its origin can take it back (`refundPending`). Spending a note needs a Noir proof: `transfer` (2 in, 2 out,
 /// same asset) or `withdraw` (1 in, public amount out to a recipient, change note back in). A proof may use
-/// any of the last ROOT_HISTORY roots, and every nullifier can be used once.
+/// any root this pool ever published (and every full tree's final root): the tree is append-only, so an old
+/// root only proves membership of notes that really exist, and every nullifier can be used once. No number of
+/// newer roots can expire a proof in flight (external audit M-5).
 ///
 /// Units: notes hold raw token base units. Stock Token `uiMultiplier` changes never touch a note.
 ///
@@ -46,7 +50,10 @@ interface IHonkVerifier {
 /// Encrypted notes (ECIES to the owner's viewing key, see sdk vault) are opaque bytes here, at
 /// most MAX_NOTE_BYTES each, emitted in `NoteEncrypted` keyed by commitment. A spend's ciphertexts are bound to
 /// its proof (public input ext_hash = keccak256 of them mod p, see extHashOf): the ciphertext is the only copy
-/// of a new note's blinding, so a relayer that could swap it could make the note unspendable.
+/// of a new note's blinding, so a relayer that could swap it could make the note unspendable. A withdraw that
+/// pays a relayer fee also binds the relayer: its ext_hash is extHashOf(abi.encode(encryptedChange, relayer))
+/// and only that msg.sender can submit it, so a copier who lands the same calldata first cannot take the fee
+/// (external audit L-9). With relayerFee == 0 it stays extHashOf(encryptedChange) and anyone may submit.
 contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -91,8 +98,11 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     uint256 public constant TREE_DEPTH = 20; // == HiddenConstants.TREE_DEPTH (asserted in tests)
     uint256 public constant MAX_LEAVES = 1 << TREE_DEPTH;
-    uint256 public constant ROOT_HISTORY = 100;
     uint64 public constant MIN_PENDING_DELAY = 1 hours;
+    /// Smallest insertPending batch (queued deposits inserted, refunded entries not counted)...
+    uint256 public constant MIN_INSERT_BATCH = 4;
+    /// ...unless the oldest deposit it inserts is MIN_PENDING_DELAY + SOLO_INSERT_DELAY old (liveness).
+    uint64 public constant SOLO_INSERT_DELAY = 1 hours;
     /// Hard floor for the deploy-time CAP_DELAY (mainnet/fork 48 hours, testnet 15 minutes).
     uint64 public constant MIN_CAP_DELAY = 10 minutes;
     uint64 public immutable CAP_DELAY;
@@ -162,6 +172,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     error NotPending(uint256 pendingId);
     error NotOrigin(uint256 pendingId);
     error NothingToInsert();
+    error BatchTooSmall(uint256 inserted, uint256 minBatch);
     error UnknownRoot(bytes32 root);
     error NullifierAlreadySpent(bytes32 nullifier);
     error InvalidProof();
@@ -294,15 +305,19 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     /// Anyone: inserts up to `maxCount` queued deposits (FIFO) that are at least MIN_PENDING_DELAY old.
     /// Refunded entries are stepped over and count toward `maxCount`, so the loop is always bounded.
+    /// Reverts BatchTooSmall if it would insert 1..MIN_INSERT_BATCH-1 deposits while the oldest of them is
+    /// younger than MIN_PENDING_DELAY + SOLO_INSERT_DELAY (a call that only steps over refunds is allowed).
     function insertPending(uint256 maxCount) external nonReentrant returns (uint256 inserted) {
         uint256 i = nextPending;
         uint256 start = i;
         uint256 end = _pending.length;
         bytes32 root;
+        uint256 oldest;
         while (i < end && maxCount != 0) {
             Pending storage p = _pending[i];
             if (p.state == PendingState.Queued) {
                 if (block.timestamp < uint256(p.createdAt) + MIN_PENDING_DELAY) break;
+                if (inserted == 0) oldest = p.createdAt;
                 p.state = PendingState.Inserted;
                 uint256 leafIndex;
                 (leafIndex, root) = _insert(p.commitment);
@@ -313,6 +328,7 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
             --maxCount;
         }
         if (i == start) revert NothingToInsert();
+        if (!_batchOk(inserted, oldest)) revert BatchTooSmall(inserted, MIN_INSERT_BATCH);
         nextPending = i;
         if (inserted != 0) _publishRoot(root);
     }
@@ -358,8 +374,9 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     /// Spends one note: `amount` leaves the pool (amount - relayerFee to recipient, relayerFee to msg.sender)
     /// and the change note goes back into the tree. Public inputs: root, nullifier, changeCommitment, asset,
-    /// amount, recipient, relayerFee, extHashOf(encryptedChange). Reverts only on a bad proof/root/nullifier or at the token itself
-    /// (e.g. an issuer freeze of USDG), never on owner, pause or keeper state.
+    /// amount, recipient, relayerFee, ext hash = extHashOf(encryptedChange) if relayerFee == 0, else
+    /// extHashOf(abi.encode(encryptedChange, msg.sender)) (the proof names its relayer). Reverts only on a bad
+    /// proof/root/nullifier or at the token itself (e.g. an issuer freeze of USDG), never on owner, pause or keeper state.
     function withdraw(bytes calldata proof, PublicWithdraw calldata pub) external nonReentrant {
         if (pub.encryptedChange.length > MAX_NOTE_BYTES) revert NoteTooLarge();
         if (pub.asset == address(0) || pub.recipient == address(0)) revert ZeroAddress();
@@ -376,7 +393,9 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         inputs[4] = bytes32(pub.amount);
         inputs[5] = bytes32(uint256(uint160(pub.recipient)));
         inputs[6] = bytes32(pub.relayerFee);
-        inputs[7] = extHashOf(pub.encryptedChange);
+        inputs[7] = pub.relayerFee == 0
+            ? extHashOf(pub.encryptedChange)
+            : extHashOf(abi.encode(pub.encryptedChange, msg.sender)); // L-9: the fee goes to the bound relayer only
         _verify(withdrawVerifier, proof, inputs);
 
         if (pub.changeCommitment != 0) {
@@ -439,11 +458,10 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
 
     // ---------------------------------------------------------------- views
 
-    /// True for the current root, the ROOT_HISTORY - 1 roots before it, and every full tree's final root.
+    /// True for every root this pool ever published and every full tree's final root (which a two-leaf insert
+    /// can archive without publishing). Roots never expire (M-5): the tree is append-only and nullifiers stop reuse.
     function isKnownRoot(bytes32 root) public view returns (bool) {
-        if (archivedRoot[root]) return true;
-        uint256 seq = rootSeq[root];
-        return seq != 0 && rootCount - seq < ROOT_HISTORY;
+        return rootSeq[root] != 0 || archivedRoot[root];
     }
 
     /// The tree a global leaf index is in, and its position there (the circuits' `index`).
@@ -473,18 +491,21 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         return _pending.length;
     }
 
-    /// Queued deposits at the head of the queue that `insertPending` would insert now (stops at the first
-    /// one still inside its delay; counts at most `limit` queue entries).
+    /// Queued deposits that `insertPending(limit)` would insert now (stops at the first one still inside its
+    /// delay; counts at most `limit` queue entries). 0 when that call would revert BatchTooSmall.
     function readyCount(uint256 limit) external view returns (uint256 ready) {
         uint256 end = _pending.length;
+        uint256 oldest;
         for (uint256 i = nextPending; i < end && limit != 0; ++i) {
             Pending storage p = _pending[i];
             if (p.state == PendingState.Queued) {
                 if (block.timestamp < uint256(p.createdAt) + MIN_PENDING_DELAY) break;
+                if (ready == 0) oldest = p.createdAt;
                 ++ready;
             }
             --limit;
         }
+        if (!_batchOk(ready, oldest)) return 0;
     }
 
     // ---------------------------------------------------------------- internal
@@ -559,6 +580,12 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
         rootSeq[root] = seq;
         currentRoot = root;
         emit RootUpdated(root, nextLeaf);
+    }
+
+    /// The insertPending batch rule: no leaf, a full batch, or the oldest inserted deposit past the solo delay.
+    function _batchOk(uint256 inserted, uint256 oldestCreatedAt) private view returns (bool) {
+        return inserted == 0 || inserted >= MIN_INSERT_BATCH
+            || block.timestamp >= oldestCreatedAt + MIN_PENDING_DELAY + SOLO_INSERT_DELAY;
     }
 
     function _knownRoot(bytes32 root) private view {

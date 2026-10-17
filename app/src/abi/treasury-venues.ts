@@ -3,7 +3,7 @@
 import { parseAbi } from "viem";
 
 export const inHouseVenueAbi = parseAbi([
-  "struct Position { address underlying; int256 tokens; }",
+  "struct Position { address underlying; int256 tokens; uint256 marginUsd; }",
   "function positionOf() view returns (Position[])",
   "function equityOf() view returns (uint256 usd, bool stale)",
   "function markets() view returns (address[])",
@@ -11,7 +11,7 @@ export const inHouseVenueAbi = parseAbi([
 ]);
 
 export const marketAbi = parseAbi([
-  "struct Position { uint256 size; uint256 collateral; uint256 tokens; bool isLong; int256 fundingIndex; uint256 borrowIndex; int256 accruedFunding; uint256 accruedBorrow; }",
+  "struct Position { uint256 size; uint256 collateral; uint256 tokens; bool isLong; int256 fundingIndex; uint256 borrowIndex; int256 accruedFunding; uint256 accruedBorrow; uint64 openedAt; }",
   "function underlying() view returns (address)",
   "function fundingRate() view returns (uint256 ratePerSecond, bool longsPay)",
   "function position(address account) view returns (Position)",

@@ -63,6 +63,7 @@ contract CrowdHandler is Test {
         vault.accrue(a, bytes32(++srcNonce), 0, 10e6 - amount);
         (, uint256 pending) = vault.balancesOf(a);
         if (pending == 0) return; // weekly cap reached
+        vm.prank(a);
         crowd.join(a);
     }
 

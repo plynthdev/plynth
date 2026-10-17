@@ -11,7 +11,7 @@ import { shieldedTradeAbi } from "./abi";
 import { NOTE_VERSION_PARTIAL, encryptNote } from "./ecies";
 import type { VaultKeys } from "./keys";
 import { MAX_RAW, commitmentOf, nullifierOf, partialCommitmentOf, randomField, toBytes32 } from "./note";
-import { encodeTwoNotes, extHashOf, proveCircuit, spendable, type Recipient } from "./prover";
+import { extHashOf, proveCircuit, spendable, swapExtData, type Recipient } from "./prover";
 import type { OwnedNote } from "./sync";
 import type { NoteTree } from "./tree";
 import type { UnsignedTx } from "./tx";
@@ -38,8 +38,9 @@ const f = (x: bigint) => toBytes32(x);
 
 /**
  * Swap proof: spend `note` (v1 or v2, owned by `keys`), trade `amountIn` (incl. `relayerFee`, paid in the input
- * asset to whoever submits) for at least `minOut` of `assetOut` before `deadline` (unix seconds). The output note
- * goes to `to` (default: yourself); the change stays with `keys`.
+ * asset to `relayer`) for at least `minOut` of `assetOut` before `deadline` (unix seconds). The output note
+ * goes to `to` (default: yourself); the change stays with `keys`. With a fee, `relayer` is required and only that
+ * address can submit the proof.
  */
 export async function proveSwap(p: {
   keys: VaultKeys;
@@ -50,6 +51,7 @@ export async function proveSwap(p: {
   minOut: bigint;
   deadline: bigint;
   relayerFee?: bigint;
+  relayer?: Address;
   to?: Recipient;
 }): Promise<SwapProof> {
   const { keys, tree, note } = p;
@@ -57,6 +59,7 @@ export async function proveSwap(p: {
   const fee = p.relayerFee ?? 0n;
   if (p.amountIn <= 0n || p.amountIn > note.raw || p.amountIn > MAX_RAW) throw new Error(`cannot swap ${p.amountIn} from ${note.raw}`);
   if (fee < 0n || fee >= p.amountIn) throw new Error("relayer fee must be below amountIn");
+  if (fee !== 0n && !p.relayer) throw new Error("a relayer fee needs the relayer's address: the proof binds who may submit it");
   if (p.minOut < 0n || p.minOut > MAX_RAW) throw new Error("minOut out of range");
   if (p.deadline < 0n || p.deadline >= 1n << 64n) throw new Error("deadline out of range");
   const assetIn = getAddress(note.asset);
@@ -86,7 +89,7 @@ export async function proveSwap(p: {
     min_out: f(p.minOut),
     out_partial: f(partial),
     deadline: f(p.deadline),
-    ext_hash: f(extHashOf(encodeTwoNotes(encryptedChange, encryptedOut))),
+    ext_hash: f(extHashOf(swapExtData(encryptedChange, encryptedOut, fee, p.relayer))),
     in_is_v2: note.version === 2,
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),

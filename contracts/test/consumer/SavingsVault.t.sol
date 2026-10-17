@@ -396,6 +396,10 @@ contract SavingsVaultTest is SavingsVaultBase {
         vault.setKeeper(alice);
 
         address k2 = makeAddr("keeper2");
+        vm.prank(owner);
+        vault.setKeeper(k2); // queued for 48 h (ChangeDelay)
+        assertEq(vault.keeper(), keeper);
+        vm.warp(block.timestamp + 48 hours);
         vm.expectEmit(address(vault));
         emit SavingsVault.KeeperSet(k2);
         vm.prank(owner);
@@ -443,6 +447,9 @@ contract SavingsVaultTest is SavingsVaultBase {
         _fund(alice, 100 * U);
         _settings(alice, 10, 3, uint64(500 * U), 0);
         address evil = makeAddr("evil");
+        vm.prank(owner);
+        vault.setKeeper(evil);
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
         vm.prank(owner);
         vault.setKeeper(evil);
         vm.startPrank(evil);

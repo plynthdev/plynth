@@ -40,8 +40,8 @@ await runExample("shield-and-withdraw", async ({ dep, pub, wallet, accounts, now
     await send(alice, approveTx(usdg, pool, amount));
     await send(alice, depositTx(pool, usdg, amount, keys));
 
-    // 2. After the 1 h pending queue anyone batches pending deposits into the tree.
-    await warpTo((await now()) + HOUR + 1n);
+    // 2. After the pending delay anyone batches pending deposits into the tree (1 h for a batch of 4+, 2 h below).
+    await warpTo((await now()) + 2n * HOUR + 1n); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY (a batch under 4 deposits)
     await send(relayer, insertPendingTx(pool, 100n));
 
     // 3. Sync the tree locally and find our note by trial-decrypting encrypted notes.
@@ -49,9 +49,11 @@ await runExample("shield-and-withdraw", async ({ dep, pub, wallet, accounts, now
     const note = myNotes(state, keys).find((n) => n.asset === usdg && !n.spent && n.leafIndex !== null);
     check(note && note.raw === amount, "our note is in the tree");
 
-    // 4. Withdraw 150 to a fresh address; 1 USDG goes to whoever submits. The proof is made here, in ~1 s.
+    // 4. Withdraw 150 to a fresh address; 1 USDG goes to the relayer the proof names (only it can submit,
+    // so nobody copying the transaction takes the fee). Over HTTP, read it from relayerHealth(url).relayer.
+    // The proof is made here, in ~1 s.
     const fee = 1n * U;
-    const w = await proveWithdraw({ keys, tree: state.tree, note, amount: 150n * U, recipient: fresh, relayerFee: fee });
+    const w = await proveWithdraw({ keys, tree: state.tree, note, amount: 150n * U, recipient: fresh, relayerFee: fee, relayer });
     // Over HTTP this would be `submitWithdraw(relayerUrl, w)` from @plynth/sdk/relayer; here the relayer account sends it.
     const r = await send(relayer, withdrawTx(pool, w));
     check(getAddress(r.from) === relayer, "the relayer, not alice, sent the withdraw");

@@ -1,10 +1,13 @@
-// The close service. At each period end: wait until the held feeds are fresh, build the Close and its bundle
-// from one pinned block (PeriodClose.preview + the account's tracked assets + this period's desk actions),
-// store the bundle, sign the Close with the controller key (EIP-712), simulate, commit, record the tx.
+// The close service. At each period end: wait until the held feeds are fresh, pin the book on-chain with the
+// controller's PeriodClose.snapshot() (audit L-4), build the Close and its bundle from the snapshot's block
+// (PeriodClose.preview + the account's tracked assets + this period's desk actions), check it against the stored
+// snapshot, store the bundle, sign the Close with the controller key (EIP-712), simulate, commitSnapshot, record
+// the tx.
 //
-// PeriodClose recomputes NAV exactly at inclusion. If the chain moves between the preview and inclusion (a
-// feed round, vault interest accruing per second) the commit reverts with NavMismatch/PositionsMismatch/
-// WeightsMismatch; the service marks that bundle `stale` and rebuilds, up to `maxAttempts` times.
+// commitSnapshot checks the statement against the snapshot, not the live book, so a transfer to the account after
+// the snapshot (1 wei of USDG, a feed round, vault interest) no longer voids the signed Close. If the snapshot's
+// block does not match it (another transaction landed in the same block after it), it expired, or it was
+// consumed, the service marks that bundle `stale` and retakes the snapshot, up to `maxAttempts` times.
 import { decodeEventLog, zeroAddress, type Address, type Chain, type Hex, type PublicClient, type WalletClient } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { accountAbi, erc20Abi } from "@/abi/treasury-desks";
@@ -15,7 +18,7 @@ import type { CloseStore } from "./store";
 import { parseAbi } from "viem";
 
 const symbolAbi = parseAbi(["function symbol() view returns (string)"]);
-const RETRYABLE = new Set(["NavMismatch", "PositionsMismatch", "WeightsMismatch"]);
+const RETRYABLE = new Set(["NavMismatch", "PositionsMismatch", "WeightsMismatch", "NoSnapshot", "SnapshotExpired", "SnapshotBeforePeriodEnd"]);
 
 export type CloseStruct = {
   periodEnd: bigint;
@@ -61,10 +64,10 @@ export async function targetPeriodEnd(pub: PublicClient, pc: Address): Promise<b
   return BigInt(start) + BigInt(p.periodSeconds);
 }
 
-/** Builds the Close and its bundle from one block. Does not sign or send. */
-export async function buildClose(ctx: Pick<CloseContext, "chain" | "pub" | "periodClose" | "store">, periodEnd: bigint): Promise<Built> {
+/** Builds the Close and its bundle from one block (latest, or `at`: the snapshot's block). Does not sign or send. */
+export async function buildClose(ctx: Pick<CloseContext, "chain" | "pub" | "periodClose" | "store">, periodEnd: bigint, at?: bigint): Promise<Built> {
   const { pub, periodClose: pc } = ctx;
-  const block = await pub.getBlock({ blockTag: "latest" });
+  const block = at === undefined ? await pub.getBlock({ blockTag: "latest" }) : await pub.getBlock({ blockNumber: at });
   const blockNumber = block.number!;
   const read = <T>(address: Address, abi: readonly unknown[], functionName: string, args: unknown[] = []) =>
     pub.readContract({ address, abi: abi as never, functionName: functionName as never, args: args as never, blockNumber }) as Promise<T>;
@@ -174,10 +177,33 @@ export async function closeOnce(ctx: CloseContext): Promise<CloseOutcome> {
   const max = ctx.maxAttempts ?? 5;
   let lastErr = "";
   for (let attempt = 1; attempt <= max; attempt++) {
-    const b = await buildClose(ctx, periodEnd);
-    if (b.holdToken !== zeroAddress) {
-      say(`period ${periodEnd}: feed on hold for ${b.holdToken}; retry when markets reopen`);
-      return { status: "hold", periodEnd, token: b.holdToken };
+    const probe = await buildClose(ctx, periodEnd);
+    if (probe.holdToken !== zeroAddress) {
+      say(`period ${periodEnd}: feed on hold for ${probe.holdToken}; retry when markets reopen`);
+      return { status: "hold", periodEnd, token: probe.holdToken };
+    }
+    // Pin the book on-chain (controller only). Donations after this block do not change the statement.
+    let snapBlock: bigint;
+    try {
+      const { request } = await ctx.pub.simulateContract({ address: pc, abi: periodCloseAbi, functionName: "snapshot", account: ctx.controller, chain: ctx.chain });
+      const h = await ctx.wallet.writeContract(request as Parameters<WalletClient["writeContract"]>[0]);
+      const rc = await ctx.pub.waitForTransactionReceipt({ hash: h });
+      if (rc.status !== "success") {
+        lastErr = "snapshot reverted on-chain";
+        continue;
+      }
+      snapBlock = rc.blockNumber;
+    } catch (e) {
+      const r = decodeRejection(e);
+      if (r.reason === "HoldAtClose") return { status: "hold", periodEnd, token: (r.args?.[0] as Address) ?? zeroAddress };
+      return { status: "failed", periodEnd, error: `snapshot: ${r.reason}` };
+    }
+    const b = await buildClose(ctx, periodEnd, snapBlock);
+    const snap = await ctx.pub.readContract({ address: pc, abi: periodCloseAbi, functionName: "bookSnapshot", blockNumber: snapBlock });
+    if (snap.positionsHash !== b.close.positionsHash || snap.navUsd !== b.close.navUsd || snap.cashBps !== b.close.cashBps || snap.equityBps !== b.close.equityBps) {
+      lastErr = "snapshot block moved after the snapshot";
+      say(`period ${periodEnd}: the snapshot's block moved after it, retaking (attempt ${attempt}/${max})`);
+      continue;
     }
     const signature = await signClose(ctx.controller, ctx.chain.id, pc, b.close);
     const id = await ctx.store.insertSigned({
@@ -194,13 +220,13 @@ export async function closeOnce(ctx: CloseContext): Promise<CloseOutcome> {
 
     let request;
     try {
-      ({ request } = await ctx.pub.simulateContract({ address: pc, abi: periodCloseAbi, functionName: "commit", args: [b.close, signature], account: ctx.controller, chain: ctx.chain }));
+      ({ request } = await ctx.pub.simulateContract({ address: pc, abi: periodCloseAbi, functionName: "commitSnapshot", args: [b.close, signature], account: ctx.controller, chain: ctx.chain }));
     } catch (e) {
       const r = decodeRejection(e);
       if (RETRYABLE.has(r.reason)) {
         await ctx.store.markStatus(id, "stale", r.reason);
         lastErr = r.reason;
-        say(`period ${periodEnd}: chain moved (${r.reason}), rebuilding (attempt ${attempt}/${max})`);
+        say(`period ${periodEnd}: snapshot unusable (${r.reason}), retaking (attempt ${attempt}/${max})`);
         continue;
       }
       if (r.reason === "HoldAtClose") {

@@ -274,8 +274,8 @@ contract DeployTimersTest is Test {
     function test_perpPool_cooldownMinimum() public {
         MockUSDG usdg = new MockUSDG();
         vm.expectRevert(PerpPool.CooldownTooShort.selector);
-        new PerpPool(usdg, board, 10 minutes - 1);
-        assertEq(new PerpPool(usdg, board, 10 minutes).REDEEM_COOLDOWN(), 10 minutes);
+        new PerpPool(usdg, board, 10 minutes - 1, 48 hours);
+        assertEq(new PerpPool(usdg, board, 10 minutes, 48 hours).REDEEM_COOLDOWN(), 10 minutes);
     }
 
     function testFuzz_perpPool_redeemWaitsExactlyCooldown(uint256 d) public {
@@ -290,7 +290,7 @@ contract DeployTimersTest is Test {
 
     function _redeemAfter(uint256 d) internal {
         MockUSDG usdg = new MockUSDG();
-        PerpPool p = new PerpPool(usdg, board, d);
+        PerpPool p = new PerpPool(usdg, board, d, 48 hours);
         uint256 t = block.timestamp;
         usdg.mint(alice, 1000e6);
         vm.startPrank(alice);

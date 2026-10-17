@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -8,14 +8,29 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {TreasuryAccount} from "../treasury/TreasuryAccount.sol";
 import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
+import {IPeriodStartNav} from "../interfaces/ISleeve.sol";
+
+/// The part of the TreasuryFactory the pool reads: only treasuries it made may claim.
+interface ITreasuryRegistry {
+    function isTreasury(address account) external view returns (bool);
+}
 
 /// USDG pool that covers a treasury's loss caused by a policy bug (the guard let through something the
 /// policy should have stopped), never a market move.
 ///
 /// A claim is filed by the treasury's board and pays only when BOTH
-///   - the insurance committee (a Safe) approves it, and
+///   - the insurance committee (a Safe) approves it, no earlier than REVIEW_DELAY after filing, and
 ///   - the treasury's controller (the policy's `controller`, the key that signs period closes) attests it is
 ///     a policy-bug loss. An attestation of "market move" rejects the claim.
+/// The controller is appointed by the board itself, so its attestation is NOT an independent check (audit L-7):
+/// it can only reject (a controller may veto its own board's claim). The committee's approval is the independent
+/// check, and three on-chain limits bound what one wrong approval can cost:
+///   - only treasuries the TreasuryFactory made (`isTreasury`) may file (the factory is bound once by the
+///     deployer; unbound, every claim is refused), so `board()`, `policy()` and the NAV below are real;
+///   - a claim may not exceed MAX_CLAIM_NAV_BPS of the treasury's NAV basis (the larger of its live NAV and its
+///     last period-start NAV);
+///   - the committee cannot approve before REVIEW_DELAY has passed since filing, so the claim and its evidence
+///     hash are public for that long first.
 /// Approved claims join a FIFO queue. A payout never exceeds the pool's balance: the head claim is paid as
 /// far as the balance allows and stays at the head until paid in full; later claims wait behind it.
 /// Payouts go to the TreasuryAccount itself, not to the board.
@@ -29,7 +44,15 @@ import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
 ///     an LP cannot see a claim coming and leave first. A withdrawal pays min(value at request, value at
 ///     withdraw): the request value less any later claim losses.
 /// So a deposit is priced on what the active shares own, never on fees meant for someone else, and a
-/// withdrawer's exit cannot move the active share price. Deposits are refused while a claim is owed or while
+/// withdrawer's exit cannot move the active share price.
+///
+/// Fee vesting (audit L-8, the warm-up): router fees that reach the active side do not raise the share price at
+/// once; they vest linearly over FEE_VESTING (= WITHDRAW_DELAY; a new fee restarts the clock for what is still
+/// unvested). Withdrawal requests and `previewRedeem` count vested assets only, while deposits pay for the
+/// unvested fees too (they buy at the full active value). A deposit made just before a fee and withdrawn just
+/// after it gains ~0: it either stays exposed to claims for the whole vesting period or leaves its share of the
+/// unvested fees to the LPs who stay. Claims scale unvested fees like everything else; with no active share left,
+/// unvested fees go back to the FeeRouter with the rest. Deposits are refused while a claim is owed or while
 /// the active share price is under MIN_PRICE_BPS of the entry price (1 raw unit per 1e6 shares): a near-zero
 /// price would let a newcomer buy almost every share, and with it the old LPs' claim on the fees that should
 /// restore them. Only router fees (or claims ending) lift the price back.
@@ -76,6 +99,12 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     uint256 private constant VIRTUAL_SHARES = 1e6;
     /// Deposits need active shares worth at least this share of the entry price (1 raw unit per 1e6 shares).
     uint256 public constant MIN_PRICE_BPS = 5_000;
+    /// Most a claim may ask, in bps of the treasury's NAV basis (max of live NAV and period-start NAV).
+    uint256 public constant MAX_CLAIM_NAV_BPS = 2_500;
+    /// Minimum public review time between filing and committee approval: 3 days, or WITHDRAW_DELAY if shorter.
+    uint256 public immutable REVIEW_DELAY;
+    /// Router fees vest into the active share price over this long (= WITHDRAW_DELAY).
+    uint256 public immutable FEE_VESTING;
     uint256 private constant BPS = 10_000;
 
     IERC20 public immutable usdg;
@@ -84,6 +113,8 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     address public immutable deployer;
     /// The only caller of `depositFees` and where an ownerless active surplus goes. Bound once by the deployer.
     address public feeRouter;
+    /// The TreasuryFactory whose treasuries may claim. Bound once by the deployer; zero = no claims.
+    address public treasuryFactory;
 
     Claim[] private _claims;
     uint256[] private _queue;
@@ -92,6 +123,10 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     uint256 public activeShares;
     mapping(address => uint256) public sharesOf;
+
+    uint256 public lockedFees; // fees still vesting at `lockedAt` (scaled by claims since)
+    uint64 public lockedAt;
+    uint64 public unlockAt;
 
     uint256 public pendingAssets; // what the withdrawing LPs are owed now (<= freeAssets)
     uint256 public pendingUnits;
@@ -105,6 +140,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     event ClaimQueued(uint256 indexed id, uint256 position);
     event ClaimPaid(uint256 indexed id, uint256 amount, uint256 totalPaid, bool done);
     event FeeRouterBound(address feeRouter);
+    event TreasuryFactoryBound(address treasuryFactory);
     event FeesDeposited(address indexed from, uint256 amount);
     event SurplusReturned(address indexed to, uint256 amount);
     event Deposited(address indexed lp, uint256 assets, uint256 shares);
@@ -125,10 +161,15 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     error ClaimsOwed();
     error SharesUnderwater();
     error DelayTooShort();
+    error NotATreasury(address treasury);
+    error ClaimTooLarge(uint256 capUsd);
+    error InReview(uint64 approvableAt);
 
     constructor(IERC20Metadata usdg_, address committee_, uint256 withdrawDelay_) {
         if (withdrawDelay_ < MIN_WITHDRAW_DELAY) revert DelayTooShort();
         WITHDRAW_DELAY = withdrawDelay_;
+        REVIEW_DELAY = withdrawDelay_ < 3 days ? withdrawDelay_ : 3 days;
+        FEE_VESTING = withdrawDelay_;
         if (address(usdg_) == address(0) || committee_ == address(0)) revert ZeroAddress();
         usdg = IERC20(address(usdg_));
         usdgDecimals = usdg_.decimals();
@@ -145,14 +186,30 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         emit FeeRouterBound(feeRouter_);
     }
 
+    /// One-time wiring: the TreasuryFactory whose treasuries may file claims.
+    function bindTreasuryFactory(address factory_) external {
+        if (msg.sender != deployer) revert NotDeployer();
+        if (treasuryFactory != address(0)) revert AlreadyDone();
+        if (factory_ == address(0)) revert ZeroAddress();
+        treasuryFactory = factory_;
+        emit TreasuryFactoryBound(factory_);
+    }
+
     // ---------------------------------------------------------------- claims
 
-    /// `lossUsd` is 1e18-scaled USD; it is paid in USDG at 1:1.
+    /// `lossUsd` is 1e18-scaled USD; it is paid in USDG at 1:1. Only a TreasuryFactory treasury's board, and at
+    /// most MAX_CLAIM_NAV_BPS of the treasury's NAV basis (`claimCapUsd`).
     function fileClaim(TreasuryAccount treasury, uint256 lossUsd, bytes32 evidenceHash)
         external
         returns (uint256 id)
     {
+        address f = treasuryFactory;
+        if (f == address(0) || !ITreasuryRegistry(f).isTreasury(address(treasury))) {
+            revert NotATreasury(address(treasury));
+        }
         if (msg.sender != treasury.board()) revert NotBoard();
+        uint256 cap = claimCapUsd(treasury);
+        if (lossUsd > cap) revert ClaimTooLarge(cap);
         uint256 amount = _toRaw(lossUsd);
         if (amount == 0) revert ZeroAmount();
         id = _claims.length;
@@ -162,10 +219,13 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         emit ClaimFiled(id, address(treasury), msg.sender, amount, evidenceHash);
     }
 
+    /// The committee, no earlier than REVIEW_DELAY after filing.
     function approveClaim(uint256 id) external {
         if (msg.sender != committee) revert NotCommittee();
         Claim storage c = _filed(id);
         if (c.committeeApproved) revert AlreadyDone();
+        uint64 at = uint64(c.filedAt + REVIEW_DELAY);
+        if (block.timestamp < at) revert InReview(at);
         c.committeeApproved = true;
         emit ClaimApproved(id);
         _maybeQueue(id, c);
@@ -178,7 +238,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     }
 
     /// Called by the controller of the treasury's policy in force now. `policyBug = false` (a market move)
-    /// rejects the claim.
+    /// rejects the claim. Not independent of the board (it appoints the controller): see the contract notes.
     function attest(uint256 id, bool policyBug) external {
         Claim storage c = _filed(id);
         (TreasuryPolicy.Policy memory p,,) = TreasuryAccount(c.treasury).policy().current();
@@ -208,9 +268,17 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     function depositFees(uint256 amount) external nonReentrant {
         if (msg.sender != feeRouter) revert NotFeeRouter();
         if (amount == 0) revert ZeroAmount();
+        uint256 freeBefore = freeAssets();
         usdg.safeTransferFrom(msg.sender, address(this), amount);
         emit FeesDeposited(msg.sender, amount);
         _process();
+        uint256 freeAfter = freeAssets();
+        // What reached the free side (after owed claims) vests into the active share price over FEE_VESTING.
+        if (activeShares != 0 && freeAfter > freeBefore) {
+            lockedFees = unvestedFees() + (freeAfter - freeBefore);
+            lockedAt = uint64(block.timestamp);
+            unlockAt = uint64(block.timestamp + FEE_VESTING);
+        }
         _returnIdle();
     }
 
@@ -220,7 +288,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         if (assets == 0) revert ZeroAmount();
         if (queuedOwed != 0) revert ClaimsOwed();
         _returnIdle(); // with no active share, whatever the active side holds is not the newcomer's
-        uint256 a = activeAssets();
+        uint256 a = _activeFull(); // a newcomer pays for the unvested fees too: they are the stayers'
         uint256 s = activeShares;
         if (s != 0 && (a + 1) * VIRTUAL_SHARES * BPS < (s + VIRTUAL_SHARES) * MIN_PRICE_BPS) revert SharesUnderwater();
         shares = Math.mulDiv(assets, s + VIRTUAL_SHARES, a + 1);
@@ -286,19 +354,40 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     // ---------------------------------------------------------------- views
 
+    /// Most a claim of `treasury` may ask now (USD 1e18): MAX_CLAIM_NAV_BPS of the larger of its live NAV and its
+    /// PeriodClose's period-start NAV.
+    function claimCapUsd(TreasuryAccount treasury) public view returns (uint256) {
+        (uint256 nav,) = treasury.navUsd();
+        address pc = treasury.periodClose();
+        if (pc != address(0)) {
+            uint256 start = IPeriodStartNav(pc).periodStartNav();
+            if (start > nav) nav = start;
+        }
+        return nav * MAX_CLAIM_NAV_BPS / BPS;
+    }
+
     /// Balance not owed to queued claims.
     function freeAssets() public view returns (uint256) {
         uint256 bal = usdg.balanceOf(address(this));
         return bal > queuedOwed ? bal - queuedOwed : 0;
     }
 
-    /// What the active shares own: free assets less the withdrawing LPs' liability.
+    /// What the active shares own and has vested: free assets less the withdrawing LPs' liability and the
+    /// unvested fees.
     function activeAssets() public view returns (uint256) {
-        uint256 f = freeAssets();
-        return f > pendingAssets ? f - pendingAssets : 0;
+        uint256 a = _activeFull();
+        uint256 u = unvestedFees();
+        return a > u ? a - u : 0;
     }
 
-    /// Value of `shares` active shares now.
+    /// Router fees still vesting into the active side (linear from `lockedAt` to `unlockAt`).
+    function unvestedFees() public view returns (uint256) {
+        uint256 end = unlockAt;
+        if (block.timestamp >= end) return 0;
+        return Math.mulDiv(lockedFees, end - block.timestamp, end - lockedAt);
+    }
+
+    /// Value of `shares` active shares now (vested assets only: what a withdrawal request locks in).
     function previewRedeem(uint256 shares) public view returns (uint256) {
         return Math.mulDiv(shares, activeAssets() + 1, activeShares + VIRTUAL_SHARES);
     }
@@ -353,6 +442,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     /// A queued claim cut the free assets from `before` to `afterLoss`: the withdrawing LPs lose the same
     /// fraction as the active ones (the active side gets the rounding).
     function _absorbLoss(uint256 before, uint256 afterLoss) private {
+        if (lockedFees != 0) lockedFees = before == 0 ? 0 : Math.mulDiv(lockedFees, afterLoss, before);
         uint256 p = pendingAssets;
         if (p == 0) return;
         p = Math.mulDiv(p, afterLoss, before); // before >= pendingAssets > 0
@@ -388,10 +478,17 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         if (activeShares != 0) return;
         address to = feeRouter;
         if (to == address(0)) return;
-        uint256 a = activeAssets();
+        uint256 a = _activeFull(); // unvested fees included: no share is left to vest them to
+        lockedFees = 0;
         if (a == 0) return;
         usdg.safeTransfer(to, a);
         emit SurplusReturned(to, a);
+    }
+
+    /// Free assets less the withdrawing LPs' liability, vested or not.
+    function _activeFull() private view returns (uint256) {
+        uint256 f = freeAssets();
+        return f > pendingAssets ? f - pendingAssets : 0;
     }
 
     function _toRaw(uint256 usd) private view returns (uint256) {

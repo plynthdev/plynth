@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -20,9 +20,10 @@ import {TemplateRegistry} from "./TemplateRegistry.sol";
 /// `deploy` (it only creates contracts the named board controls), but the dashboard hands the board Safe an
 /// unsigned transaction so in practice the Safe calls it.
 ///
-/// Clone addresses are deterministic per (board, nonce) so a front end can show them before the Safe signs
-/// (`predict`). If someone else deploys for the same board first, the board's transaction still succeeds at the
-/// next nonce; the event is the source of truth. `feeRecipient` and `tiers` are factory-wide settings handed to
+/// Clone addresses are deterministic per (creator, board, nonce), the creator being `msg.sender`, so a front end
+/// can show them before the Safe signs (`predict(creator, board)`). They are bound to the caller: someone else
+/// deploying for the same board (with their own policy and controller) lands on their own addresses and cannot
+/// take the ones the board was shown. The event is the source of truth. `feeRecipient` and `tiers` are factory-wide settings handed to
 /// every PeriodClose (and `tiers` to every TreasuryAccount, for its desk limit), and either may be zero.
 ///
 /// Templates marketplace (todo 30): `deployFromTemplate` builds a treasury from a template the
@@ -43,7 +44,7 @@ contract TreasuryFactory {
     ITierSource public immutable tiers; // zero = no tier gating
     TemplateRegistry public immutable templates; // zero = no templates marketplace
 
-    mapping(address board => uint256) public nonceOf;
+    mapping(address creator => mapping(address board => uint256)) public nonceOf;
     mapping(address account => bool) public isTreasury;
     mapping(address account => uint256) public templateOf; // 0 = not built from a template
     mapping(address close => address) public accountOfClose;
@@ -148,11 +149,11 @@ contract TreasuryFactory {
         returns (address account, address policy, address close)
     {
         if (boardSafe == address(0)) revert ZeroAddress();
-        uint256 nonce = nonceOf[boardSafe]++;
-        policy = Clones.cloneDeterministic(policyImpl, _salt(boardSafe, nonce, 0));
-        account = Clones.cloneDeterministic(accountImpl, _salt(boardSafe, nonce, 1));
-        close = Clones.cloneDeterministic(closeImpl, _salt(boardSafe, nonce, 2));
-        address approvals = Clones.cloneDeterministic(approvalsImpl, _salt(boardSafe, nonce, 3));
+        uint256 nonce = nonceOf[msg.sender][boardSafe]++;
+        policy = Clones.cloneDeterministic(policyImpl, _salt(msg.sender, boardSafe, nonce, 0));
+        account = Clones.cloneDeterministic(accountImpl, _salt(msg.sender, boardSafe, nonce, 1));
+        close = Clones.cloneDeterministic(closeImpl, _salt(msg.sender, boardSafe, nonce, 2));
+        address approvals = Clones.cloneDeterministic(approvalsImpl, _salt(msg.sender, boardSafe, nonce, 3));
 
         TreasuryPolicy(policy).initialize(boardSafe, p);
         BoardApprovals(approvals).initialize(boardSafe, address(guard), account);
@@ -165,17 +166,18 @@ contract TreasuryFactory {
         emit TreasuryCreated(boardSafe, account, msg.sender, policy, close, approvals, keccak256(compiledPolicy));
     }
 
-    /// Addresses the next `deploy` for `boardSafe` will create (if nobody deploys for that board first).
-    function predict(address boardSafe)
+    /// Addresses the next `deploy` (or `deployFromTemplate`) for `boardSafe` sent by `creator` will create.
+    /// Only `creator` can move its nonce, so nobody else can take them.
+    function predict(address creator, address boardSafe)
         external
         view
         returns (address account, address policy, address close, address approvals)
     {
-        uint256 nonce = nonceOf[boardSafe];
-        policy = Clones.predictDeterministicAddress(policyImpl, _salt(boardSafe, nonce, 0));
-        account = Clones.predictDeterministicAddress(accountImpl, _salt(boardSafe, nonce, 1));
-        close = Clones.predictDeterministicAddress(closeImpl, _salt(boardSafe, nonce, 2));
-        approvals = Clones.predictDeterministicAddress(approvalsImpl, _salt(boardSafe, nonce, 3));
+        uint256 nonce = nonceOf[creator][boardSafe];
+        policy = Clones.predictDeterministicAddress(policyImpl, _salt(creator, boardSafe, nonce, 0));
+        account = Clones.predictDeterministicAddress(accountImpl, _salt(creator, boardSafe, nonce, 1));
+        close = Clones.predictDeterministicAddress(closeImpl, _salt(creator, boardSafe, nonce, 2));
+        approvals = Clones.predictDeterministicAddress(approvalsImpl, _salt(creator, boardSafe, nonce, 3));
     }
 
     function treasuryCount() external view returns (uint256) {
@@ -186,8 +188,8 @@ contract TreasuryFactory {
         return _accounts[index];
     }
 
-    function _salt(address board, uint256 nonce, uint8 kind) private pure returns (bytes32) {
-        return keccak256(abi.encode(board, nonce, kind));
+    function _salt(address creator, address board, uint256 nonce, uint8 kind) private pure returns (bytes32) {
+        return keccak256(abi.encode(creator, board, nonce, kind));
     }
 
     function _requireCode(address impl) private view {

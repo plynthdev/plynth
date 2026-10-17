@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -35,6 +35,8 @@ interface IPrivateSleeve {
 
     function band() external view returns (uint8);
     function bookUsd() external view returns (uint256);
+    /// The book is not empty and its last proof is older than the policy period + PROOF_GRACE (no new shields).
+    function bookStale() external view returns (bool);
     function checkClose(PrivateClose calldata p, BookContext calldata ctx) external view returns (bytes32);
     function onClose(uint256 provenUsd) external;
 }
@@ -50,8 +52,11 @@ interface IPrivateSleeve {
 /// - shield (`run`, via TreasuryAccount.execute): only through the board-designated private desk (the account
 ///   enforces it), only while the board holds the tier. Pulls a declared asset from the account, deposits a
 ///   note for `ownerPk` and adds the asset's Valuer value to `bookUsd`.
-/// - unshield (`unshield`): anyone may submit a withdraw proof whose recipient is the account and whose relayer
-///   fee is 0; it is never gated (no tier, desk, pause or guard check). `bookUsd` drops by the value received.
+/// - unshield (`unshield`): anyone may submit a withdraw proof whose recipient is this sleeve and whose relayer
+///   fee is 0; it is never gated (no tier, desk, pause or guard check). The sleeve forwards what it received to the
+///   account and `bookUsd` drops by its value. The recipient is the sleeve, not the account (audit L-10): a proof
+///   submitted straight to `ShieldedPool.withdraw` then still lands here, and `sweep` (anyone) forwards it and
+///   debits the book, so an unshield can never be counted both in the account and in the book.
 /// - refund (`refund`): a deposit still pending in the pool returns to the account, ungated.
 /// - close (`checkClose` / `onClose`, from PeriodClose): a treasury_close proof replaces `bookUsd` with the
 ///   proven private NAV.
@@ -61,6 +66,13 @@ interface IPrivateSleeve {
 /// are not seen until the next close: band checks for private holdings use the last proven value until then
 /// (documented limit). `valueOf` is 0: nothing here is visible on-chain, so `account.navUsd()` is the public
 /// NAV and PeriodClose adds the proven private part.
+///
+/// Staleness (audit L-6): `lastProvenAt` is when the book was last proven (a proven close or a permissionless
+/// `PeriodClose.refreshPrivateBook`), or when it was last opened from empty (a shield into an empty book: the book
+/// is then exactly the shield). Once the book is not empty and that is older than the policy's period plus
+/// PROOF_GRACE, `bookStale` is true and the guard refuses new shields (rule 10, code 18) until a fresh proof;
+/// unshield, refund and sweep stay open. Residual: within the bound the book can still drift (private trades and
+/// prices are unseen), and the guard keeps using it for NAV, bands and drawdown.
 ///
 /// Trust: whoever holds the spending secret (the controller) can spend the notes inside the pool, including a
 /// withdraw to any address; the guard bounds what enters the sleeve, and the next close shows (as lower NAV)
@@ -73,6 +85,8 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     uint256 public constant MAX_NOTES = 8;
     uint256 public constant MAX_PRICE = (1 << 96) - 1; // circuit range-checks prices to 96 bits
     uint256 public constant MAX_USD = type(uint128).max; // circuit range-checks USD amounts to 128 bits
+    /// Slack on top of the policy period before an unproven book is stale (closes wait for open markets).
+    uint256 public constant PROOF_GRACE = 4 days;
 
     address public immutable account;
     ShieldedPool public immutable pool;
@@ -87,11 +101,14 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     bytes32 public ownerPk;
     bytes32 public viewingPub;
     uint256 public bookUsd;
+    /// Last proof of the book (or last time it was opened from empty).
+    uint64 public lastProvenAt;
     mapping(uint256 pendingId => uint256 usd) public pendingUsd;
 
     event KeysSet(bytes32 ownerPk, bytes32 viewingPub);
     event Shielded(address indexed asset, uint256 raw, uint256 usd, uint256 indexed pendingId);
     event Unshielded(address indexed asset, uint256 raw, uint256 usd);
+    event Swept(address indexed asset, uint256 raw, uint256 usd);
     event Refunded(uint256 indexed pendingId, address indexed asset, uint256 raw, uint256 usd);
     event BookReset(uint256 provenUsd);
 
@@ -196,6 +213,7 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         IERC20(asset).safeTransferFrom(account, address(this), raw);
         IERC20(asset).forceApprove(address(pool), raw);
         uint256 pendingId = pool.deposit(asset, raw, pk, blinding, note);
+        if (bookUsd == 0) lastProvenAt = uint64(block.timestamp); // opened from empty: the book is this shield
         bookUsd += usd;
         pendingUsd[pendingId] = usd;
         emit Shielded(asset, raw, usd, pendingId);
@@ -204,17 +222,22 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
 
     // ---------------------------------------------------------------- unshield / refund (never gated)
 
-    /// Anyone: runs `pool.withdraw` for a note of this sleeve's key, paying the account. The proof binds the
-    /// recipient; this contract only insists it is the account and that no relayer fee leaves the treasury.
+    /// Anyone: runs `pool.withdraw` for a note of this sleeve's key, paid to this sleeve, then forwards it to the
+    /// account and debits the book. The proof binds the recipient; this contract insists it is itself and that no
+    /// relayer fee leaves the treasury.
     function unshield(bytes calldata proof, ShieldedPool.PublicWithdraw calldata pub) external nonReentrant {
-        if (pub.recipient != account) revert BadRecipient();
+        if (pub.recipient != address(this)) revert BadRecipient();
         if (pub.relayerFee != 0) revert FeeNotAllowed();
-        uint256 before = IERC20(pub.asset).balanceOf(account);
         pool.withdraw(proof, pub);
-        uint256 received = IERC20(pub.asset).balanceOf(account) - before;
-        uint256 usd = _valueOrZero(pub.asset, received);
-        _debit(usd);
-        emit Unshielded(pub.asset, received, usd);
+        (uint256 raw, uint256 usd) = _sweep(pub.asset);
+        emit Unshielded(pub.asset, raw, usd);
+    }
+
+    /// Anyone: forwards whatever of `asset` this sleeve holds (an unshield proof submitted straight to the pool,
+    /// or a transfer) to the account, debiting its value from the book. The sleeve holds nothing between calls.
+    function sweep(address asset) external nonReentrant {
+        (uint256 raw, uint256 usd) = _sweep(asset);
+        emit Swept(asset, raw, usd);
     }
 
     /// Anyone: a shield still pending in the pool goes back to the account.
@@ -274,12 +297,20 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         if (!ok) revert InvalidProof();
     }
 
-    /// PeriodClose, after a proven close: the guard's book becomes the proven private NAV.
+    /// PeriodClose, after a proven close (or a proven refresh): the guard's book becomes the proven private NAV.
     function onClose(uint256 provenUsd) external {
         address pc = ITreasuryAccount(account).periodClose();
         if (msg.sender != pc || pc == address(0)) revert NotPeriodClose();
         bookUsd = provenUsd;
+        lastProvenAt = uint64(block.timestamp);
         emit BookReset(provenUsd);
+    }
+
+    /// True while the book is not empty and its last proof is older than the policy period + PROOF_GRACE.
+    function bookStale() external view returns (bool) {
+        if (bookUsd == 0) return false;
+        (TreasuryPolicy.Policy memory p,,) = ITreasuryAccount(account).policy().current();
+        return block.timestamp > uint256(lastProvenAt) + p.periodSeconds + PROOF_GRACE;
     }
 
     /// acc_{k+1} = H(acc_k, H(asset, price, multiplier, roundId)) over MAX_ASSETS slots (unused slots zero),
@@ -308,6 +339,14 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         if (address(tiers) == address(0)) return;
         address board = ITreasuryAccount(account).board();
         if (!tiers.tierOf(board).privateSleeve) revert TierTooLow(board);
+    }
+
+    function _sweep(address asset) private returns (uint256 raw, uint256 usd) {
+        raw = IERC20(asset).balanceOf(address(this));
+        if (raw == 0) return (0, 0);
+        usd = _valueOrZero(asset, raw);
+        IERC20(asset).safeTransfer(account, raw);
+        _debit(usd);
     }
 
     function _debit(uint256 usd) private {

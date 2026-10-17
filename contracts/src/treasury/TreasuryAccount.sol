@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -85,11 +85,16 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     /// Private sleeve (PrivateSleeve) and the only desk that may run it. Zero = none.
     address public privateSleeve;
     bytes32 public privateDeskId;
+    /// A PeriodClose replacement waiting out the policy's TIMELOCK (zero = none) and when it can be applied.
+    address public pendingPeriodClose;
+    uint64 public pendingPeriodCloseEta;
 
     event DeskRegistered(bytes32 indexed deskId, address indexed key, address[] adapters);
     event DeskRevoked(bytes32 indexed deskId);
     event SleeveAdded(address indexed sleeve, uint8 band);
     event PeriodCloseSet(address indexed periodClose);
+    event PeriodCloseProposed(address indexed periodClose, uint64 eta);
+    event PeriodCloseCancelled(address indexed periodClose);
     event GuardDecision(bytes32 indexed opHash, bytes32 indexed deskId, uint8 code);
     event Executed(bytes32 indexed opHash, bytes32 indexed deskId, address indexed adapter);
     event WithdrawnToBoard(address indexed token, uint256 amount);
@@ -111,6 +116,10 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error AlreadyInitialized();
     error PrivateBookOpen();
     error TierTooLow(address board, uint256 maxDesks);
+    error PeriodCloseAlreadySet();
+    error PeriodCloseNotSet();
+    error NothingPending();
+    error TimelockActive(uint64 eta);
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -128,7 +137,8 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         _init(board_, policy_, guard_, approvals_);
     }
 
-    /// Clone setup (TreasuryFactory), once. `periodClose_` may be zero (drawdown rule off until the board sets it);
+    /// Clone setup (TreasuryFactory), once. `periodClose_` may be zero (drawdown rule off until the board sets it
+    /// with `setPeriodClose`);
     /// `tiers_` may be zero (no desk limit).
     function initialize(
         address board_,
@@ -193,10 +203,45 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         emit DeskRevoked(deskId);
     }
 
-    /// The contract whose `periodStartNav()` drives the drawdown rule (PeriodClose). Zero disables rule 8.
+    /// The contract whose `periodStartNav()` drives the drawdown rule (PeriodClose); it also pays the close fee
+    /// and resets the private sleeve's book. Set once, instantly, while none is set (the factory wires it at
+    /// `initialize`); after that it can only be replaced, never cleared, and only through
+    /// `proposePeriodClose` / `applyPeriodClose` with the policy's TIMELOCK, so the drawdown rule cannot be
+    /// switched off (or pointed at a PeriodClose with a fresh `periodStartNav` of 0) outside the timelock.
     function setPeriodClose(address periodClose_) external onlyBoard {
+        if (periodClose_ == address(0)) revert ZeroAddress();
+        if (periodClose != address(0)) revert PeriodCloseAlreadySet();
         periodClose = periodClose_;
         emit PeriodCloseSet(periodClose_);
+    }
+
+    /// Starts the TIMELOCK for replacing the PeriodClose (a new proposal replaces the old one and restarts it).
+    function proposePeriodClose(address periodClose_) external onlyBoard {
+        if (periodClose_ == address(0)) revert ZeroAddress();
+        if (periodClose == address(0)) revert PeriodCloseNotSet();
+        uint64 eta = uint64(block.timestamp) + policy.TIMELOCK();
+        pendingPeriodClose = periodClose_;
+        pendingPeriodCloseEta = eta;
+        emit PeriodCloseProposed(periodClose_, eta);
+    }
+
+    function cancelPeriodClose() external onlyBoard {
+        address p = pendingPeriodClose;
+        if (p == address(0)) revert NothingPending();
+        delete pendingPeriodClose;
+        delete pendingPeriodCloseEta;
+        emit PeriodCloseCancelled(p);
+    }
+
+    /// Anyone, once the TIMELOCK has passed.
+    function applyPeriodClose() external {
+        address p = pendingPeriodClose;
+        if (p == address(0)) revert NothingPending();
+        if (block.timestamp < pendingPeriodCloseEta) revert TimelockActive(pendingPeriodCloseEta);
+        delete pendingPeriodClose;
+        delete pendingPeriodCloseEta;
+        periodClose = p;
+        emit PeriodCloseSet(p);
     }
 
     /// Designates the private sleeve and the desk allowed to move holdings into it (`deskId`; the desk must list

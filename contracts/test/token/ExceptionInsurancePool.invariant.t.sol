@@ -9,12 +9,20 @@ import {ExceptionInsurancePool} from "../../src/token/ExceptionInsurancePool.sol
 import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 
+/// Stands in for the TreasuryFactory's `isTreasury` (every claim comes from the fixture's treasury).
+contract InvariantTreasuryRegistry {
+    function isTreasury(address) external pure returns (bool) {
+        return true;
+    }
+}
+
 /// Random LP deposits (incl. dust), withdrawal requests, withdrawals, router fees (incl. 1 wei), claims (incl.
 /// ones that take the whole pool or leave dust), direct donations and time. The handler is the FeeRouter.
 ///
 /// Checked after every action:
 ///   - no deposit (or any other non-claim action) lowers anyone else's value, active or withdrawing, and no
-///     LP's deposit, request or withdrawal raises anyone else's beyond rounding;
+///     LP's deposit or withdrawal raises anyone else's beyond rounding (a request may: the requester leaves its
+///     share of the fees still vesting to the stayers, L-8); values count unvested fees pro rata;
 ///   - router fees never change a withdrawing LP's value;
 ///   - a withdrawal pays min(value at request, value at withdraw): at most the request value, and the
 ///     request value less exactly the claim losses since (fees after the request never reach it);
@@ -56,8 +64,13 @@ contract InsuranceHandler is Test {
         usdg.approve(address(pool), type(uint256).max);
     }
 
+    /// Each LP's full value: active shares at the active assets including the fees still vesting (L-8), plus the
+    /// pending withdrawal. Vesting moves value from unvested to vested, not between LPs.
     function _values() internal view returns (uint256[4] memory v) {
-        for (uint256 i; i < 4; i++) v[i] = pool.previewRedeem(pool.sharesOf(actors[i])) + pool.pendingValueOf(actors[i]);
+        uint256 full = pool.activeAssets() + pool.unvestedFees();
+        for (uint256 i; i < 4; i++) {
+            v[i] = Math.mulDiv(pool.sharesOf(actors[i]), full + 1, pool.activeShares() + 1e6) + pool.pendingValueOf(actors[i]);
+        }
     }
 
     function _noneLowered(uint256[4] memory before, uint256 except) internal {
@@ -78,7 +91,7 @@ contract InsuranceHandler is Test {
     }
 
     function _sharePrice() internal view returns (uint256) {
-        return (pool.activeAssets() + 1) / (pool.activeShares() + 1e6) + 1;
+        return (pool.activeAssets() + pool.unvestedFees() + 1) / (pool.activeShares() + 1e6) + 1;
     }
 
     function _pendingValues() internal view returns (uint256[4] memory v) {
@@ -124,7 +137,10 @@ contract InsuranceHandler is Test {
         ghostScaled[who] += value;
         ghostSteps[who] += 2;
         ghostEpoch[who] = pool.pendingEpoch();
-        _noneMoved(before, i, price);
+        // A request locks in the vested value only: the requester's share of fees still vesting stays with the
+        // LPs who stay (L-8), so others may gain, but nobody loses.
+        _noneLowered(before, i);
+        price;
     }
 
     function withdraw(uint256 a) external {
@@ -179,6 +195,7 @@ contract InsuranceHandler is Test {
         if (amount == 0) return;
         vm.prank(board);
         uint256 id = pool.fileClaim(account, amount * 1e12, keccak256("drill"));
+        vm.warp(block.timestamp + pool.REVIEW_DELAY()); // the committee's review period
         vm.prank(committee);
         pool.approveClaim(id);
         uint256 fBefore = pool.freeAssets();
@@ -235,6 +252,8 @@ contract ExceptionInsurancePoolInvariantTest is TreasuryFixture {
         pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
         handler = new InsuranceHandler(pool, usdg, address(this), account, board, controller, committee);
         pool.bindFeeRouter(address(handler));
+        pool.bindTreasuryFactory(address(new InvariantTreasuryRegistry()));
+        periodClose.set(4e33); // a large NAV basis: the per-claim cap never binds the drill claims
         bytes4[] memory sel = new bytes4[](8);
         sel[0] = InsuranceHandler.deposit.selector;
         sel[1] = InsuranceHandler.requestWithdraw.selector;

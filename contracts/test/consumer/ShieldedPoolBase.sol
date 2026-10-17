@@ -93,7 +93,7 @@ abstract contract ShieldedPoolBase is Test {
     }
 
     function _insertAll() internal {
-        vm.warp(block.timestamp + pool.MIN_PENDING_DELAY());
+        vm.warp(block.timestamp + pool.MIN_PENDING_DELAY() + pool.SOLO_INSERT_DELAY()); // any batch size
         pool.insertPending(type(uint256).max);
     }
 

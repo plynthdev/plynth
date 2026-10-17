@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {TreasuryPolicy} from "./TreasuryPolicy.sol";
-import {IPerpVenue} from "../interfaces/IPerpVenue.sol";
 
 /// The on-chain copy of what off-chain perp venues (Orderly, Arcus) hold for a treasury. The risk service
-/// reads each venue, and the policy's controller signs a snapshot `(venue, positions, equityUsd, flowInSeen, ts)`
-/// (EIP-712; EIP-1271 for a contract controller). Anyone may submit a signed snapshot.
+/// reads each venue, and the policy's controller signs a snapshot
+/// `(venue, positions, equityUsd, flowInSeen, flowOutSeen, ts)` (EIP-712; EIP-1271 for a contract controller).
+/// Anyone may submit a signed snapshot.
 ///
 /// `flowInSeen` is the venue adapter's cumulative deposit counter the controller has accounted for, so margin
 /// deposited after the snapshot still counts in NAV until the next one (no race between deposit and snapshot).
+/// `flowOutSeen` is the adapter's cumulative counter of cash received back from the venue (`flowOut`) that the
+/// venue equity already excludes, so cash returned after the snapshot is not counted both at the venue (by the
+/// stale mirror) and at the adapter or the account (audit lead: mirrored venues counted returning cash twice).
 ///
 /// A snapshot older than STALE_AFTER makes the venue stale: the PolicyGuard then blocks new risk on it but
 /// still lets the desks reduce it. One mirror per TreasuryPolicy (its controller signs).
@@ -21,20 +24,29 @@ contract PositionMirror is EIP712 {
 
     bytes32 public constant POSITION_TYPEHASH = keccak256("Position(address underlying,int256 tokens)");
     bytes32 public constant SNAPSHOT_TYPEHASH = keccak256(
-        "Snapshot(address venue,Position[] positions,uint256 equityUsd,uint256 flowInSeen,uint64 ts)Position(address underlying,int256 tokens)"
+        "Snapshot(address venue,Position[] positions,uint256 equityUsd,uint256 flowInSeen,uint256 flowOutSeen,uint64 ts)Position(address underlying,int256 tokens)"
     );
+
+    /// A venue position as the controller signs it (the venue adapter adds the margin, IPerpVenue.Position).
+    struct Position {
+        address underlying;
+        int256 tokens;
+    }
 
     struct Snap {
         uint256 equityUsd; // 1e18
         uint256 flowInSeen; // adapter cash units
+        uint256 flowOutSeen; // adapter cash units
         uint64 ts;
-        IPerpVenue.Position[] positions;
+        Position[] positions;
     }
 
     TreasuryPolicy public immutable policy;
     mapping(address venue => Snap) private _latest;
 
-    event MirrorPosted(address indexed venue, uint64 ts, uint256 equityUsd, uint256 flowInSeen, bytes32 positionsHash);
+    event MirrorPosted(
+        address indexed venue, uint64 ts, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, bytes32 positionsHash
+    );
 
     error BadTimestamp(uint64 ts);
     error TooManyPositions();
@@ -46,9 +58,10 @@ contract PositionMirror is EIP712 {
 
     function post(
         address venue,
-        IPerpVenue.Position[] calldata positions,
+        Position[] calldata positions,
         uint256 equityUsd,
         uint256 flowInSeen,
+        uint256 flowOutSeen,
         uint64 ts,
         bytes calldata signature
     ) external {
@@ -58,19 +71,20 @@ contract PositionMirror is EIP712 {
         if (positions.length > MAX_POSITIONS) revert TooManyPositions();
         bytes32 posHash = hashPositions(positions);
         bytes32 digest = _hashTypedDataV4(
-            keccak256(abi.encode(SNAPSHOT_TYPEHASH, venue, posHash, equityUsd, flowInSeen, ts))
+            keccak256(abi.encode(SNAPSHOT_TYPEHASH, venue, posHash, equityUsd, flowInSeen, flowOutSeen, ts))
         );
         (TreasuryPolicy.Policy memory p,,) = policy.current();
         if (!SignatureChecker.isValidSignatureNow(p.controller, digest, signature)) revert BadSignature();
 
         s.equityUsd = equityUsd;
         s.flowInSeen = flowInSeen;
+        s.flowOutSeen = flowOutSeen;
         s.ts = ts;
         delete s.positions;
         for (uint256 i; i < positions.length; ++i) {
             s.positions.push(positions[i]);
         }
-        emit MirrorPosted(venue, ts, equityUsd, flowInSeen, posHash);
+        emit MirrorPosted(venue, ts, equityUsd, flowInSeen, flowOutSeen, posHash);
     }
 
     // ---------------------------------------------------------------- views
@@ -78,10 +92,10 @@ contract PositionMirror is EIP712 {
     function latest(address venue)
         external
         view
-        returns (IPerpVenue.Position[] memory positions, uint256 equityUsd, uint256 flowInSeen, uint64 ts)
+        returns (Position[] memory positions, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, uint64 ts)
     {
         Snap storage s = _latest[venue];
-        return (s.positions, s.equityUsd, s.flowInSeen, s.ts);
+        return (s.positions, s.equityUsd, s.flowInSeen, s.flowOutSeen, s.ts);
     }
 
     /// No snapshot yet, or the last one is older than STALE_AFTER.
@@ -91,7 +105,7 @@ contract PositionMirror is EIP712 {
     }
 
     /// EIP-712 array hash: keccak of the concatenated struct hashes.
-    function hashPositions(IPerpVenue.Position[] calldata positions) public pure returns (bytes32) {
+    function hashPositions(Position[] calldata positions) public pure returns (bytes32) {
         bytes32[] memory hs = new bytes32[](positions.length);
         for (uint256 i; i < positions.length; ++i) {
             hs[i] = keccak256(abi.encode(POSITION_TYPEHASH, positions[i].underlying, positions[i].tokens));
@@ -99,13 +113,18 @@ contract PositionMirror is EIP712 {
         return keccak256(abi.encodePacked(hs));
     }
 
-    function digestOf(address venue, IPerpVenue.Position[] calldata positions, uint256 equityUsd, uint256 flowInSeen, uint64 ts)
-        external
-        view
-        returns (bytes32)
-    {
+    function digestOf(
+        address venue,
+        Position[] calldata positions,
+        uint256 equityUsd,
+        uint256 flowInSeen,
+        uint256 flowOutSeen,
+        uint64 ts
+    ) external view returns (bytes32) {
         return _hashTypedDataV4(
-            keccak256(abi.encode(SNAPSHOT_TYPEHASH, venue, hashPositions(positions), equityUsd, flowInSeen, ts))
+            keccak256(
+                abi.encode(SNAPSHOT_TYPEHASH, venue, hashPositions(positions), equityUsd, flowInSeen, flowOutSeen, ts)
+            )
         );
     }
 }

@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
+
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 /// Board-curated list of canonical Stock Tokens and their price feeds. Unknown tokens are never canonical.
-contract StockTokenRegistry {
+/// Listing a token for the first time applies at once (nobody holds a position priced by it yet); changing a listed
+/// token's feed or flag, or re-listing a delisted token, waits CHANGE_DELAY (48 h) in public. Delisting applies at
+/// once: it only stops new buys (exits never need a canonical token).
+contract StockTokenRegistry is ChangeDelay {
     struct Entry {
         address feed;
         bool multiplierEmbedded; // feed already prices one token (multiplier applied), so never re-apply it
@@ -36,7 +41,11 @@ contract StockTokenRegistry {
 
     function list(address token, address feed, bool multiplierEmbedded) external onlyOwner {
         if (token == address(0) || feed == address(0)) revert ZeroAddress();
-        if (_entries[token].feed == address(0)) _tokens.push(token);
+        Entry memory cur = _entries[token];
+        if (cur.active && cur.feed == feed && cur.multiplierEmbedded == multiplierEmbedded) return; // unchanged
+        bool fresh = cur.feed == address(0);
+        if (!fresh && !_delayed()) return;
+        if (fresh) _tokens.push(token);
         _entries[token] = Entry(feed, multiplierEmbedded, true);
         emit Listed(token, feed, multiplierEmbedded);
     }
@@ -44,6 +53,11 @@ contract StockTokenRegistry {
     function delist(address token) external onlyOwner {
         _entries[token].active = false;
         emit Delisted(token);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     function isCanonical(address token) external view returns (bool) {

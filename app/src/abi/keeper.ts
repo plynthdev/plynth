@@ -30,8 +30,9 @@ export const vaultAbi = parseAbi([
 ]);
 
 export const crowdAbi = parseAbi([
-  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; }",
+  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; uint64 crowdSince; }",
   "function join(address user)",
+  "function joinBatch(address[] users) returns (uint256 joined)",
   "function execute(address asset)",
   "function openBook(address asset) view returns (uint256 bookId, Book b)",
   "function book(address asset, uint256 bookId) view returns (Book)",
@@ -124,3 +125,21 @@ export const multicall3Abi = parseAbi([
 
 /** Every custom error the keeper may see, for decoding reverts from any of its targets. */
 export const errorsAbi = [...vaultAbi, ...crowdAbi, ...beaconAbi, ...stealthClaimsAbi].filter((x) => x.type === "error");
+
+// Job liquidate: the protocol liquidator for the in-house perp markets (and settleHeld for dead markets).
+export const perpMarketKeeperAbi = parseAbi([
+  "function pool() view returns (address)",
+  "function openPositions() view returns (address[])",
+  "function isLiquidatable(address account) view returns (bool)",
+  "function heldFor() view returns (uint256)",
+  "function HELD_GRACE() view returns (uint256)",
+  "function liquidate(address account)",
+  "function settleHeld(address account)",
+  "event Liquidated(address indexed account, address indexed by, uint256 size, int256 equity, uint256 reward, uint256 price)",
+  "error NotAuthorized()",
+  "error NoPosition()",
+  "error NotLiquidatable()",
+  "error NotHeldLongEnough(uint256 heldFor)",
+]);
+
+export const perpPoolKeeperAbi = parseAbi(["function isOperator(address account, address operator) view returns (bool)"]);

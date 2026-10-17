@@ -22,6 +22,7 @@ import {
   emptyState,
   encodeTwoNotes,
   extHashOf,
+  withdrawExtData,
   encryptNote,
   hash,
   initVault,
@@ -46,6 +47,7 @@ import {
 const ROOT = join(import.meta.dir, "..", "..");
 const ASSET = getAddress("0x5fbdb2315678afecb367f032d93f642f64180aa3");
 const RECIPIENT = getAddress("0x70997970c51812dc3a010c7d01b50e0d17dc79c8");
+const RELAYER = getAddress("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc");
 const sig = (b: string) => `0x${b.repeat(65)}` as Hex;
 
 beforeAll(async () => {
@@ -285,9 +287,14 @@ describe("proofs (noir_js + bb.js) and tx builders", () => {
 
   test("withdraw: public inputs in circuit order, relayer request round-trips, fee <= amount", async () => {
     const { tree, notes } = seeded([1_000n]);
-    const w = await proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 600n, recipient: RECIPIENT, relayerFee: 5n });
-    const inputs = [w.pub.root, w.pub.nullifier, w.pub.changeCommitment, toBytes32(BigInt(ASSET)), toBytes32(600n), toBytes32(BigInt(RECIPIENT)), toBytes32(5n), toBytes32(extHashOf(w.pub.encryptedChange))];
+    const w = await proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 600n, recipient: RECIPIENT, relayerFee: 5n, relayer: RELAYER });
+    const inputs = [w.pub.root, w.pub.nullifier, w.pub.changeCommitment, toBytes32(BigInt(ASSET)), toBytes32(600n), toBytes32(BigInt(RECIPIENT)), toBytes32(5n), toBytes32(extHashOf(withdrawExtData(w.pub.encryptedChange, 5n, RELAYER)))];
     expect(await verifies("withdraw", w.proof, inputs)).toBe(true);
+    // L-9: the fee is bound to RELAYER; the same proof submitted by anyone else (ext hash with their address) fails
+    expect(await verifies("withdraw", w.proof, [...inputs.slice(0, 7), toBytes32(extHashOf(withdrawExtData(w.pub.encryptedChange, 5n, RECIPIENT)))])).toBe(false);
+    expect(await verifies("withdraw", w.proof, [...inputs.slice(0, 7), toBytes32(extHashOf(w.pub.encryptedChange))])).toBe(false);
+    await expect(proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 600n, recipient: RECIPIENT, relayerFee: 5n })).rejects.toThrow(/relayer's address/);
+    expect(withdrawExtData(w.pub.encryptedChange, 0n)).toBe(w.pub.encryptedChange); // fee-less: unchanged ext data
     expect(decryptNote(w.pub.encryptedChange, alice().viewingSecret)).toMatchObject({ raw: 400n });
     await expect(proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 10n, recipient: RECIPIENT, relayerFee: 11n })).rejects.toThrow(/fee/);
     await expect(proveWithdraw({ keys: alice(), tree, note: notes[0]!, amount: 1_001n, recipient: RECIPIENT })).rejects.toThrow(/cannot withdraw/);

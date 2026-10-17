@@ -375,10 +375,15 @@ contract PolicyGuardTest is TreasuryFixture {
     }
 
     function test_rule8_noPeriodCloseDisablesRule() public {
-        periodClose.set(_nav() * 2);
-        vm.prank(board);
-        account.setPeriodClose(address(0));
-        _buy(address(nvda), 1_000e6);
+        TreasuryAccount d = new TreasuryAccount(board, policy, guard, address(approvals)); // never given a PeriodClose
+        vm.startPrank(board);
+        d.registerDesk(CASH_DESK, cashKey, _one(address(cashSleeve)));
+        d.registerDesk(EQUITY_DESK, eqKey, _one(address(eqSleeve)));
+        vm.stopPrank();
+        usdg.mint(address(d), FUNDING);
+        aapl.mint(address(d), SEED_AAPL);
+        vm.prank(eqKey);
+        d.execute(EQUITY_DESK, address(eqSleeve), _buyData(address(nvda), 1_000e6), _allow(address(nvda)), 0);
     }
 
     // ------------------------------------------------------------ rules 7 and 8: rounding dust (B2, fork run 2026-10-06)
@@ -402,6 +407,28 @@ contract PolicyGuardTest is TreasuryFixture {
         PolicyGuard.Snapshot memory a = guard.snapshot(address(account));
         vm.revertToState(id);
         return int256(a.equityUsd * 1e18 / a.nav) - int256(b.equityUsd * 1e18 / b.nav);
+    }
+
+    /// Lead (audit): a desk could sandwich its own swaps, losing up to maxOpLossBps (200 bps) of every operation's
+    /// notional to a colluding pool. With a day cap that is large next to NAV that adds up; the rolling 24 h op
+    /// loss is now bounded in bps of NAV as well.
+    function test_poc_selfSandwichBoundedPerDay() public {
+        TreasuryPolicy.Policy memory p = _policy();
+        p.perOrderCapUsd = 500_000;
+        p.perDayCapUsd = 5_000_000;
+        p.approvalAboveUsd = 1_000_000;
+        vm.prank(board);
+        policy.propose(p);
+        _warp(block.timestamp + 48 hours);
+        policy.activate();
+        // Three 100k cash -> cash moves, each losing 1.9% (inside 200 bps of its notional): $5.7k in all.
+        for (uint256 i; i < 2; ++i) {
+            vm.prank(cashKey);
+            account.execute(CASH_DESK, address(cashSleeve), _lossy(100_000e6, 1_900e6), _allow(address(vault)), 0);
+        }
+        _expectCode(19); // R6_DAY_LOSS: over 50 bps of NAV lost to operations in 24 h
+        vm.prank(cashKey);
+        account.execute(CASH_DESK, address(cashSleeve), _lossy(100_000e6, 1_900e6), _allow(address(vault)), 0);
     }
 
     function test_weightDustIs1e12() public view {

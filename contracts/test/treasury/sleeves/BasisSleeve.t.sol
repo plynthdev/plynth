@@ -13,6 +13,7 @@ import {MirroredPerpVenue} from "../../../src/treasury/sleeves/MirroredPerpVenue
 import {IPerpVenue} from "../../../src/interfaces/IPerpVenue.sol";
 import {PerpPool} from "../../../src/perps/PerpPool.sol";
 import {PerpMarket} from "../../../src/perps/PerpMarket.sol";
+import {PerpMarketHarness} from "../../perps/PerpMarketHarness.sol";
 import {MockStockToken} from "../../../src/testnet/MockStockToken.sol";
 import {MockFeed} from "../../../src/testnet/MockFeed.sol";
 
@@ -43,9 +44,13 @@ contract BasisSleeveTest is TreasuryFixture {
         registry.list(address(thin), address(thinFeed), true);
         thin.mint(address(this), 10_000e18);
 
-        pool = new PerpPool(usdg, address(this), 24 hours);
-        market = new PerpMarket(pool, valuer, address(aapl), address(this));
-        thinMarket = new PerpMarket(pool, valuer, address(thin), address(this));
+        pool = new PerpPool(usdg, address(this), 24 hours, 48 hours);
+        // Guards off (open spread, minimum hold): these tests check treasury math against exact fee numbers;
+        // the guards are tested in test/perps (and with the treasury in test_productionGuards_*).
+        market = new PerpMarketHarness(pool, valuer, address(aapl), address(this));
+        PerpMarketHarness(address(market)).guardsOff();
+        thinMarket = new PerpMarketHarness(pool, valuer, address(thin), address(this));
+        PerpMarketHarness(address(thinMarket)).guardsOff();
         pool.addMarket(address(market));
         pool.addMarket(address(thinMarket));
         market.setParams(10, 0, 1000, 0, 1e13, 2_000, 10_000, 5e6);

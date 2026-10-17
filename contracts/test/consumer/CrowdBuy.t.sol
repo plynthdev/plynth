@@ -60,12 +60,20 @@ contract CrowdBuyTest is CrowdBuyBase {
         _executeAsKeeper(address(tokA));
     }
 
-    function test_R1_executeRevertsWithoutCommit() public {
+    /// Audit L-1: a window the keeper never committed used to be unexecutable forever (executeAfter = max), so only
+    /// cancel got funds out. It now falls back to windowEnd - GRACE like an unrevealed commitment.
+    function test_L1_uncommittedWindowFallsBackToWindowEndMinusGrace() public {
         for (uint256 i; i < 3; ++i) _joinA(_user(i), 10 * U);
-        vm.warp(GENESIS + 1 days - 1);
+        uint64 fallbackAt = GENESIS + 1 days - 1 hours;
+        vm.warp(fallbackAt - 1);
         _freshFeeds();
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.TooEarly.selector, type(uint64).max));
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.TooEarly.selector, fallbackAt));
         _executeAsKeeper(address(tokA));
+        vm.warp(fallbackAt);
+        _freshFeeds();
+        vm.prank(makeAddr("stranger")); // the keeper is dead from the start: anyone runs the book
+        crowd.execute(address(tokA));
+        assertTrue(crowd.book(address(tokA), 0).executed);
     }
 
     function test_R1_executeRevertsWhenValuerOnHold() public {
@@ -235,6 +243,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         address u = _user(0);
         _joinA(u, 10 * U);
         _accrue(u, 5 * U);
+        vm.prank(u);
         crowd.join(u); // same user again
         (, CrowdBuy.Book memory b) = crowd.openBook(address(tokA));
         assertEq(b.accounts, 1);
@@ -261,6 +270,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         assertEq(usdg.balanceOf(address(crowd)), 7 * U);
         // rejoining counts again
         _accrue(u, 2 * U);
+        vm.prank(u);
         crowd.join(u);
         (, b) = crowd.openBook(address(tokA));
         assertEq(b.accounts, 2);
@@ -358,12 +368,19 @@ contract CrowdBuyTest is CrowdBuyBase {
     }
 
     function test_R8_joinDuringExecutionLandsInNewBook() public {
+        vm.prank(owner);
+        crowd.setKeeper(address(tokA)); // join is user-or-keeper only (L-3): the hook joins as the keeper
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
+        vm.prank(owner);
+        crowd.setKeeper(address(tokA));
+        vm.warp(T0);
         _readyBook();
         address late = _user(8);
         (address[] memory a, uint16[] memory w) = _one(address(tokA));
         _prepare(late, a, w, 9 * U);
         tokA.arm(crowd, late); // joins when the swap output reaches CrowdBuy
-        _executeAsKeeper(address(tokA));
+        vm.prank(address(tokA));
+        crowd.execute(address(tokA));
         assertEq(tokA.hookUser(), address(0), "hook fired");
         assertEq(crowd.orderOf(address(tokA), 0, late), 0);
         assertEq(crowd.orderOf(address(tokA), 1, late), 9 * U);
@@ -379,7 +396,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         uint16[] memory w = new uint16[](2);
         (t[0], t[1], w[0], w[1]) = (address(tokA), address(tokB), 3333, 6667);
         _prepare(u, t, w, 10 * U + 1);
-        vm.prank(_user(50)); // anyone may call
+        vm.prank(u); // the user (or the keeper) may call
         crowd.join(u);
         uint256 a = crowd.orderOf(address(tokA), 0, u);
         uint256 b = crowd.orderOf(address(tokB), 0, u);
@@ -390,6 +407,7 @@ contract CrowdBuyTest is CrowdBuyBase {
 
     function test_join_nothingPendingReverts() public {
         vm.expectRevert(CrowdBuy.NothingPending.selector);
+        vm.prank(_user(0));
         crowd.join(_user(0));
     }
 
@@ -406,6 +424,7 @@ contract CrowdBuyTest is CrowdBuyBase {
         _prepare(u, a, w, 10 * U);
         vm.expectEmit(address(crowd));
         emit CrowdBuy.Joined(address(tokA), 0, u, 10 * U);
+        vm.prank(u);
         crowd.join(u);
         _joinA(_user(1), 10 * U);
         _joinA(_user(2), 10 * U);

@@ -1,6 +1,7 @@
 import type { Ctx, JobResult } from "./context";
 import { runBeacon } from "./jobs/beacon";
 import { runExecute } from "./jobs/execute";
+import { runLiquidate } from "./jobs/liquidate";
 import { runFeePush } from "./jobs/fee-push";
 import { runDeliverHidden } from "./jobs/hidden";
 import { runRefreshMockFeeds } from "./jobs/mock-feeds";
@@ -12,8 +13,9 @@ import { runTopups } from "./jobs/topups";
 
 /**
  * Pass order matters within one pass: refresh-mock-feeds first (testnet kit only), so a mock feed that went stale
- * cannot put the market on hold for this pass's execute. Then top-ups fund `available`, on-chain round-ups move it to
- * `pending`, sweep
+ * cannot put the market on hold for this pass's execute. liquidate next: a safety job (perp positions below
+ * maintenance, bad debt, settling markets held past their grace), so a slow or failing consumer job never delays it.
+ * Then top-ups fund `available`, on-chain round-ups move it to `pending`, sweep
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
  * deliver-open needs nothing from the keeper: users claim (claimOpen). deliver-quiet runs last: it delivers
  * books executed in earlier passes (it reads executions from the indexer). deliver-hidden (after it) settles Hidden users
@@ -24,6 +26,7 @@ import { runTopups } from "./jobs/topups";
  */
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["refresh-mock-feeds", runRefreshMockFeeds],
+  ["liquidate", runLiquidate],
   ["fee-push", runFeePush],
   ["topups", runTopups],
   ["roundups", runRoundups],

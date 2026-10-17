@@ -9,9 +9,11 @@ import {MockStockToken} from "../../src/testnet/MockStockToken.sol";
 import {MockFeed} from "../../src/testnet/MockFeed.sol";
 import {PerpPool} from "../../src/perps/PerpPool.sol";
 import {PerpMarket} from "../../src/perps/PerpMarket.sol";
+import {PerpMarketHarness} from "./PerpMarketHarness.sol";
 
 /// One pool, one market on a mock Stock Token priced per share (multiplier applied by the Valuer),
-/// 1,000,000 USDG of LP liquidity. Defaults: fees, funding and borrow all off; tests turn on what they test.
+/// 1,000,000 USDG of LP liquidity. Defaults: fees, funding, borrow and the front-running guards (open spread,
+/// minimum hold) all off; tests turn on what they test.
 abstract contract PerpFixture is Test {
     MockUSDG usdg;
     StockTokenRegistry registry;
@@ -20,6 +22,7 @@ abstract contract PerpFixture is Test {
     MockFeed feed;
     PerpPool pool;
     PerpMarket market;
+    PerpMarketHarness harness;
 
     address owner = makeAddr("owner");
     address lp = makeAddr("lp");
@@ -39,8 +42,10 @@ abstract contract PerpFixture is Test {
         feed = new MockFeed(8, 100e8, "mTSLA / USD");
         registry.list(address(token), address(feed), false);
 
-        pool = new PerpPool(usdg, owner, 24 hours);
-        market = new PerpMarket(pool, valuer, address(token), owner);
+        pool = new PerpPool(usdg, owner, 24 hours, 48 hours);
+        harness = new PerpMarketHarness(pool, valuer, address(token), owner);
+        harness.guardsOff();
+        market = harness;
         vm.prank(owner);
         pool.addMarket(address(market));
         _params(0, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
@@ -68,8 +73,8 @@ abstract contract PerpFixture is Test {
         uint256 maxProfit,
         uint256 liqFee
     ) internal {
-        vm.prank(owner);
-        market.setParams(taker, maker, spread, borrow, k, oiCap, maxProfit, liqFee);
+        // The real setParams is timelocked once LPs are in (tested in PerpAudit); unit tests change params at once.
+        harness.paramsUnchecked(PerpMarket.Params(taker, maker, spread, borrow, k, oiCap, maxProfit, liqFee));
     }
 
     function _fund(address to, uint256 amount) internal {

@@ -66,7 +66,7 @@ export class Reconciler {
 
     if (src.mode === "mirrored") {
       if (!this.pub || !this.cfg.mirror || !src.adapter) throw new Error(`${name}: a mirrored venue needs pub, mirror and adapter`);
-      const [positions, equityUsd, , ts] = await this.pub.readContract({ address: this.cfg.mirror, abi: positionMirrorAbi, functionName: "latest", args: [src.adapter] });
+      const [positions, equityUsd, , , ts] = await this.pub.readContract({ address: this.cfg.mirror, abi: positionMirrorAbi, functionName: "latest", args: [src.adapter] });
       const stale = await this.pub.readContract({ address: this.cfg.mirror, abi: positionMirrorAbi, functionName: "isStale", args: [src.adapter] });
       if (stale) out.push(this.brk("reconcile.stale_mirror", name, null, { mirrorTs: ts }));
       mirrorPos = new Map(positions.map((p) => [lc(p.underlying), p.tokens]));

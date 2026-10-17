@@ -148,7 +148,7 @@ describe("statements on anvil", () => {
     const refundId = await deposit(alice, ka, usdg(), 7n * U);
     await send(alice, refundPendingTx(pool(), refundId));
     add(shadow.pending, alice, usdg(), -7n * U);
-    await warpTo((await now()) + 3601n);
+    await warpTo((await now()) + 7201n); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a batch under MIN_INSERT_BATCH (4)
     await send(relayer, insertPendingTx(pool(), 10n));
     for (const [u, a, v] of [[alice, tsla(), 100n * E18], [alice, usdg(), 50n * U], [bob, tsla(), 20n * E18]] as const) {
       add(shadow.pending, u, a, -v);

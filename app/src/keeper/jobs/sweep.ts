@@ -1,23 +1,23 @@
-// Job 3: sweep. crowd.join(user) for every user with pending > 0, batched through Multicall3 aggregate3
-// (join is permissionless, so the multicall can be the caller). Each join is pre-simulated alone first, and
-// the batch still uses allowFailure so one bad user cannot block the rest.
-import { encodeFunctionData, parseEventLogs, type Address } from "viem";
+// Job 3: sweep. Every user with pending > 0 is joined through crowd.joinBatch(users), sent by the keeper: join is
+// user-or-keeper only on-chain (audit L-3), so a Multicall3 can no longer be the caller. Each join is pre-simulated
+// alone first (as the keeper), and joinBatch itself skips anyone who cannot join, so one bad user cannot block the rest.
+import { parseEventLogs, type Address } from "viem";
 import { withGasHeadroom } from "@/lib/gas";
-import { crowdAbi, multicall3Abi, vaultAbi } from "@/abi/keeper";
+import { crowdAbi, vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { setJob } from "@/keeper/jobstore";
 import { knownUsers } from "@/keeper/state";
 
 export const SWEEP_BATCH = 50;
-/** aggregate3's own cost per call (calldata decode, result encode) and once per batch, generously rounded up. */
+/** joinBatch's own cost per user (its eligibility / balance / mix pre-checks) and once per batch, rounded up. */
 export const MULTICALL_PER_CALL_GAS = 15_000n;
 export const MULTICALL_BASE_GAS = 40_000n;
 
 /**
- * Gas floor for one aggregate3 batch of joins: each join's own estimate (made as the multicall, its real caller)
- * plus +25% / +50k headroom (a join can open a new book, cold slots), plus the multicall's overhead.
- * Without it the batch's estimate is the gas at which every join runs out of gas: allowFailure turns that into a
- * successful no-op transaction, so pending round-ups were never swept (seen on the fork: limit 70k, join 150k).
+ * Gas floor for one joinBatch: each join's own estimate (made as the keeper, the batch's caller) plus +25% / +50k
+ * headroom (a join can open a new book, cold slots), plus the batch's per-user checks and base cost. Without it the
+ * batch's estimate can land at the gas where the last joins run out (seen on the fork with the old multicall batch:
+ * limit 70k, join 150k).
  */
 export function sweepGasFloor(joinEstimates: readonly bigint[]): bigint {
   return joinEstimates.reduce((sum, g) => sum + withGasHeadroom(g) + MULTICALL_PER_CALL_GAS, MULTICALL_BASE_GAS);
@@ -42,14 +42,13 @@ export async function runSweep(ctx: Ctx): Promise<JobResult> {
       res.notes.push(`${user}: join reverts ${sim.errorName}`);
       continue;
     }
-    gasOf.set(user, await ctx.pub.estimateContractGas({ account: ctx.dep.multicall3, address: ctx.dep.crowd, abi: crowdAbi, functionName: "join", args: [user] } as any));
+    gasOf.set(user, await ctx.pub.estimateContractGas({ account: ctx.account, address: ctx.dep.crowd, abi: crowdAbi, functionName: "join", args: [user] } as any));
     ready.push(user);
   }
   for (const batch of chunks(ready, SWEEP_BATCH)) {
-    const calls = batch.map((u) => ({ target: ctx.dep.crowd, allowFailure: true, callData: encodeFunctionData({ abi: crowdAbi, functionName: "join", args: [u] }) }));
     const minGas = sweepGasFloor(batch.map((u) => gasOf.get(u)!));
-    const r = await ctx.sender.sendCall(ctx.dep.multicall3, multicall3Abi, "aggregate3", [calls], "sweep", { minGas });
-    // allowFailure hides failed joins: count the Joined events (one or more per joined user) to report the truth.
+    const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "joinBatch", [batch], "sweep", { minGas });
+    // joinBatch skips users who cannot join: count the Joined events (one or more per joined user) to report the truth.
     const joined = new Set(
       parseEventLogs({ abi: crowdAbi, logs: r.logs, eventName: "Joined" }).map((l) => (l.args as { user: Address }).user.toLowerCase()),
     );

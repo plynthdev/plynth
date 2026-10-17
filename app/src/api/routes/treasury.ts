@@ -61,7 +61,7 @@ export const factoryAbi = parseAbi([
   "function deployFromTemplate(bytes compiledPolicy, address boardSafe, uint256 templateId) returns (address account, address policy, address close)",
   "function templateOf(address account) view returns (uint256)",
   "event TreasuryFromTemplate(address indexed account, uint256 indexed templateId, bytes32 templateHash)",
-  "function predict(address boardSafe) view returns (address account, address policy, address close, address approvals)",
+  "function predict(address creator, address boardSafe) view returns (address account, address policy, address close, address approvals)",
   "function isTreasury(address account) view returns (bool)",
   "event TreasuryCreated(address indexed board, address indexed account, address indexed creator, address policy, address close, address approvals, bytes32 policyHash)",
 ]);
@@ -90,8 +90,9 @@ export const tPolicyAbi = parseAbi([
 ]);
 
 export const tGuardAbi = parseAbi([
-  "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; }",
-  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; uint256 privateUsd; }",
+  "struct Pos { address underlying; uint256 notional; uint256 margin; }",
+  "struct Venue { address venue; uint256 equity; uint256 gross; bool stale; Pos[] positions; }",
+  "struct Snapshot { address[] assets; uint256[] raw; uint256[] usd; uint256 nav; uint256 cashUsd; uint256 equityUsd; uint256 eth; bool equityHold; uint256 basisUsd; uint256 stockUsd; int256 perpDeltaUsd; Venue[] venues; uint256 privateUsd; bool privateStale; }",
   "function snapshot(address account) view returns (Snapshot)",
 ]);
 
@@ -264,7 +265,7 @@ export async function treasuryCreate(d: Deps, i: TemplateInput & { board: Addres
   } else {
     data = encodeFunctionData({ abi: factoryAbi, functionName: "deploy", args: [encodePolicy(c.policy), i.board] });
   }
-  const [account, policy, close, approvals] = await d.pub.readContract({ address: factory, abi: factoryAbi, functionName: "predict", args: [i.board] });
+  const [account, policy, close, approvals] = await d.pub.readContract({ address: factory, abi: factoryAbi, functionName: "predict", args: [i.board, i.board] }); // the board's Safe sends this tx: it is the creator
   const tx: UnsignedTx = { to: factory, data, value: "0", chainId: d.chainId };
   return {
     tx,

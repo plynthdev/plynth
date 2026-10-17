@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -81,13 +81,16 @@ contract InHousePerpVenue is IPerpVenue {
 
     // ---------------------------------------------------------------- views
 
+    /// One isolated position per market; `marginUsd` = the market's exit value for it (collateral + PnL - fees).
     function positionOf() external view returns (Position[] memory out) {
         uint256 n;
         Position[] memory tmp = new Position[](_markets.length);
         for (uint256 i; i < _markets.length; ++i) {
             PerpMarket.Position memory p = _markets[i].position(address(this));
             if (p.size == 0) continue;
-            tmp[n++] = Position(_markets[i].underlying(), p.isLong ? int256(p.tokens) : -int256(p.tokens));
+            // Isolated margin: what closing this position would pay now backs it; idle cash here does not.
+            uint256 margin = AssetValuation.to1e18(_markets[i].exitValueOf(address(this)), _cashDecimals);
+            tmp[n++] = Position(_markets[i].underlying(), p.isLong ? int256(p.tokens) : -int256(p.tokens), margin);
         }
         out = new Position[](n);
         for (uint256 i; i < n; ++i) out[i] = tmp[i];

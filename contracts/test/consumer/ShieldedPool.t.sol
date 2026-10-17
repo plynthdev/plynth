@@ -22,7 +22,6 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         assertFalse(pool.isKnownRoot(bytes32(0)));
         assertEq(pool.MIN_PENDING_DELAY(), 1 hours);
         assertEq(pool.CAP_DELAY(), 48 hours);
-        assertEq(pool.ROOT_HISTORY(), 100);
         assertEq(pool.MAX_NOTE_BYTES(), 512);
     }
 
@@ -141,7 +140,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         vm.expectRevert(ShieldedPool.NothingToInsert.selector);
         pool.insertPending(10);
         assertEq(pool.readyCount(10), 0);
-        vm.warp(block.timestamp + 1);
+        vm.warp(block.timestamp + 1 + pool.SOLO_INSERT_DELAY()); // a lone deposit: MIN_PENDING_DELAY + solo delay
         assertEq(pool.readyCount(10), 1);
         vm.prank(makeAddr("anyone"));
         assertEq(pool.insertPending(10), 1);
@@ -151,30 +150,89 @@ contract ShieldedPoolTest is ShieldedPoolBase {
 
     function test_insertPendingIsFifoAndStopsAtFirstUnready() public {
         _deposit(alice, address(usdg), U, 1);
-        vm.warp(block.timestamp + 30 minutes);
+        vm.warp(block.timestamp + 90 minutes);
         _deposit(bob, address(usdg), U, 2);
-        vm.warp(block.timestamp + 30 minutes); // first ready, second not
+        vm.warp(block.timestamp + 30 minutes); // first ready (and past the solo delay), second not
         assertEq(pool.insertPending(10), 1);
         assertEq(pool.nextPending(), 1);
         vm.expectRevert(ShieldedPool.NothingToInsert.selector);
         pool.insertPending(10);
-        vm.warp(block.timestamp + 30 minutes);
+        vm.warp(block.timestamp + 90 minutes);
         assertEq(pool.insertPending(10), 1);
         assertEq(pool.nextLeaf(), 2);
     }
 
     function test_insertPendingBoundedByMaxCountAndOneRootPerBatch() public {
-        for (uint256 i; i < 5; ++i) {
+        for (uint256 i; i < 9; ++i) {
             _deposit(alice, address(usdg), U, i + 1);
         }
         vm.warp(block.timestamp + 1 hours);
         uint256 roots = pool.rootCount();
-        assertEq(pool.insertPending(3), 3);
+        assertEq(pool.insertPending(5), 5);
         assertEq(pool.rootCount(), roots + 1);
-        assertEq(pool.insertPending(3), 2);
-        assertEq(pool.nextLeaf(), 5);
+        assertEq(pool.insertPending(5), 4);
+        assertEq(pool.nextLeaf(), 9);
         vm.expectRevert(ShieldedPool.NothingToInsert.selector);
+        pool.insertPending(5);
+    }
+
+    /// M-5 (external audit 2026-10), second half: a stranger cannot turn every deposit into its own root. A call
+    /// must insert MIN_INSERT_BATCH (4) queued deposits, unless the oldest it inserts has waited
+    /// MIN_PENDING_DELAY + SOLO_INSERT_DELAY (2h in all), so a lone deposit still gets in without a keeper.
+    function test_M5_strangerCannotInsertALoneDepositBeforeSoloDelay() public {
+        bytes4 tooSmall = ShieldedPool.BatchTooSmall.selector;
+        _deposit(alice, address(usdg), U, 1);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(pool.readyCount(10), 0, "an insert would revert, so nothing is ready");
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(abi.encodeWithSelector(tooSmall, 1, 4));
+        pool.insertPending(1);
+        vm.warp(block.timestamp + 1 hours - 1);
+        vm.expectRevert(abi.encodeWithSelector(tooSmall, 1, 4));
+        pool.insertPending(10);
+        vm.warp(block.timestamp + 1); // solo delay over: liveness without a keeper
+        assertEq(pool.readyCount(10), 1);
+        vm.prank(makeAddr("stranger"));
+        assertEq(pool.insertPending(10), 1);
+        assertEq(pool.nextLeaf(), 1);
+    }
+
+    /// A batch of 4 ready deposits goes in at MIN_PENDING_DELAY; a smaller slice of a busy queue does not.
+    function test_M5_minBatchInsertsAtMinDelayButSlicesRevert() public {
+        bytes4 tooSmall = ShieldedPool.BatchTooSmall.selector;
+        for (uint256 i; i < 6; ++i) {
+            _deposit(alice, address(usdg), U, i + 1);
+        }
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(pool.readyCount(3), 0);
+        assertEq(pool.readyCount(10), 6);
+        vm.expectRevert(abi.encodeWithSelector(tooSmall, 3, 4));
         pool.insertPending(3);
+        uint256 roots = pool.rootCount();
+        assertEq(pool.insertPending(4), 4);
+        assertEq(pool.rootCount(), roots + 1);
+        // 2 left: a batch again only after the solo delay
+        vm.expectRevert(abi.encodeWithSelector(tooSmall, 2, 4));
+        pool.insertPending(10);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(pool.insertPending(10), 2);
+    }
+
+    /// Stepping over refunded entries only (no leaf, no root) is always allowed, so they never wedge the cursor.
+    function test_M5_refundedOnlyStepAlwaysAllowed() public {
+        for (uint256 i; i < 3; ++i) {
+            uint256 id = _deposit(alice, address(usdg), U, i + 1);
+            vm.prank(alice);
+            pool.refundPending(id);
+        }
+        _deposit(alice, address(usdg), U, 9);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(pool.MIN_INSERT_BATCH(), 4);
+        assertEq(pool.SOLO_INSERT_DELAY(), 1 hours);
+        uint256 roots = pool.rootCount();
+        assertEq(pool.insertPending(3), 0);
+        assertEq(pool.nextPending(), 3);
+        assertEq(pool.rootCount(), roots, "no root published");
     }
 
     function test_refundPendingOriginOnlyUntilInserted() public {
@@ -205,7 +263,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         _deposit(bob, address(usdg), U, 2);
         vm.prank(alice);
         pool.refundPending(a);
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(block.timestamp + 2 hours); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a lone deposit
         assertEq(pool.readyCount(10), 1);
         assertEq(pool.insertPending(10), 1);
         assertEq(pool.nextLeaf(), 1);
@@ -340,31 +398,31 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         assertEq(stock.balanceOf(relayer), 1e17);
     }
 
-    // ---------------------------------------------------------------- rule: root history (last 100)
+    // ---------------------------------------------------------------- rule: every published root stays known (M-5)
 
-    function test_rootHistoryAcceptsLast100Roots() public {
+    /// M-5 (external audit 2026-10): busy traffic (or a griefer) publishing 150 newer roots does not expire a
+    /// root a proof was made against. The tree is append-only and nullifiers stop reuse, so old roots are safe.
+    function test_M5_everyPublishedRootStaysKnown() public {
         _deposit(alice, address(usdg), U, 1);
         _insertAll();
         bytes32 old = pool.currentRoot();
         uint256 seq = pool.rootSeq(old);
-        // 98 more roots: `old` is the 100th most recent root (99 newer ones incl. the empty-root era excluded)
-        for (uint256 i; i < 98; ++i) {
+        for (uint256 i; i < 150; ++i) {
             pool.transfer("", _pubT(bytes32(1000 + i * 2), bytes32(1001 + i * 2), address(usdg)), _notes());
         }
-        assertEq(pool.rootCount() - seq, 98);
+        assertEq(pool.rootCount() - seq, 150);
         assertTrue(pool.isKnownRoot(old));
         ShieldedPool.PublicTransfer memory t = _pubT(bytes32(uint256(5)), bytes32(uint256(6)), address(usdg));
         t.root = old;
-        pool.transfer("", t, _notes()); // 99 newer roots now
-        assertEq(pool.rootCount() - seq, 99);
-        assertTrue(pool.isKnownRoot(old));
-        t = _pubT(bytes32(uint256(7)), bytes32(uint256(8)), address(usdg));
-        t.root = old;
-        pool.transfer("", t, _notes()); // used while still the 100th root, then it ages out
-        assertFalse(pool.isKnownRoot(old));
+        pool.transfer("", t, _notes());
+        ShieldedPool.PublicWithdraw memory w = _pubW(bytes32(uint256(7)), address(usdg), U / 2, bob, 0);
+        w.root = old;
+        pool.withdraw("", w);
+        // never-published values stay unknown
+        assertFalse(pool.isKnownRoot(bytes32(uint256(123))));
         t = _pubT(bytes32(uint256(9)), bytes32(uint256(10)), address(usdg));
-        t.root = old;
-        vm.expectRevert(abi.encodeWithSelector(ShieldedPool.UnknownRoot.selector, old));
+        t.root = bytes32(uint256(123));
+        vm.expectRevert(abi.encodeWithSelector(ShieldedPool.UnknownRoot.selector, t.root));
         pool.transfer("", t, _notes());
     }
 
@@ -471,6 +529,56 @@ contract ShieldedPoolTest is ShieldedPoolBase {
         w.nullifier = bytes32(uint256(55));
         vm.expectRevert(ShieldedPool.InvalidProof.selector);
         p.withdraw("", w);
+    }
+
+    /// L-9 (external audit 2026-10): with a fee, the ext hash binds the relayer (msg.sender), so a copier who
+    /// front-runs the relayer's transaction with the same calldata fails verification and cannot take the fee.
+    /// Without a fee the ext hash is unchanged and anyone may submit.
+    function test_L9_relayerFeeBoundToSubmitter() public {
+        ExpectVerifier ew = new ExpectVerifier();
+        ShieldedPool p = new ShieldedPool(tv, ew, owner, 48 hours);
+        vm.prank(owner);
+        p.proposeCap(address(usdg), capUsdg);
+        vm.warp(block.timestamp + 48 hours);
+        p.applyCap(address(usdg));
+        vm.prank(alice);
+        usdg.approve(address(p), type(uint256).max);
+        vm.prank(alice);
+        p.deposit(address(usdg), 10 * U, bytes32(uint256(1)), bytes32(uint256(2)), "");
+        vm.warp(block.timestamp + 2 hours);
+        p.insertPending(1);
+
+        bytes memory enc = hex"c0ffee";
+        ShieldedPool.PublicWithdraw memory w;
+        (w.root, w.nullifier, w.changeCommitment, w.asset, w.amount, w.recipient, w.relayerFee, w.encryptedChange) =
+            (p.currentRoot(), bytes32(uint256(5)), bytes32(uint256(6)), address(usdg), 4 * U, bob, U / 10, enc);
+        bytes32[] memory wi = new bytes32[](8);
+        (wi[0], wi[1], wi[2], wi[3]) = (w.root, w.nullifier, w.changeCommitment, bytes32(uint256(uint160(address(usdg)))));
+        (wi[4], wi[5], wi[6]) = (bytes32(w.amount), bytes32(uint256(uint160(bob))), bytes32(w.relayerFee));
+        wi[7] = bytes32(uint256(keccak256(abi.encode(enc, relayer))) % Poseidon2.P); // relayer bound
+        ew.expect_(wi);
+
+        address copier = makeAddr("copier");
+        vm.prank(copier);
+        vm.expectRevert(ShieldedPool.InvalidProof.selector);
+        p.withdraw("", w);
+        assertFalse(p.nullifierSpent(w.nullifier));
+        vm.prank(relayer);
+        p.withdraw("", w);
+        assertEq(usdg.balanceOf(relayer), U / 10);
+        assertEq(usdg.balanceOf(copier), 0);
+
+        // fee 0: ext hash = keccak256(encryptedChange) mod p, as before; any sender
+        ShieldedPool.PublicWithdraw memory z;
+        (z.root, z.nullifier, z.changeCommitment, z.asset, z.amount, z.recipient, z.encryptedChange) =
+            (p.currentRoot(), bytes32(uint256(7)), bytes32(uint256(8)), address(usdg), U, bob, enc);
+        (wi[0], wi[1], wi[2]) = (z.root, z.nullifier, z.changeCommitment);
+        (wi[4], wi[6]) = (bytes32(z.amount), bytes32(0));
+        wi[7] = bytes32(uint256(keccak256(enc)) % Poseidon2.P);
+        ew.expect_(wi);
+        vm.prank(copier);
+        p.withdraw("", z);
+        assertTrue(p.nullifierSpent(z.nullifier));
     }
 
     // ---------------------------------------------------------------- withdraw payouts
@@ -624,7 +732,7 @@ contract ShieldedPoolTest is ShieldedPoolBase {
 
         // Far more roots than the history keeps: the archived root is still known, an ordinary old one is not.
         bytes32 oldRoot = finalRoot;
-        stdstore.target(address(pool)).sig("rootCount()").checked_write(pool.rootCount() + 10 * pool.ROOT_HISTORY());
+        stdstore.target(address(pool)).sig("rootCount()").checked_write(pool.rootCount() + 1000);
         assertTrue(pool.isKnownRoot(oldRoot));
         ShieldedPool.PublicWithdraw memory w = _pubW(bytes32(uint256(23)), address(usdg), 100 * U, bob, 0);
         w.root = oldRoot;

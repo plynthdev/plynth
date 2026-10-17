@@ -139,8 +139,7 @@ contract LooseCashTest is TreasuryFixture {
         (nav,) = d.navUsd();
         assertEq(nav, 0);
         PeriodClose pc = new PeriodClose(d, IERC20Metadata(address(usdg)), feeTo, ITierSource(address(0)));
-        vm.prank(board);
-        d.setPeriodClose(address(pc));
+        _replacePeriodClose(d, address(pc));
         (nav,) = d.navUsd();
         assertEq(nav, 1_000e18);
     }

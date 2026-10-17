@@ -57,6 +57,21 @@ export function encodeTwoNotes(a: Hex, b: Hex): Hex {
   return encodeAbiParameters([{ type: "bytes" }, { type: "bytes" }], [a, b]);
 }
 
+/** The bytes a withdraw's ext_hash covers: the encrypted change, plus (abi.encode(change, relayer)) the
+ *  relayer when a fee is paid, so only that address can submit the proof and take the fee (audit L-9). */
+export function withdrawExtData(encryptedChange: Hex, relayerFee: bigint, relayer?: Address): Hex {
+  if (relayerFee === 0n) return encryptedChange;
+  if (!relayer) throw new Error("a relayer fee needs the relayer's address: the proof binds who may submit it");
+  return encodeAbiParameters([{ type: "bytes" }, { type: "address" }], [encryptedChange, getAddress(relayer)]);
+}
+
+/** The bytes a swap's ext_hash covers: abi.encode(change, out), plus the relayer when a fee is paid (audit L-9). */
+export function swapExtData(encryptedChange: Hex, encryptedOut: Hex, relayerFee: bigint, relayer?: Address): Hex {
+  if (relayerFee === 0n) return encodeTwoNotes(encryptedChange, encryptedOut);
+  if (!relayer) throw new Error("a relayer fee needs the relayer's address: the proof binds who may submit it");
+  return encodeAbiParameters([{ type: "bytes" }, { type: "bytes" }, { type: "address" }], [encryptedChange, encryptedOut, getAddress(relayer)]);
+}
+
 /** Throws unless `n` is inserted, unspent and in the local tree. v2 notes (swap outputs) need `allowV2`
  * (the swap circuit); transfer/withdraw take v1 only, so settle a v2 note first (proveSettle). */
 export function spendable(n: OwnedNote, tree: NoteTree, allowV2 = false): asserts n is OwnedNote & { leafIndex: number } {
@@ -123,7 +138,8 @@ export async function proveTransfer(p: {
   };
 }
 
-/** Withdraw `amount` of one note: amount - relayerFee to `recipient`, relayerFee to whoever submits; change to self. */
+/** Withdraw `amount` of one note: amount - relayerFee to `recipient`, relayerFee to `relayer`; change to self.
+ *  With a fee, `relayer` is required and only that address can submit the proof (its /health `relayer`). */
 export async function proveWithdraw(p: {
   keys: VaultKeys;
   tree: NoteTree;
@@ -131,12 +147,14 @@ export async function proveWithdraw(p: {
   amount: bigint;
   recipient: Address;
   relayerFee?: bigint;
+  relayer?: Address;
 }): Promise<{ proof: Hex; pub: PublicWithdraw }> {
   const { keys, tree, note } = p;
   spendable(note, tree);
   const fee = p.relayerFee ?? 0n;
   if (p.amount < 0n || p.amount > note.raw || p.amount > MAX_RAW) throw new Error(`cannot withdraw ${p.amount} from ${note.raw}`);
   if (fee < 0n || fee > p.amount) throw new Error("relayer fee exceeds amount");
+  if (fee !== 0n && !p.relayer) throw new Error("a relayer fee needs the relayer's address: the proof binds who may submit it");
   const asset = getAddress(note.asset);
   const assetId = BigInt(asset);
   const recipient = getAddress(p.recipient);
@@ -156,7 +174,7 @@ export async function proveWithdraw(p: {
     amount: f(p.amount),
     recipient: f(BigInt(recipient)),
     relayer_fee: f(fee),
-    ext_hash: f(extHashOf(encryptedChange)),
+    ext_hash: f(extHashOf(withdrawExtData(encryptedChange, fee, p.relayer))),
     in_amount: f(note.raw),
     in_secret: f(keys.spendingSecret),
     in_blinding: f(note.blinding),

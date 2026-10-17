@@ -263,8 +263,7 @@ contract PerpMarketTest is PerpFixture {
     function test_makerFee_onlyForRegisteredAccounts() public {
         _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         address factory = makeAddr("factory");
-        vm.prank(owner);
-        pool.setMakerRegistrar(factory);
+        _setRegistrar(factory);
         vm.prank(factory);
         pool.setMaker(alice, true);
 
@@ -288,8 +287,7 @@ contract PerpMarketTest is PerpFixture {
     function test_makerFee_followsAccountNotOperator() public {
         _params(10, 2, 1000, 0, 0, 2_000, 10_000, 5e6);
         address factory = makeAddr("factory");
-        vm.prank(owner);
-        pool.setMakerRegistrar(factory);
+        _setRegistrar(factory);
         vm.prank(factory);
         pool.setMaker(operator, true); // the operator being a maker gives the account nothing
         vm.prank(alice);
@@ -298,6 +296,16 @@ contract PerpMarketTest is PerpFixture {
         vm.prank(operator);
         market.openFor(alice, true, 1_000e6, 100e6, 10_000);
         assertEq(market.position(alice).collateral, 99e6);
+    }
+
+    /// With LPs in, the registrar changes through the timelock.
+    function _setRegistrar(address r) internal {
+        vm.prank(owner);
+        pool.proposeMakerRegistrar(r);
+        skip(pool.TIMELOCK());
+        _refresh();
+        vm.prank(owner);
+        pool.setMakerRegistrar(r);
     }
 
     // ------------------------------------------------------------ trade-only operators
@@ -364,7 +372,11 @@ contract PerpMarketTest is PerpFixture {
 
     /// Mainnet feeds price one token with the multiplier embedded: a multiplier change alone must not move PnL.
     function test_multiplierChange_embeddedFeed_noPnlJump() public {
+        registry.list(address(token), address(feed), true); // a listed token's flag change waits 48 h (ChangeDelay)
+        vm.warp(block.timestamp + 48 hours); // ChangeDelay
         registry.list(address(token), address(feed), true);
+        vm.warp(block.timestamp - 48 hours);
+        feed.set(feed.latestAnswer());
         _open(alice, true, 1_000e6, 100e6);
         int256 e0 = market.equityOf(alice);
         token.setUiMultiplier(1.05e18);

@@ -62,7 +62,7 @@ interface IPendingOwned {
 }
 
 /// The closed-beta deploy of Plynth on Robinhood Chain MAINNET (4663), wired to the real mainnet contracts:
-/// USDG, the nine Stock Tokens that have Chainlink feeds (feeds price one token: multiplierEmbedded = true), their
+/// USDG, the fourteen Stock Tokens that have Chainlink feeds (the nine of v1 plus BABA, COIN, CRCL, PLTR and USO) (feeds price one token: multiplierEmbedded = true), their
 /// default Uniswap v4 USDG pools, Permit2, the ERC-5564 Announcer / ERC-6538 Registry and the Steakhouse USDG
 /// vault (steakUSDG).
 ///
@@ -83,12 +83,18 @@ interface IPendingOwned {
 /// the output file for the services and for the first treasury's policy. All must be distinct from each other,
 /// from OWNER and from the deployer.
 ///
-/// Timers (mainnet values): crowd window 24 h, beacon GRACE 1 h, treasury policy / Hidden Vault cap / park adapter
+/// v2 (after the 2026-10-16 external audit): the Valuer holds prices while the market is closed (weekend, holidays),
+/// crowd windows end at 19:30 UTC so the public fallback hour sits in US regular hours, feed / pool / keeper changes
+/// wait 48 h (ChangeDelay), perp markets carry the open spread, minimum hold, minimum liquidation reward and minimum
+/// collateral, and the treasury guard's per-operation loss bound is 50 bps. `checkHandoff` asserts all of it before
+/// anything is broadcast and `verifyDeployment` re-checks a deployment file against the chain afterwards.
+///
+/// Timers (mainnet values): crowd window 24 h (19:30 -> 19:30 UTC), beacon GRACE 1 h, treasury policy / Hidden Vault cap / park adapter
 /// timelocks 48 h, staking unbonding 7 d, insurance withdraw delay 14 d, perp LP redeem cooldown 24 h.
 ///
 /// Caps: none. Every Hidden Vault asset cap is PROPOSED at type(uint256).max (it applies after the 48 h timelock:
-/// anyone calls applyCap(asset)); every perp market's open-interest cap is 100% of pool liquidity (the most the
-/// contract accepts; the pool still reserves every trader's maximum payout). The owner keeps the emergency
+/// anyone calls applyCap(asset)); every perp market's open-interest cap is 20% of pool liquidity per side (audit
+/// PERP-4; the pool still reserves every trader's maximum payout). The owner keeps the emergency
 /// levers: ShieldedPool.setDepositsPaused, and proposeCap with a lower value (applies at once).
 ///
 /// Token (PLTH, staking, FeeRouter, insurance pool, PLTH/USDG pool) only with DEPLOY_TOKEN=true (default false).
@@ -117,6 +123,9 @@ contract MainnetBeta is Script {
     uint256 public constant UNBONDING = 7 days;
     uint256 public constant INSURANCE_DELAY = 14 days;
     uint256 public constant PERP_COOLDOWN = 24 hours;
+    /// Crowd windows end at 19:30 UTC, so the public fallback hour (18:30-19:30 UTC) is inside US regular hours in
+    /// both summer and winter time and can find a fresh round (audit M-1); a midnight grid put it after the close.
+    uint64 public constant CROWD_DAY_OFFSET = 19 hours + 30 minutes;
 
     // ---- oracle staleness: Chainlink's heartbeat is 24 h on these feeds and weekday gaps up to ~22 h were seen
     // (chain facts); 26 h keeps weekdays live and puts weekends / holidays on hold (risk-reducing actions only).
@@ -127,10 +136,19 @@ contract MainnetBeta is Script {
 
     // ---- caps: none (Kal 2026-10-08)
     uint256 public constant UNLIMITED = type(uint256).max;
-    uint256 public constant PERP_OI_CAP_BPS = 10_000; // the most PerpMarket.setParams accepts
+    /// Open interest per side, of pool liquidity (audit PERP-4: conservative, not 100%).
+    uint256 public constant PERP_OI_CAP_BPS = 2_000;
+    /// Audit M-3: an open spread above the feeds' 0.5% deviation threshold round trip, and a minimum hold.
+    uint256 public constant PERP_OPEN_SPREAD_BPS = 40;
+    uint256 public constant PERP_MIN_HOLD = 30 minutes;
+    /// Audit M-4: a liquidator is always paid (from the pool when equity is gone); positions need real collateral.
+    uint256 public constant PERP_MIN_LIQ_REWARD = 1e6;
+    uint256 public constant PERP_MIN_COLLATERAL = 100e6;
     uint256 public constant HIDDEN_MIN_DEPOSIT = 1e6; // 1 USDG: no dust notes (not a cap)
 
     uint16 public constant CROWD_SLIPPAGE_BPS = 100;
+    /// PolicyGuard: most an operation may lose vs the oracle, per op (audit self-sandwich lead; was 200).
+    uint16 public constant GUARD_MAX_OP_LOSS_BPS = 50;
     uint256 public constant DEFAULT_MIN_CROWD = 3;
     uint256 public constant PLTH_USDG_PER_SIDE = 50_000e6;
     uint256 public constant PLTH_PRICE = 0.05e18;
@@ -206,7 +224,7 @@ contract MainnetBeta is Script {
     string[] perpSymbols;
 
     function stocks() public pure returns (Stock[] memory s) {
-        s = new Stock[](9);
+        s = new Stock[](14);
         s[0] = Stock("TSLA", 0x322F0929c4625eD5bAd873c95208D54E1c003b2d, 0x4A1166a659A55625345e9515b32adECea5547C38, 3000, 60);
         s[1] = Stock("AAPL", 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9, 0x6B22A786bAa607d76728168703a39Ea9C99f2cD0, 3000, 60);
         s[2] = Stock("NVDA", 0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC, 0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15, 100, 1);
@@ -216,6 +234,12 @@ contract MainnetBeta is Script {
         s[6] = Stock("META", 0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35, 0x7C38C00C30BEe9378381E7B6135d7283356D71b1, 310, 3);
         s[7] = Stock("MSTR", 0xec262a75e413fAfD0dF80480274532C79D42da09, 0x396118bdFB181e6240E74D243F266B061c0edc3D, 2400, 24);
         s[8] = Stock("SPY", 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C, 0x319724394D3A0e3669269846abE664Cd621f9f6A, 500, 5);
+        // Listed on v1 after its deploy (app/src/chain/listings.ts, checked 2026-10-16); part of the v2 deploy.
+        s[9] = Stock("BABA", 0xad25Ac6C84D497db898fa1E8387bf6Af3532a1c4, 0x62Cc8F9b5f56a33c9C8A60c8B92779f523c4E984, 1000, 10);
+        s[10] = Stock("COIN", 0x6330D8C3178a418788dF01a47479c0ce7CCF450b, 0xA3a468A452940B7D6b69991207B508c609a98Ef2, 2500, 25);
+        s[11] = Stock("CRCL", 0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5, 0x6652eDf64bA3731C4F2D3ce821A0Fb1f1f6b482a, 1500, 15);
+        s[12] = Stock("PLTR", 0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A, 0x820ABedFF239034956B7A9d2F0a331f9F075eB4c, 1500, 15);
+        s[13] = Stock("USO", 0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344, 0x75a9c76Ef439e2C7c2E5a34Ab105EcFe3766431c, 1200, 15);
     }
 
     /// The hookless default pool of a Stock Token (chain facts): currencies sorted by address.
@@ -327,6 +351,7 @@ contract MainnetBeta is Script {
     function _core() private {
         registry = new StockTokenRegistry(deployer);
         valuer = new Valuer(registry, cfg.maxStaleness);
+        valuer.enableMarketCalendar(); // weekend / holiday hold (audit M-1); one-way
         router = new StockRouter(IPoolManager(POOL_MANAGER), registry, valuer, IERC20Metadata(USDG), deployer);
         Stock[] memory s = stocks();
         for (uint256 i; i < s.length; ++i) {
@@ -377,7 +402,7 @@ contract MainnetBeta is Script {
     }
 
     function _treasury() private {
-        guard = new PolicyGuard(registry, valuer, 200);
+        guard = new PolicyGuard(registry, valuer, GUARD_MAX_OP_LOSS_BPS);
         TreasuryPolicy.Policy memory none;
         policyImpl = address(new TreasuryPolicy(address(0), none, TIMELOCK));
         address accountImpl =
@@ -396,7 +421,10 @@ contract MainnetBeta is Script {
         factory = new TreasuryFactory(
             policyImpl, accountImpl, closeImpl, approvalsImpl, guard, IERC20Metadata(USDG), feeTo, tiers, templates
         );
-        if (cfg.deployToken) feeRouter.setTemplateFees(ITemplateFeeSource(address(factory)), 2000);
+        if (cfg.deployToken) {
+            feeRouter.setTemplateFees(ITemplateFeeSource(address(factory)), 2000);
+            insurance.bindTreasuryFactory(address(factory)); // claims only from factory treasuries (audit L-7)
+        }
         IERC4626[] memory vaults = new IERC4626[](1);
         vaults[0] = IERC4626(STEAK_USDG);
         cashSleeve = new CashSleeve(valuer, IERC20(USDG), vaults);
@@ -412,7 +440,8 @@ contract MainnetBeta is Script {
         beacon = new JitterBeacon(cfg.keeper, cfg.owner, BEACON_GRACE);
         vault = new SavingsVault(IERC20(USDG), PERMIT2, ICanonicalRegistry(address(registry)), deployer, cfg.keeper);
         vault.setEligibility(IEligibility(address(eligibility)));
-        genesis = uint64(block.timestamp - (block.timestamp % 1 days));
+        // The latest 19:30 UTC at or before now: windows run 19:30 -> 19:30 UTC.
+        genesis = uint64(block.timestamp - ((block.timestamp + 1 days - CROWD_DAY_OFFSET) % 1 days));
         crowd = new CrowdBuy(
             vault,
             router,
@@ -459,7 +488,7 @@ contract MainnetBeta is Script {
         );
     }
 
-    /// Every asset the Hidden Vault holds: USDG, steakUSDG shares (park) and the nine Stock Tokens.
+    /// Every asset the Hidden Vault holds: USDG, steakUSDG shares (park) and the fourteen Stock Tokens.
     function hiddenAssets() public pure returns (address[] memory a) {
         Stock[] memory s = stocks();
         a = new address[](s.length + 2);
@@ -473,7 +502,7 @@ contract MainnetBeta is Script {
     /// In-house perp venue: one PerpPool over real USDG and a market for each of the four deepest names, priced
     /// by the same Valuer. No LP seed: liquidity is OWNER's call after the deploy.
     function _perps() private {
-        perpPool = new PerpPool(IERC20(USDG), deployer, PERP_COOLDOWN);
+        perpPool = new PerpPool(IERC20(USDG), deployer, PERP_COOLDOWN, TIMELOCK);
         Stock[] memory s = stocks();
         uint256[4] memory pick = [uint256(0), 1, 2, 8]; // TSLA, AAPL, NVDA, SPY
         for (uint256 i; i < pick.length; ++i) {
@@ -488,6 +517,7 @@ contract MainnetBeta is Script {
                 m.maxProfitBps(),
                 m.liquidationFee()
             );
+            m.setGuards(PERP_OPEN_SPREAD_BPS, PERP_MIN_HOLD, PERP_MIN_LIQ_REWARD, PERP_MIN_COLLATERAL);
             perpPool.addMarket(address(m));
             perpMarkets.push(address(m));
             perpSymbols.push(s[pick[i]].sym);
@@ -498,6 +528,7 @@ contract MainnetBeta is Script {
     function _handOff() private {
         address o = cfg.owner;
         registry.transferOwnership(o);
+        valuer.transferOwnership(o);
         router.transferOwnership(o);
         vault.transferOwnership(o);
         crowd.transferOwnership(o);
@@ -516,54 +547,174 @@ contract MainnetBeta is Script {
 
     /// Contracts OWNER must call acceptOwnership() on after the deploy.
     function pendingAccepts() public view returns (address[] memory a) {
-        a = new address[](6 + perpMarkets.length);
+        a = new address[](7 + perpMarkets.length);
         a[0] = address(registry);
         a[1] = address(vault);
         a[2] = address(crowd);
         a[3] = address(shieldedPool);
         a[4] = address(shieldedTrade);
         a[5] = address(perpPool);
+        a[6] = address(valuer);
         for (uint256 i; i < perpMarkets.length; ++i) {
-            a[6 + i] = perpMarkets[i];
+            a[7 + i] = perpMarkets[i];
         }
     }
 
-    /// Fails the run (and so the simulation, before any broadcast) unless OWNER holds or is pending on every admin
-    /// role, the bots sit where they should, the caps are unlimited and the timers are the mainnet ones.
+    /// Fails the run (and so the simulation, before any broadcast) on any mismatch with the intended v2 state: every
+    /// admin role with OWNER (or OWNER pending while the deployer still owns it, before acceptOwnership), the bots
+    /// where they belong, every timer and timelock, every feed and pool, the caps, the slippage and risk parameters,
+    /// and nothing left with the deployer. `verifyDeployment` runs the same check later against a deployment file.
     function checkHandoff() public view {
         address o = cfg.owner;
+        _owned(address(registry), "registry");
+        _owned(address(valuer), "valuer");
         _is(IOwned(address(router)).owner() == o, address(router), "router owner");
+        _owned(address(vault), "vault");
+        _owned(address(crowd), "crowd");
+        _owned(address(shieldedPool), "shieldedPool");
+        _owned(address(shieldedTrade), "shieldedTrade");
+        _owned(address(perpPool), "perpPool");
+        for (uint256 i; i < perpMarkets.length; ++i) {
+            _owned(perpMarkets[i], "perpMarket");
+        }
         _is(IOwned(address(eligibility)).owner() == o, address(eligibility), "eligibility owner");
         _is(eligibility.attester() == cfg.attester, address(eligibility), "attester");
         _is(IOwned(address(beacon)).owner() == o, address(beacon), "beacon owner");
         _is(beacon.keeper() == cfg.keeper && beacon.GRACE() == BEACON_GRACE, address(beacon), "beacon keeper/GRACE");
-        address[] memory p = pendingAccepts();
-        for (uint256 i; i < p.length; ++i) {
-            _is(IPendingOwned(p[i]).pendingOwner() == o, p[i], "pendingOwner");
-            _is(IOwned(p[i]).owner() == deployer, p[i], "owner until accepted");
-        }
-        _is(vault.keeper() == cfg.keeper && crowd.keeper() == cfg.keeper, address(crowd), "keeper");
-        _is(crowd.WINDOW() == CROWD_WINDOW, address(crowd), "WINDOW");
-        _is(shieldedPool.CAP_DELAY() == TIMELOCK, address(shieldedPool), "CAP_DELAY");
-        _is(shieldedTrade.ADAPTER_DELAY() == TIMELOCK, address(shieldedTrade), "ADAPTER_DELAY");
-        _is(TreasuryPolicy(policyImpl).TIMELOCK() == TIMELOCK, policyImpl, "policy TIMELOCK");
-        _is(perpPool.REDEEM_COOLDOWN() == PERP_COOLDOWN, address(perpPool), "REDEEM_COOLDOWN");
         _is(templates.committee() == o, address(templates), "template committee");
-        address[] memory assets = hiddenAssets();
-        for (uint256 i; i < assets.length; ++i) {
-            (uint256 cap,) = shieldedPool.capProposal(assets[i]);
-            _is(cap == UNLIMITED, assets[i], "Hidden Vault cap proposal");
-        }
-        for (uint256 i; i < perpMarkets.length; ++i) {
-            _is(PerpMarket(perpMarkets[i]).oiCapBps() == PERP_OI_CAP_BPS, perpMarkets[i], "oiCapBps");
-        }
+        _checkCore();
+        _checkConsumer();
+        _checkPerps();
+        _checkTreasury();
         if (cfg.deployToken) {
             _is(IOwned(address(feeRouter)).owner() == o, address(feeRouter), "feeRouter owner");
+            _is(feeRouter.keeper() == cfg.keeper, address(feeRouter), "feeRouter keeper");
             _is(insurance.committee() == o, address(insurance), "insurance committee");
+            _is(insurance.treasuryFactory() == address(factory), address(insurance), "insurance factory");
             _is(staking.UNBONDING() == UNBONDING, address(staking), "UNBONDING");
             _is(insurance.WITHDRAW_DELAY() == INSURANCE_DELAY, address(insurance), "WITHDRAW_DELAY");
             _is(plth.balanceOf(deployer) == 0, address(plth), "deployer PLTH");
         }
+    }
+
+    /// Post-deploy check against a deployment file in app/deployments (default BETA_OUT): reads every address and
+    /// role from it and runs checkHandoff against the chain, failing on any mismatch. Run after the broadcast, again
+    /// after OWNER's acceptOwnership calls, and in the release gate:
+    ///   forge script script/MainnetBeta.s.sol --sig "verifyDeployment(string)" 4663-beta.json --rpc-url rhc
+    function verifyDeployment(string memory file) public {
+        checkOutName(file);
+        string memory j = vm.readFile(string.concat(vm.projectRoot(), "/../app/deployments/", file));
+        checkChain(vm.parseJsonBool(j, ".fork"), block.chainid);
+        cfg.fork = vm.parseJsonBool(j, ".fork");
+        cfg.deployToken = vm.parseJsonBool(j, ".deployToken");
+        cfg.owner = vm.parseJsonAddress(j, ".owner");
+        cfg.keeper = vm.parseJsonAddress(j, ".keeper");
+        cfg.attester = vm.parseJsonAddress(j, ".attester");
+        cfg.relayer = vm.parseJsonAddress(j, ".relayer");
+        cfg.controller = vm.parseJsonAddress(j, ".controller");
+        cfg.cashDesk = vm.parseJsonAddress(j, ".cashDesk");
+        cfg.equityDesk = vm.parseJsonAddress(j, ".equityDesk");
+        cfg.minCrowd = uint32(vm.parseJsonUint(j, ".minCrowd"));
+        cfg.maxStaleness = vm.parseJsonUint(j, ".maxStaleness");
+        deployer = vm.parseJsonAddress(j, ".deployer");
+        genesis = uint64(vm.parseJsonUint(j, ".genesis"));
+        registry = StockTokenRegistry(vm.parseJsonAddress(j, ".stockTokenRegistry"));
+        valuer = Valuer(vm.parseJsonAddress(j, ".valuer"));
+        router = StockRouter(vm.parseJsonAddress(j, ".stockRouter"));
+        eligibility = EligibilityRegistry(vm.parseJsonAddress(j, ".eligibilityRegistry"));
+        beacon = JitterBeacon(vm.parseJsonAddress(j, ".jitterBeacon"));
+        vault = SavingsVault(vm.parseJsonAddress(j, ".savingsVault"));
+        crowd = CrowdBuy(vm.parseJsonAddress(j, ".crowdBuy"));
+        stealthClaims = StealthClaims(vm.parseJsonAddress(j, ".stealthClaims"));
+        shieldedPool = ShieldedPool(vm.parseJsonAddress(j, ".shieldedPool"));
+        shieldedTrade = ShieldedTrade(vm.parseJsonAddress(j, ".shieldedTrade"));
+        guard = PolicyGuard(vm.parseJsonAddress(j, ".policyGuard"));
+        templates = TemplateRegistry(vm.parseJsonAddress(j, ".templateRegistry"));
+        factory = TreasuryFactory(vm.parseJsonAddress(j, ".treasuryFactory"));
+        policyImpl = factory.policyImpl();
+        perpPool = PerpPool(vm.parseJsonAddress(j, ".perpPool"));
+        delete perpMarkets;
+        address[] memory ms = perpPool.markets();
+        for (uint256 i; i < ms.length; ++i) {
+            perpMarkets.push(ms[i]);
+        }
+        if (cfg.deployToken) {
+            plth = PLTH(vm.parseJsonAddress(j, ".plth"));
+            staking = PlinthStaking(vm.parseJsonAddress(j, ".staking"));
+            insurance = ExceptionInsurancePool(vm.parseJsonAddress(j, ".insurancePool"));
+            feeRouter = FeeRouter(vm.parseJsonAddress(j, ".feeRouter"));
+        }
+        checkHandoff();
+    }
+
+    /// OWNER owns it, or (between the deploy and acceptOwnership) the deployer owns it with OWNER pending.
+    function _owned(address c, string memory what) private view {
+        address cur = IOwned(c).owner();
+        address pend = IPendingOwned(c).pendingOwner();
+        bool ok = (cur == cfg.owner && pend == address(0)) || (cur == deployer && pend == cfg.owner);
+        _is(ok, c, string.concat(what, " owner / pendingOwner"));
+    }
+
+    /// Feeds, pools and oracle settings for every stock.
+    function _checkCore() private view {
+        _is(valuer.registry() == registry && valuer.maxStaleness() == cfg.maxStaleness, address(valuer), "valuer wiring");
+        _is(valuer.marketCalendar(), address(valuer), "market calendar on");
+        _is(router.registry() == registry && router.valuer() == valuer, address(router), "router wiring");
+        _is(address(router.usdg()) == USDG && address(router.poolManager()) == POOL_MANAGER, address(router), "router usdg/pm");
+        Stock[] memory s = stocks();
+        _is(registry.tokens().length == s.length, address(registry), "stock count");
+        for (uint256 i; i < s.length; ++i) {
+            StockTokenRegistry.Entry memory e = registry.entry(s[i].token);
+            _is(e.active && e.feed == s[i].feed && e.multiplierEmbedded, s[i].token, string.concat(s[i].sym, " feed"));
+            _is(
+                keccak256(abi.encode(router.poolOf(s[i].token))) == keccak256(abi.encode(poolKeyOf(s[i]))),
+                s[i].token,
+                string.concat(s[i].sym, " pool")
+            );
+        }
+    }
+
+    function _checkConsumer() private view {
+        _is(vault.keeper() == cfg.keeper && crowd.keeper() == cfg.keeper, address(crowd), "keeper");
+        _is(vault.crowd() == address(crowd) && address(vault.eligibility()) == address(eligibility), address(vault), "vault wiring");
+        _is(crowd.WINDOW() == CROWD_WINDOW && crowd.GENESIS() == genesis, address(crowd), "WINDOW / GENESIS");
+        _is((genesis + 1 days - CROWD_DAY_OFFSET) % 1 days == 0, address(crowd), "windows end 19:30 UTC");
+        _is(crowd.MIN_CROWD() == cfg.minCrowd && crowd.slippageBps() == CROWD_SLIPPAGE_BPS, address(crowd), "crowd params");
+        _is(address(crowd.beacon()) == address(beacon) && crowd.router() == router, address(crowd), "crowd wiring");
+        _is(crowd.stealthClaims() == stealthClaims && address(crowd.shieldedPool()) == address(shieldedPool), address(crowd), "crowd delivery");
+        _is(shieldedPool.crowd() == address(crowd) && shieldedPool.trade() == address(shieldedTrade), address(shieldedPool), "pool wiring");
+        _is(shieldedPool.CAP_DELAY() == TIMELOCK, address(shieldedPool), "CAP_DELAY");
+        _is(shieldedPool.minDeposit(USDG) == HIDDEN_MIN_DEPOSIT && !shieldedPool.depositsPaused(), address(shieldedPool), "deposits");
+        _is(shieldedTrade.ADAPTER_DELAY() == TIMELOCK, address(shieldedTrade), "ADAPTER_DELAY");
+        address[] memory assets = hiddenAssets();
+        for (uint256 i; i < assets.length; ++i) {
+            (uint256 cap,) = shieldedPool.capProposal(assets[i]);
+            _is(cap == UNLIMITED || shieldedPool.cap(assets[i]) == UNLIMITED, assets[i], "Hidden Vault cap");
+        }
+    }
+
+    function _checkPerps() private view {
+        _is(perpPool.REDEEM_COOLDOWN() == PERP_COOLDOWN && perpPool.TIMELOCK() == TIMELOCK, address(perpPool), "pool timers");
+        _is(perpPool.asset() == USDG && perpPool.markets().length == perpMarkets.length, address(perpPool), "pool markets");
+        for (uint256 i; i < perpMarkets.length; ++i) {
+            PerpMarket m = PerpMarket(perpMarkets[i]);
+            _is(perpPool.isMarket(address(m)) && m.pool() == perpPool && m.valuer() == valuer, address(m), "market wiring");
+            _is(m.oiCapBps() == PERP_OI_CAP_BPS, address(m), "oiCapBps");
+            _is(m.openSpreadBps() == PERP_OPEN_SPREAD_BPS && m.minHoldSeconds() == PERP_MIN_HOLD, address(m), "M-3 guards");
+            _is(
+                m.minLiquidationReward() == PERP_MIN_LIQ_REWARD && m.minCollateral() == PERP_MIN_COLLATERAL,
+                address(m),
+                "M-4 guards"
+            );
+        }
+    }
+
+    function _checkTreasury() private view {
+        _is(guard.maxOpLossBps() == GUARD_MAX_OP_LOSS_BPS && guard.valuer() == valuer, address(guard), "guard params");
+        _is(TreasuryPolicy(policyImpl).TIMELOCK() == TIMELOCK, policyImpl, "policy TIMELOCK");
+        _is(factory.guard() == guard && address(factory.cash()) == USDG, address(factory), "factory wiring");
+        address feeTo = cfg.deployToken ? address(feeRouter) : cfg.owner;
+        _is(factory.feeRecipient() == feeTo, address(factory), "factory fee recipient");
     }
 
     function _is(bool ok, address target, string memory what) private pure {

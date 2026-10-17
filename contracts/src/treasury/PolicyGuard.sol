@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
@@ -17,19 +17,22 @@ import {IPrivateSleeve} from "./PrivateSleeve.sol";
 /// then asks `check` to compare the resulting state with the policy. Any broken rule returns a non-zero
 /// reason code and the account reverts the whole operation.
 ///
-/// Stateless except for the rolling 24-hour notional counters (one ring of hourly buckets per account).
+/// Stateless except for the rolling 24-hour notional and op-loss counters (rings of hourly buckets per account).
 /// All USD amounts are 18-decimal; policy caps are whole USD.
 ///
 /// T2 (perp venues): NAV includes the equity of every venue of every position sleeve (in-house venues read
 /// on-chain, off-chain venues from the PositionMirror). Rule 5 bounds the net delta (spot Stock Tokens plus
-/// signed perp notional, over NAV) to the policy's overlay band and each venue's leverage (gross notional over
-/// venue equity) to maxLeverageX10. Rule 6 allows new risk (more notional or more margin) only at a venue in
+/// signed perp notional, over NAV) to the policy's overlay band, each venue's leverage (gross notional over
+/// venue equity) to maxLeverageX10, and, whenever a venue's risk goes up, each position's notional over its own
+/// margin (IPerpVenue.Position.marginUsd) to maxLeverageX10 as well, so idle margin at a venue cannot hide one
+/// highly levered isolated position. Rule 6 allows new risk (more notional or more margin) only at a venue in
 /// venueAllowRoot whose numbers are fresh, and keeps each venue's equity within perVenueCapBps of NAV.
 /// Reducing a venue (closing, withdrawing) needs no proof and works while its mirror is stale.
 ///
 /// Private sleeve: its book counts at PrivateSleeve.bookUsd (in its band, as Stock Token delta), so shielding
 /// moves value between the tracked set and the book without changing NAV. Private trades inside the pool are not
-/// seen until the next proven close (the last proven value is used until then).
+/// seen until the next proven close (the last proven value is used until then); once that proof is older than the
+/// policy period + PrivateSleeve.PROOF_GRACE, shields are refused (R10_PRIVATE_STALE) until a fresh one.
 contract PolicyGuard {
     // Reason codes (rule numbers follow the policy spec).
     uint8 public constant OK = 0;
@@ -50,6 +53,8 @@ contract PolicyGuard {
     uint8 public constant R6_VENUE_CAP = 15;
     uint8 public constant R6_STALE_VENUE = 16; // new risk at a venue whose mirror is stale (or unpriceable)
     uint8 public constant R10_PRIVATE_DESK = 17; // returned by the account: private sleeve run by another desk
+    uint8 public constant R10_PRIVATE_STALE = 18; // a shield into a private book whose last proof is too old
+    uint8 public constant R6_DAY_LOSS = 19; // operations lost more than DAY_LOSS_BPS of NAV in 24 hours
 
     uint8 public constant BAND_CASH = 0;
     uint8 public constant BAND_EQUITY = 1;
@@ -66,14 +71,26 @@ contract PolicyGuard {
 
     /// Buckets cover the current hour plus the previous 24, so any true 24-hour window is inside the sum.
     uint256 public constant DAY_BUCKETS = 25;
+    /// Most NAV the operations of one account may lose (fees, slippage vs oracle) in any 24 hours, in bps of the
+    /// NAV before the operation. maxOpLossBps bounds each operation; this bounds a desk that sandwiches its own
+    /// swaps (or bleeds fees) op after op within it.
+    uint256 public constant DAY_LOSS_BPS = 50;
     uint256 private constant WAD = 1e18;
     uint256 private constant BPS = 10_000;
+
+    /// One venue position: |notional| and the margin that backs it (IPerpVenue.Position.marginUsd), USD 1e18.
+    struct Pos {
+        address underlying;
+        uint256 notional;
+        uint256 margin;
+    }
 
     struct Venue {
         address venue;
         uint256 equity; // USD 1e18
         uint256 gross; // sum of |position notional|, USD 1e18
         bool stale;
+        Pos[] positions;
     }
 
     struct Snapshot {
@@ -90,6 +107,7 @@ contract PolicyGuard {
         int256 perpDeltaUsd; // signed perp notional over every venue (+ long, - short)
         Venue[] venues;
         uint256 privateUsd; // the private sleeve's book (last proven value +/- flows since), in its band
+        bool privateStale; // the book's last proof is older than the policy period + grace (PrivateSleeve.bookStale)
     }
 
     struct Bucket {
@@ -104,6 +122,7 @@ contract PolicyGuard {
     uint16 public immutable maxOpLossBps;
 
     mapping(address account => Bucket[DAY_BUCKETS]) private _buckets;
+    mapping(address account => Bucket[DAY_BUCKETS]) private _lossBuckets;
 
     error NotAccount();
     error BadLossBps();
@@ -153,6 +172,7 @@ contract PolicyGuard {
         if (ps == address(0)) return;
         uint256 usd = IPrivateSleeve(ps).bookUsd();
         s.privateUsd = usd;
+        s.privateStale = IPrivateSleeve(ps).bookStale();
         s.nav += usd;
         s.stockUsd += usd;
         _addToBand(s, IPrivateSleeve(ps).band(), usd);
@@ -192,11 +212,15 @@ contract PolicyGuard {
         v.venue = address(venue);
         (v.equity, v.stale) = venue.equityOf();
         IPerpVenue.Position[] memory pos = venue.positionOf();
+        v.positions = new Pos[](pos.length);
         for (uint256 i; i < pos.length; ++i) {
             int256 t = pos[i].tokens;
             uint256 abs = t < 0 ? uint256(-t) : uint256(t);
+            v.positions[i].underlying = pos[i].underlying;
+            v.positions[i].margin = pos[i].marginUsd;
             try valuer.value(pos[i].underlying, abs) returns (uint256 usd, bool) {
                 v.gross += usd;
+                v.positions[i].notional = usd;
                 delta += t < 0 ? -int256(usd) : int256(usd);
             } catch {
                 v.stale = true;
@@ -217,6 +241,7 @@ contract PolicyGuard {
         uint256 cursor; // next unread entry of allowProof
         bool venueRiskUp; // some venue's gross or margin went up
         bool venueGrossDown; // some venue's gross notional went down
+        uint256 loss; // NAV lost by the operation (USD 1e18)
     }
 
     /// Called by the account itself after running the operation. Returns OK or the first broken rule's code.
@@ -247,12 +272,16 @@ contract PolicyGuard {
         // Rule 2, rule 6 (venue allow-list and freshness) and the notional for rule 3.
         code = _assetRules(c, before, allowProof);
         if (code != OK) return code;
+        // Rule 10 (L-6): no new private risk on a book that has not been proven for a period + grace.
+        if (c.a.privateUsd > before.privateUsd && c.a.privateStale) return R10_PRIVATE_STALE;
         code = _venueRules(c, before, allowProof);
         if (code != OK) return code;
         c.notional = c.moved / 2 + c.grossMoved;
 
-        // Rules 5-6: value may only leave the tracked set as bounded fees/slippage.
-        if (before.nav > c.a.nav && before.nav - c.a.nav > c.notional * maxOpLossBps / BPS) return R6_UNKNOWN_CHANGE;
+        // Rules 5-6: value may only leave the tracked set as bounded fees/slippage, per operation and per 24 h.
+        c.loss = before.nav > c.a.nav ? before.nav - c.a.nav : 0;
+        if (c.loss > c.notional * maxOpLossBps / BPS) return R6_UNKNOWN_CHANGE;
+        if (c.loss != 0 && dayLoss(account) + c.loss > before.nav * DAY_LOSS_BPS / BPS) return R6_DAY_LOSS;
 
         // Rule 3.
         if (c.notional > uint256(c.p.perOrderCapUsd) * WAD) return R3_ORDER_CAP;
@@ -278,7 +307,8 @@ contract PolicyGuard {
             }
         }
 
-        _record(account, c.notional);
+        _record(_buckets[account], c.notional);
+        _record(_lossBuckets[account], c.loss);
         if (needsTicket) approvals.consume(approvalTicket, opHash, account);
         return OK;
     }
@@ -336,6 +366,9 @@ contract PolicyGuard {
             if (a.gross != 0 && a.gross * 10 > a.equity * c.p.maxLeverageX10) {
                 if (!(a.gross * v.equity < v.gross * a.equity)) return R5_LEVERAGE;
             }
+            // Rule 5 per position (L-5): when the venue's risk goes up, every position there is within
+            // maxLeverageX10 of its own margin, or the operation lowered that position's ratio.
+            if (_riskUp(a, v) && !_positionsOk(a.positions, v.positions, c.p.maxLeverageX10)) return R5_LEVERAGE;
         }
 
         // Rule 5: net delta inside the overlay band, or moving toward it from the same side (T2 only).
@@ -345,6 +378,23 @@ contract PolicyGuard {
             if (!netDeltaOk(c.p.netDeltaMinBps, c.p.netDeltaMaxBps, wB, wA)) return R5_NET_DELTA;
         }
         return OK;
+    }
+
+    /// Each position after the operation: notional x 10 <= margin x maxLeverageX10, or the same position existed
+    /// before with a strictly higher ratio (topping up an over-levered position is allowed).
+    function _positionsOk(Pos[] memory a, Pos[] calldata b, uint16 maxLeverageX10) private pure returns (bool) {
+        for (uint256 i; i < a.length; ++i) {
+            Pos memory p = a[i];
+            if (p.notional * 10 <= p.margin * maxLeverageX10) continue;
+            bool lowered;
+            for (uint256 j; j < b.length; ++j) {
+                if (b[j].underlying != p.underlying) continue;
+                lowered = p.notional * b[j].margin < b[j].notional * p.margin;
+                break;
+            }
+            if (!lowered) return false;
+        }
+        return true;
     }
 
     /// Signed weights are WAD (1e18 = 100% of NAV). Same "toward from the same side" rule as bandOk.
@@ -453,18 +503,26 @@ contract PolicyGuard {
     // ---------------------------------------------------------------- day counter
 
     /// Notional (USD 1e18) recorded in the current hour and the previous 24 hours.
-    function dayTotal(address account) public view returns (uint256 total) {
+    function dayTotal(address account) public view returns (uint256) {
+        return _sum(_buckets[account]);
+    }
+
+    /// NAV (USD 1e18) lost to operations in the current hour and the previous 24 hours.
+    function dayLoss(address account) public view returns (uint256) {
+        return _sum(_lossBuckets[account]);
+    }
+
+    function _sum(Bucket[DAY_BUCKETS] storage bs) private view returns (uint256 total) {
         uint256 hour = block.timestamp / 1 hours;
-        Bucket[DAY_BUCKETS] storage bs = _buckets[account];
         for (uint256 i; i < DAY_BUCKETS; ++i) {
             if (uint256(bs[i].hour) + DAY_BUCKETS > hour) total += bs[i].notional;
         }
     }
 
-    function _record(address account, uint256 notional) private {
+    function _record(Bucket[DAY_BUCKETS] storage ring, uint256 notional) private {
         if (notional == 0) return;
         uint64 hour = uint64(block.timestamp / 1 hours);
-        Bucket storage b = _buckets[account][hour % DAY_BUCKETS];
+        Bucket storage b = ring[hour % DAY_BUCKETS];
         if (b.hour != hour) {
             b.hour = hour;
             b.notional = uint192(notional);

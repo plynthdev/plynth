@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 /// Commit-reveal execution timing. On Robinhood Chain `block.prevrandao` is a counter, and Chainlink VRF
 /// is paid, so the keeper commits to a secret before a window opens and reveals it at the execution time.
@@ -13,7 +14,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// Trust: the keeper knows the execution time in advance (it chose the secret). This hides the time from
 /// the public, not from the keeper. If the keeper never reveals, execution falls back to
 /// `windowEnd - GRACE`, so a dead keeper delays execution but never blocks it.
-contract JitterBeacon is Ownable {
+contract JitterBeacon is Ownable, ChangeDelay {
     /// Hard floor for the deploy-time GRACE (mainnet/fork deploys use 1 hour; testnet 15 minutes).
     uint64 public constant MIN_GRACE = 10 minutes;
     /// The tail of every window in which no reveal is accepted; the fallback execution time is windowEnd - GRACE.
@@ -60,10 +61,17 @@ contract JitterBeacon is Ownable {
         emit KeeperSet(keeper_);
     }
 
+    /// A new keeper waits CHANGE_DELAY (48 h) in public.
     function setKeeper(address keeper_) external onlyOwner {
         if (keeper_ == address(0)) revert ZeroAddress();
+        if (!_delayed()) return;
         keeper = keeper_;
         emit KeeperSet(keeper_);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
     }
 
     /// Commits `commitment = keccak256(abi.encode(secret, key))` for a window that has not started yet.

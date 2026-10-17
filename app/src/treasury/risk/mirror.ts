@@ -1,6 +1,7 @@
 // Pushes controller-signed PositionMirror snapshots for off-chain venues. A VenueReader turns a venue's API into
 // (positions in Stock Token units, equity in USD 1e18, flowInSeen = the adapter's deposit counter the equity
-// already includes). Real Orderly/Arcus readers are todo 29; StaticVenueReader serves tests and dry runs.
+// already includes, flowOutSeen = the adapter's `flowOut` counter of cash received back that the equity already
+// excludes). Real Orderly/Arcus readers are todo 29; StaticVenueReader serves tests and dry runs.
 import { keccak256, type Address, type Hex, type PublicClient, type WalletClient } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { positionMirrorAbi } from "@/abi/treasury-risk";
@@ -12,6 +13,8 @@ export type MirrorReading = {
   positions: MirrorPosition[];
   equityUsd: bigint;
   flowInSeen: bigint;
+  /** MirroredPerpVenue.flowOut() already reflected in equityUsd (returned cash the venue no longer holds). 0 if none. */
+  flowOutSeen: bigint;
   /** Signed funding per underlying (1e18 fraction of size per second, > 0 longs pay), when the venue reports it. */
   funding?: { underlying: Address; ratePerSecond: bigint }[];
 };
@@ -37,6 +40,7 @@ export const SNAPSHOT_TYPES = {
     { name: "positions", type: "Position[]" },
     { name: "equityUsd", type: "uint256" },
     { name: "flowInSeen", type: "uint256" },
+    { name: "flowOutSeen", type: "uint256" },
     { name: "ts", type: "uint64" },
   ],
   Position: [
@@ -54,6 +58,7 @@ export type SignedSnapshot = {
   positions: MirrorPosition[];
   equityUsd: bigint;
   flowInSeen: bigint;
+  flowOutSeen: bigint;
   ts: bigint;
   signature: Hex;
 };
@@ -66,13 +71,13 @@ export async function signSnapshot(
   r: MirrorReading,
   ts: bigint,
 ): Promise<SignedSnapshot> {
-  const message = { venue, positions: r.positions, equityUsd: r.equityUsd, flowInSeen: r.flowInSeen, ts };
+  const message = { venue, positions: r.positions, equityUsd: r.equityUsd, flowInSeen: r.flowInSeen, flowOutSeen: r.flowOutSeen, ts };
   const signature = await controller.signTypedData({ domain: mirrorDomain(chainId, mirror), types: SNAPSHOT_TYPES, primaryType: "Snapshot", message });
   return { ...message, signature };
 }
 
 /** Content fingerprint (not the EIP-712 digest): used to skip re-posting an unchanged reading too often. */
-export const readingKey = (r: MirrorReading) => keccak256(new TextEncoder().encode(stringify([r.positions, r.equityUsd, r.flowInSeen])));
+export const readingKey = (r: MirrorReading) => keccak256(new TextEncoder().encode(stringify([r.positions, r.equityUsd, r.flowInSeen, r.flowOutSeen])));
 
 export type PushResult = { venue: Address; posted: boolean; ts?: bigint; tx?: Hex; reason?: string };
 
@@ -92,7 +97,7 @@ export class MirrorPusher {
 
   async push(reader: VenueReader): Promise<PushResult> {
     const reading = await reader.read();
-    const [, , , lastTs] = await this.pub.readContract({ address: this.mirror, abi: positionMirrorAbi, functionName: "latest", args: [reader.venue] });
+    const [, , , , lastTs] = await this.pub.readContract({ address: this.mirror, abi: positionMirrorAbi, functionName: "latest", args: [reader.venue] });
     const block = await this.pub.getBlock({ blockTag: "latest" });
     const ts = block.timestamp;
     const key = readingKey(reading);
@@ -104,7 +109,7 @@ export class MirrorPusher {
       address: this.mirror,
       abi: positionMirrorAbi,
       functionName: "post",
-      args: [s.venue, s.positions, s.equityUsd, s.flowInSeen, s.ts, s.signature],
+      args: [s.venue, s.positions, s.equityUsd, s.flowInSeen, s.flowOutSeen, s.ts, s.signature],
       account: this.wallet.account ?? this.controller,
       chain: this.wallet.chain,
     });

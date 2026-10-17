@@ -188,12 +188,12 @@ describe("mirror typed data", () => {
   test("the controller signature recovers to the controller", async () => {
     const ctrl = privateKeyToAccount("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"); // test-key (anvil #0)
     const mirror = A(0x1234);
-    const s = await signSnapshot(ctrl, 31337, mirror, A(9), { positions: [{ underlying: A(0xaa), tokens: -5n * E18 }], equityUsd: usd(10), flowInSeen: 7n }, 1_800_000_000n);
+    const s = await signSnapshot(ctrl, 31337, mirror, A(9), { positions: [{ underlying: A(0xaa), tokens: -5n * E18 }], equityUsd: usd(10), flowInSeen: 7n, flowOutSeen: 3n }, 1_800_000_000n);
     const who = await recoverTypedDataAddress({
       domain: mirrorDomain(31337, mirror),
       types: SNAPSHOT_TYPES,
       primaryType: "Snapshot",
-      message: { venue: s.venue, positions: s.positions, equityUsd: s.equityUsd, flowInSeen: s.flowInSeen, ts: s.ts },
+      message: { venue: s.venue, positions: s.positions, equityUsd: s.equityUsd, flowInSeen: s.flowInSeen, flowOutSeen: s.flowOutSeen, ts: s.ts },
       signature: s.signature,
     });
     expect(who).toBe(ctrl.address);
@@ -220,6 +220,7 @@ describe("risk ABIs match contracts/out", () => {
     }
     ready = existsSync(join(OUT, "PositionMirror.sol"));
   });
+  const MIRRORED_ONLY = new Set(["flowIn", "flowOut", "swept"]);
   const art = (file: string, name: string) => JSON.parse(readFileSync(join(OUT, file, `${name}.json`), "utf8")).abi as Abi;
   const sels = (abi: Abi) => new Set(abi.filter((i) => i.type === "function").map((i) => toFunctionSelector(i as AbiFunction)));
   const subset = (mine: Abi, theirs: Abi[]) => {
@@ -233,10 +234,10 @@ describe("risk ABIs match contracts/out", () => {
     subset(positionMirrorAbi, [art("PositionMirror.sol", "PositionMirror")]);
     subset(perpSleeveAbi, [art("PerpSleeve.sol", "PerpSleeve")]);
     subset(
-      perpVenueAbi.filter((i) => i.type === "function" && i.name !== "flowIn" && i.name !== "markets"),
+      perpVenueAbi.filter((i) => i.type === "function" && !MIRRORED_ONLY.has(i.name) && i.name !== "markets"),
       [art("IPerpVenue.sol", "IPerpVenue")],
     );
-    subset(perpVenueAbi.filter((i) => i.type === "function" && i.name === "flowIn"), [art("MirroredPerpVenue.sol", "MirroredPerpVenue")]);
+    subset(perpVenueAbi.filter((i) => i.type === "function" && MIRRORED_ONLY.has(i.name)), [art("MirroredPerpVenue.sol", "MirroredPerpVenue")]);
     subset(perpVenueAbi.filter((i) => i.type === "function" && i.name === "markets"), [art("InHousePerpVenue.sol", "InHousePerpVenue")]);
     subset(perpMarketAbi, [art("PerpMarket.sol", "PerpMarket")]);
     subset(riskAccountAbi, [art("TreasuryAccount.sol", "TreasuryAccount")]);

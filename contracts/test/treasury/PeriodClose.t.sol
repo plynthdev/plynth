@@ -15,6 +15,10 @@ contract PeriodCloseTest is TreasuryFixture {
     uint256 controllerKey = uint256(keccak256(abi.encodePacked("controller"))); // test-key (forge makeAddr)
     uint256 constant PERIOD = 30 days;
 
+    function _wireMockPeriodClose() internal pure override returns (bool) {
+        return false;
+    }
+
     function setUp() public override {
         super.setUp();
         assertEq(vm.addr(controllerKey), controller);
@@ -188,6 +192,128 @@ contract PeriodCloseTest is TreasuryFixture {
         _commit(_build(uint64(T0 + PERIOD)));
     }
 
+    // ------------------------------------------------------------ L-4: dust donations vs the signed close
+
+    bytes constant COMMIT_SNAPSHOT_SIG =
+        "commitSnapshot((uint64,uint256,uint16,uint16,bytes32,bytes32,bytes32,uint32),bytes)";
+
+    /// L-4: the live commit recomputes NAV and positions at inclusion, so 1 wei of USDG sent to the account between
+    /// signing and inclusion voids the signed Close. The controller's on-chain `snapshot()` pins the book at the
+    /// period end; a Close signed over the snapshot commits whatever anyone sends afterwards.
+    function test_poc_dustDonationCannotVoidSnapshotClose() public {
+        _warp(T0 + PERIOD);
+        PeriodClose.Close memory live = _build(uint64(T0 + PERIOD));
+        bytes memory liveSig = _sign(live, controllerKey);
+        usdg.mint(address(account), 1); // the griefer's 1 wei
+        vm.expectPartialRevert(PeriodClose.NavMismatch.selector);
+        pc.commit(live, liveSig); // the live path still recomputes (and so can be griefed)
+
+        vm.prank(controller);
+        (bool ok,) = address(pc).call(abi.encodeWithSignature("snapshot()"));
+        assertTrue(ok, "controller snapshot");
+        PeriodClose.Close memory c = _build(uint64(T0 + PERIOD)); // == the snapshot (same block)
+        bytes memory sig = _sign(c, controllerKey);
+        usdg.mint(address(account), 1); // donations after the snapshot
+        aapl.mint(address(account), 1);
+        (ok,) = address(pc).call(abi.encodeWithSignature(string(COMMIT_SNAPSHOT_SIG), c, sig));
+        assertTrue(ok, "commit against the snapshot");
+        assertEq(pc.closeCount(), 1);
+        assertEq(pc.latest().navUsd, c.navUsd);
+    }
+
+    function _snapshot() internal {
+        vm.prank(controller);
+        pc.snapshot();
+    }
+
+    function test_snapshotOnlyControllerAndNotBeforePeriodEnd() public {
+        _warp(T0 + PERIOD);
+        vm.expectRevert(PeriodClose.NotController.selector);
+        vm.prank(board);
+        pc.snapshot();
+        _closeAfter(0); // first close at T0 + PERIOD
+        vm.expectRevert(abi.encodeWithSelector(PeriodClose.PeriodInFuture.selector, uint64(T0 + 2 * PERIOD), block.timestamp));
+        vm.prank(controller);
+        pc.snapshot();
+    }
+
+    function test_snapshotRecordsTheBook() public {
+        _warp(T0 + PERIOD);
+        PeriodClose.Close memory c = _build(uint64(T0 + PERIOD));
+        vm.expectEmit(address(pc));
+        emit PeriodClose.BookSnapshotted(uint64(block.timestamp), c.positionsHash, c.navUsd, c.cashBps, c.equityBps);
+        _snapshot();
+        PeriodClose.BookSnapshot memory b = pc.bookSnapshot();
+        assertEq(b.takenAt, block.timestamp);
+        assertEq(b.navUsd, c.navUsd);
+        assertEq(b.positionsHash, c.positionsHash);
+        assertEq(b.bandUsd[0], 600_000e18);
+        assertEq(b.bandUsd[1], 400_000e18);
+    }
+
+    function test_snapshotHoldsLikeCommit() public {
+        vm.warp(T0 + PERIOD); // AAPL feed stale
+        vm.expectRevert(abi.encodeWithSelector(PeriodClose.HoldAtClose.selector, address(aapl)));
+        vm.prank(controller);
+        pc.snapshot();
+    }
+
+    function test_commitSnapshotChecksTheSnapshotNotTheLiveBook() public {
+        _warp(T0 + PERIOD);
+        PeriodClose.Close memory c = _build(uint64(T0 + PERIOD));
+        bytes memory sig = _sign(c, controllerKey);
+        vm.expectRevert(PeriodClose.NoSnapshot.selector);
+        pc.commitSnapshot(c, sig);
+        _snapshot();
+        vm.prank(board);
+        account.withdrawToBoard(address(usdg), 100_000e6); // a real move after the snapshot: the statement is the snapshot
+        PeriodClose.Close memory lie = _build(uint64(T0 + PERIOD)); // the live book: $900k
+        assertEq(lie.navUsd, 900_000e18);
+        bytes memory lieSig = _sign(lie, controllerKey);
+        vm.expectRevert(abi.encodeWithSelector(PeriodClose.NavMismatch.selector, c.navUsd, lie.navUsd));
+        pc.commitSnapshot(lie, lieSig);
+        bytes memory badSig = _sign(c, uint256(keccak256("stranger"))); // test-key
+        vm.expectRevert(PeriodClose.BadSignature.selector);
+        pc.commitSnapshot(c, badSig);
+        pc.commitSnapshot(c, sig);
+        assertEq(pc.periodStartNav(), 900_000e18 - pc.feeFor(c.navUsd, PERIOD) * 1e12, "start NAV is the live book");
+        assertEq(pc.bookSnapshot().takenAt, 0, "consumed");
+    }
+
+    function test_commitSnapshotConsumedOnce() public {
+        _warp(T0 + PERIOD);
+        _snapshot();
+        PeriodClose.Close memory c = _build(uint64(T0 + PERIOD));
+        pc.commitSnapshot(c, _sign(c, controllerKey));
+        _warp(T0 + 2 * PERIOD);
+        PeriodClose.Close memory c2 = _build(uint64(T0 + 2 * PERIOD));
+        bytes memory sig2 = _sign(c2, controllerKey);
+        vm.expectRevert(PeriodClose.NoSnapshot.selector);
+        pc.commitSnapshot(c2, sig2);
+    }
+
+    function test_commitSnapshotBoundsAndPeriodEnd() public {
+        _warp(T0 + PERIOD + 10);
+        _snapshot();
+        PeriodClose.Close memory late = _build(uint64(T0 + PERIOD + 11)); // periodEnd after the snapshot
+        _warp(T0 + PERIOD + 11);
+        bytes memory sig = _sign(late, controllerKey);
+        vm.expectRevert(
+            abi.encodeWithSelector(PeriodClose.SnapshotBeforePeriodEnd.selector, uint64(T0 + PERIOD + 10), late.periodEnd)
+        );
+        pc.commitSnapshot(late, sig);
+
+        PeriodClose.Close memory c = _build(uint64(T0 + PERIOD));
+        sig = _sign(c, controllerKey);
+        _warp(T0 + PERIOD + 10 + pc.SNAPSHOT_MAX_AGE() + 1);
+        vm.expectRevert(abi.encodeWithSelector(PeriodClose.SnapshotExpired.selector, uint64(T0 + PERIOD + 10)));
+        pc.commitSnapshot(c, sig);
+        _snapshot(); // the controller retakes it
+        c = _build(uint64(T0 + PERIOD));
+        pc.commitSnapshot(c, _sign(c, controllerKey));
+        assertEq(pc.closeCount(), 1);
+    }
+
     // ------------------------------------------------------------ signature + policy
 
     function test_revertBadSignature() public {
@@ -328,8 +454,7 @@ contract PeriodCloseTest is TreasuryFixture {
 
     function test_zeroFeeRecipientMeansNoFee() public {
         PeriodClose free = new PeriodClose(account, IERC20Metadata(address(usdg)), address(0), ITierSource(address(0)));
-        vm.prank(board);
-        account.setPeriodClose(address(free));
+        _replacePeriodClose(account, address(free));
         pc = free;
         _warp(T0 + PERIOD);
         PeriodClose.Close memory c = _build(uint64(T0 + PERIOD));
@@ -346,6 +471,7 @@ contract PeriodCloseTest is TreasuryFixture {
         vm.expectRevert(TreasuryAccount.NotPeriodClose.selector);
         account.payCloseFee(address(usdg), stranger, 1);
         vm.prank(board);
+        vm.expectRevert(TreasuryAccount.ZeroAddress.selector); // never cleared once set
         account.setPeriodClose(address(0));
         vm.expectRevert(TreasuryAccount.NotPeriodClose.selector);
         vm.prank(address(0));

@@ -16,13 +16,22 @@ export const periodCloseErrorsAbi = parseAbi([
   "error WeightsMismatch(uint16 cashBps, uint16 equityBps)",
   "error PositionsMismatch(bytes32 expected)",
   "error BadSignature()",
+  "error NotController()",
+  "error NoSnapshot()",
+  "error SnapshotBeforePeriodEnd(uint64 takenAt, uint64 periodEnd)",
+  "error SnapshotExpired(uint64 takenAt)",
 ]);
 
 export const periodCloseAbi = [
   ...parseAbi([
     CLOSE_STRUCT,
     POSITION_STRUCT,
+    "struct BookSnapshot { uint64 takenAt; uint256 navUsd; uint16 cashBps; uint16 equityBps; bytes32 positionsHash; uint256[3] bandUsd; }",
     "function commit(Close c, bytes controllerSig)",
+    "function snapshot() returns (bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps)",
+    "function commitSnapshot(Close c, bytes controllerSig)",
+    "function bookSnapshot() view returns (BookSnapshot)",
+    "function SNAPSHOT_MAX_AGE() view returns (uint64)",
     "function latest() view returns (Close)",
     "function closeAt(uint256 index) view returns (Close)",
     "function closeCount() view returns (uint256)",
@@ -36,6 +45,7 @@ export const periodCloseAbi = [
     "function digest(Close c) view returns (bytes32)",
     "function feeFor(uint256 navUsd, uint256 elapsed) view returns (uint256)",
     "function preview() view returns (Position[] positions, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps, address holdToken)",
+    "event BookSnapshotted(uint64 takenAt, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps)",
     "event PeriodClosed(uint256 indexed index, uint64 indexed periodEnd, Close close, uint256 feeRaw, uint256 feePaid, uint256 feeOwed)",
   ]),
   ...periodCloseErrorsAbi,

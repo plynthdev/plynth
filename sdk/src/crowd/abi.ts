@@ -24,7 +24,7 @@ export const savingsVaultAbi = parseAbi([
 ]);
 
 export const crowdBuyAbi = parseAbi([
-  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; }",
+  "struct Book { uint256 usdgTotal; uint32 accounts; uint64 openedAt; uint256 rawOut; bool executed; uint64 crowdSince; }",
   "function join(address user)",
   "function cancel(address asset, uint256 bookId)",
   "function execute(address asset)",

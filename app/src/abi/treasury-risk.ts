@@ -3,13 +3,13 @@ import { parseAbi } from "viem";
 
 export const positionMirrorAbi = parseAbi([
   "struct Position { address underlying; int256 tokens; }",
-  "function post(address venue, Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint64 ts, bytes signature)",
-  "function latest(address venue) view returns (Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint64 ts)",
+  "function post(address venue, Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, uint64 ts, bytes signature)",
+  "function latest(address venue) view returns (Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, uint64 ts)",
   "function isStale(address venue) view returns (bool)",
-  "function digestOf(address venue, Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint64 ts) view returns (bytes32)",
+  "function digestOf(address venue, Position[] positions, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, uint64 ts) view returns (bytes32)",
   "function eip712Domain() view returns (bytes1 fields, string name, string version, uint256 chainId, address verifyingContract, bytes32 salt, uint256[] extensions)",
   "function STALE_AFTER() view returns (uint256)",
-  "event MirrorPosted(address indexed venue, uint64 ts, uint256 equityUsd, uint256 flowInSeen, bytes32 positionsHash)",
+  "event MirrorPosted(address indexed venue, uint64 ts, uint256 equityUsd, uint256 flowInSeen, uint256 flowOutSeen, bytes32 positionsHash)",
   "error BadTimestamp(uint64 ts)",
   "error TooManyPositions()",
   "error BadSignature()",
@@ -22,10 +22,12 @@ export const perpSleeveAbi = parseAbi([
 ]);
 
 export const perpVenueAbi = parseAbi([
-  "struct Position { address underlying; int256 tokens; }",
+  "struct Position { address underlying; int256 tokens; uint256 marginUsd; }",
   "function positionOf() view returns (Position[])",
   "function equityOf() view returns (uint256 usd, bool stale)",
   "function flowIn() view returns (uint256)",
+  "function flowOut() view returns (uint256)",
+  "function swept() view returns (uint256)",
   "function markets() view returns (address[])",
 ]);
 

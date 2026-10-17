@@ -251,7 +251,7 @@ const hiddenWithdraw: Handler = async (x) => {
     await r.check("hidden finds its 500 mUSDG note by trial decryption", async () => `leaf ${note!.leafIndex}`, "hidden");
     const fresh = privateKeyToAccount(bytesToHex(crypto.getRandomValues(new Uint8Array(32)))).address;
     r.names.set(fresh.toLowerCase(), "fresh address");
-    const w = await proveWithdraw({ keys: ks, tree: state!.tree, note, amount: 100n * U, recipient: fresh, relayerFee: 1n * U });
+    const w = await proveWithdraw({ keys: ks, tree: state!.tree, note, amount: 100n * U, recipient: fresh, relayerFee: 1n * U, relayer: x.A.relayer.address });
     await r.external("relayer submits the Hidden withdraw of 100 mUSDG to a fresh address (UltraHonk proof)", "relayer", async () => {
       const res = await api("/withdraw", { method: "POST", port: PORTS.relayer, body: JSON.stringify(withdrawRequest(w)) });
       expect(res.status === 200 && res.body.txHash, `relayer ${res.status} ${j(res.body)}`);

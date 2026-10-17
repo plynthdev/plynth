@@ -79,7 +79,7 @@ const deadline = async () => (await now()) + 3600n;
 async function deposit(asset: Address, raw: bigint) {
   await send(alice, approveTx(asset, pool(), raw));
   await send(alice, depositTx(pool(), asset, raw, ka));
-  await warp(3601n);
+  await warp(7201n); // MIN_PENDING_DELAY + SOLO_INSERT_DELAY: a lone deposit may be inserted
   await send(relayer, insertPendingTx(pool(), 100n));
 }
 async function notes(): Promise<OwnedNote[]> {
@@ -130,7 +130,7 @@ describe.skipIf(!tools)("private sell / buy / park on anvil (real verifiers)", (
     expect(stockNote.raw).toBe(10n * E18);
 
     // Sell 4 mTSLA ($250) for >= 990 USDG; the relayer keeps 0.01 mTSLA.
-    const s = await proveSwap({ keys: ka, tree: state!.tree, note: stockNote, amountIn: 4n * E18, relayerFee: E18 / 100n, assetOut: usdg(), minOut: 980n * U, deadline: await deadline() });
+    const s = await proveSwap({ keys: ka, tree: state!.tree, note: stockNote, amountIn: 4n * E18, relayerFee: E18 / 100n, relayer, assetOut: usdg(), minOut: 980n * U, deadline: await deadline() });
     const r = await send(relayer, swapTx(trade(), s, 100));
     expect(r.from.toLowerCase()).toBe(relayer.toLowerCase());
     expect(r.gasUsed).toBeLessThan(8_000_000n);

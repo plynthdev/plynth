@@ -17,7 +17,9 @@ contract CrowdBuyQuietTest is CrowdBuyBase {
     bytes constant QUIET = abi.encode(uint8(1));
     // A syntactically valid compressed secp256k1 key (the generator point G).
     bytes constant EPK = hex"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-    bytes constant META = hex"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    // A well-formed scheme-1 meta-address (spending = G, viewing = 2G): deliver checks both keys are on the curve.
+    bytes constant META =
+        hex"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 
     StealthClaims internal sc;
     IERC6538Registry internal reg = IERC6538Registry(StealthCode.REGISTRY);

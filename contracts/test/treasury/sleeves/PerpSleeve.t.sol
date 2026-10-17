@@ -14,6 +14,7 @@ import {MirroredPerpVenue} from "../../../src/treasury/sleeves/MirroredPerpVenue
 import {IPerpVenue} from "../../../src/interfaces/IPerpVenue.sol";
 import {PerpPool} from "../../../src/perps/PerpPool.sol";
 import {PerpMarket} from "../../../src/perps/PerpMarket.sol";
+import {PerpMarketHarness} from "../../perps/PerpMarketHarness.sol";
 
 /// The treasury fixture ($1M NAV: 600k USDG cash, 2,000 AAPL at $200) plus a hedge desk on a PerpSleeve (cash
 /// band) with two venues: the in-house AAPL perp (10M USDG of LP liquidity, 10 bps taker fee, no funding or
@@ -42,8 +43,11 @@ contract PerpSleeveTest is TreasuryFixture {
         super.setUp();
         ctrl = vm.addr(CTRL_PK);
 
-        pool = new PerpPool(usdg, address(this), 24 hours);
-        market = new PerpMarket(pool, valuer, address(aapl), address(this));
+        pool = new PerpPool(usdg, address(this), 24 hours, 48 hours);
+        // Guards off (open spread, minimum hold): these tests check treasury math against exact fee numbers;
+        // the guards are tested in test/perps (and with the treasury in test_productionGuards_*).
+        market = new PerpMarketHarness(pool, valuer, address(aapl), address(this));
+        PerpMarketHarness(address(market)).guardsOff();
         pool.addMarket(address(market));
         market.setParams(10, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
         usdg.mint(lp, 10_000_000e6);
@@ -129,16 +133,27 @@ contract PerpSleeveTest is TreasuryFixture {
         _hedge(_op(1, idx, abi.encode(amount), 0), _allow(address(usdg)));
     }
 
-    function _post(IPerpVenue.Position[] memory pos, uint256 equityUsd, uint256 seen, uint64 ts, uint256 pk)
+    function _post(PositionMirror.Position[] memory pos, uint256 equityUsd, uint256 seen, uint64 ts, uint256 pk)
         internal
     {
-        bytes32 d = mirror.digestOf(address(offVenue), pos, equityUsd, seen, ts);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, d);
-        mirror.post(address(offVenue), pos, equityUsd, seen, ts, abi.encodePacked(r, s, v));
+        _post(pos, equityUsd, seen, 0, ts, pk);
     }
 
-    function _noPos() internal pure returns (IPerpVenue.Position[] memory) {
-        return new IPerpVenue.Position[](0);
+    function _post(
+        PositionMirror.Position[] memory pos,
+        uint256 equityUsd,
+        uint256 seen,
+        uint256 seenOut,
+        uint64 ts,
+        uint256 pk
+    ) internal {
+        bytes32 d = mirror.digestOf(address(offVenue), pos, equityUsd, seen, seenOut, ts);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, d);
+        mirror.post(address(offVenue), pos, equityUsd, seen, seenOut, ts, abi.encodePacked(r, s, v));
+    }
+
+    function _noPos() internal pure returns (PositionMirror.Position[] memory) {
+        return new PositionMirror.Position[](0);
     }
 
     // ------------------------------------------------------------ policy / wiring
@@ -183,7 +198,7 @@ contract PerpSleeveTest is TreasuryFixture {
     function test_rule5_hedgeInsideBandsPasses() public {
         _activateT2();
         _depositTo(0, 100_000e6);
-        _short(250_000e6, 50_000e6);
+        _short(250_000e6, 90_000e6); // 2.8x on its own margin (per-position rule 5)
         PolicyGuard.Snapshot memory s = guard.snapshot(address(account));
         assertEq(s.perpDeltaUsd, -250_000e18);
         assertEq(s.venues[0].gross, 250_000e18);
@@ -191,12 +206,26 @@ contract PerpSleeveTest is TreasuryFixture {
         assertEq(s.stockUsd, 400_000e18);
     }
 
+    /// The same hedge with the market's production front-running guards: the policy guard still accepts it, and
+    /// the venue's equity counts the open spread as a cost (the fee and spread in, the fee out).
+    function test_productionGuards_hedgeInsideBandsPasses() public {
+        PerpMarket fresh = new PerpMarket(pool, valuer, address(aapl), address(this));
+        PerpMarketHarness(address(market)).setGuardsUnchecked(fresh.openSpreadBps(), fresh.minHoldSeconds(), fresh.minCollateral());
+        _activateT2();
+        _depositTo(0, 100_000e6);
+        _short(250_000e6, 100_000e6); // ~2.5x of its own margin: inside the per-position 3x (L-5)
+        PolicyGuard.Snapshot memory s = guard.snapshot(address(account));
+        assertEq(s.perpDeltaUsd, -250_000e18, "the spread does not change the hedge's token count");
+        uint256 costBps = 10 + fresh.openSpreadBps() + 10;
+        assertEq(s.venues[0].equity, (100_000e6 - 250_000e6 * costBps / 10_000) * 1e12);
+    }
+
     function test_rule5_guardRejectsOverDelta() public {
         _activateT2();
         _depositTo(0, 150_000e6);
         // 400k spot - 350k short = 5% of NAV < 10%.
         _expectCode(guard.R5_NET_DELTA());
-        _short(350_000e6, 70_000e6);
+        _short(350_000e6, 120_000e6);
     }
 
     function test_rule5_spotBuyAboveDeltaBandRejectedUnlessHedged() public {
@@ -204,7 +233,7 @@ contract PerpSleeveTest is TreasuryFixture {
         _expectCode(guard.R5_NET_DELTA());
         _buy(address(aapl), 60_000e6); // delta 46% > 45%
         _depositTo(0, 50_000e6);
-        _short(100_000e6, 20_000e6);
+        _short(100_000e6, 40_000e6);
         _buy(address(aapl), 60_000e6); // delta 36%
     }
 
@@ -213,16 +242,57 @@ contract PerpSleeveTest is TreasuryFixture {
         _depositTo(0, 50_000e6);
         _expectCode(guard.R5_LEVERAGE());
         _short(160_000e6, 20_000e6); // 3.2x of venue equity
-        _short(140_000e6, 20_000e6); // 2.8x
+        _short(140_000e6, 49_000e6); // 2.8x of venue equity, 2.9x of its own margin
     }
 
-    function test_rule5_withdrawThatRaisesLeverageOverCapRejected() public {
+    /// L-5: the 3x limit was gross / equity per venue, so idle margin at the venue hid a ~40x position: a 250k
+    /// short on 6k of its own collateral passed because the venue held 100k in all. Each position's notional over
+    /// its own margin must be within maxLeverageX10 when risk goes up.
+    function test_poc_perPositionLeverage() public {
         _activateT2();
         _depositTo(0, 100_000e6);
-        _short(200_000e6, 20_000e6);
         _expectCode(guard.R5_LEVERAGE());
-        _withdraw(0, 50_000e6); // venue equity ~50k for 200k gross: 4x
-        _withdraw(0, 20_000e6); // 2.5x
+        _short(250_000e6, 6_000e6);
+        _short(250_000e6, 90_000e6); // 2.8x on its own margin
+    }
+
+    /// Venue-level rule 5 on a cross-margined (mirrored) venue: withdrawing idle cash that the venue's gross
+    /// leans on. (In-house positions are isolated: idle cash there backs none, so the per-position rule binds.)
+    function test_rule5_withdrawThatRaisesLeverageOverCapRejected() public {
+        _activateT2();
+        PositionMirror.Position[] memory pos = new PositionMirror.Position[](1);
+        pos[0] = PositionMirror.Position(address(aapl), -1000e18); // $200k short
+        usdg.mint(address(offVenue), 30_000e6); // 30k back from the venue, idle here
+        _post(pos, 40_000e18, 0, 30_000e6, uint64(block.timestamp), CTRL_PK); // seen: venue 40k + idle 30k, 2.86x
+        _expectCode(guard.R5_LEVERAGE());
+        _withdraw(1, 10_000e6); // 60k for 200k gross: 3.3x
+        _withdraw(1, 2_000e6); // 2.94x
+    }
+
+    /// A mirrored (cross-margined) venue reports the venue equity, unseen deposits included, as each position's
+    /// margin: a deposit lowers every position's ratio there, so it is allowed even while one is over the cap.
+    function test_rule5_mirrorPositionMarginIsVenueEquity() public {
+        _activateT2();
+        PositionMirror.Position[] memory pos = new PositionMirror.Position[](1);
+        pos[0] = PositionMirror.Position(address(aapl), -1000e18);
+        _post(pos, 40_000e18, 0, uint64(block.timestamp), CTRL_PK);
+        IPerpVenue.Position[] memory seen = offVenue.positionOf();
+        assertEq(seen[0].tokens, -1000e18);
+        assertEq(seen[0].marginUsd, 40_000e18, "cross-margined: the venue equity backs the position");
+        _depositTo(1, 10_000e6); // 200k on 50k: 4x, down from 5x
+        assertEq(offVenue.positionOf()[0].marginUsd, 50_000e18, "an unseen deposit counts");
+    }
+
+    /// Topping up an over-levered in-house position (margin only) is allowed: it lowers that position's ratio.
+    function test_rule5_topUpOfOverLeveredPositionAllowed() public {
+        _activateT2();
+        _depositTo(0, 150_000e6);
+        _short(150_000e6, 55_000e6); // 2.7x
+        aaplFeed.set(230e8); // the short loses: margin ~32k for ~172k notional, 5.3x
+        _warp(block.timestamp);
+        _expectCode(guard.R5_LEVERAGE());
+        _short(10_000e6, 100e6); // more size on less than its share of margin is refused
+        _short(0, 40_000e6); // margin only: 2.4x
     }
 
     /// Rule 7 lets a pure perp reduction through off-hours, but the in-house market charges the hold spread
@@ -231,7 +301,7 @@ contract PerpSleeveTest is TreasuryFixture {
     function test_rule7_offHoursPerpReduceWaitsForReopen() public {
         _activateT2();
         _depositTo(0, 100_000e6);
-        _short(100_000e6, 20_000e6);
+        _short(100_000e6, 40_000e6);
         vm.warp(block.timestamp + 2 days); // feeds stale: off-hours
         _expectCode(guard.R6_UNKNOWN_CHANGE());
         _hedge(_op(3, 0, abi.encode(address(aapl), uint256(50_000e6)), 0), new bytes32[](0));
@@ -329,14 +399,55 @@ contract PerpSleeveTest is TreasuryFixture {
         assertEq(usdg.balanceOf(address(account)), before + 20_000e6);
 
         // A fresh snapshot (a 500-token AAPL short, seen deposits) re-enables new risk.
-        IPerpVenue.Position[] memory pos = new IPerpVenue.Position[](1);
-        pos[0] = IPerpVenue.Position(address(aapl), -500e18);
-        _post(pos, 30_000e18, 50_000e6, uint64(block.timestamp), CTRL_PK);
+        PositionMirror.Position[] memory pos = new PositionMirror.Position[](1);
+        pos[0] = PositionMirror.Position(address(aapl), -500e18);
+        _post(pos, 30_000e18, 50_000e6, 20_000e6, uint64(block.timestamp), CTRL_PK); // the 20k return seen
         PolicyGuard.Snapshot memory s = guard.snapshot(address(account));
         assertEq(s.perpDeltaUsd, -100_000e18);
         assertEq(s.venues[1].equity, 30_000e18);
         assertFalse(s.venues[1].stale);
         _depositTo(1, 10_000e6);
+    }
+
+    /// Lead (audit): cash coming back from an off-chain venue sits idle at the adapter while the mirror still
+    /// counts it in the venue equity, so NAV counted it twice until the next snapshot (and a sweep to the account
+    /// counted it at both ends). Returned cash must count once.
+    function test_poc_returningCashCountsOnce() public {
+        _activateT2();
+        _post(_noPos(), 0, 0, uint64(block.timestamp), CTRL_PK);
+        _depositTo(1, 50_000e6);
+        _warp(block.timestamp + 1);
+        _post(_noPos(), 50_000e18, 50_000e6, uint64(block.timestamp), CTRL_PK); // the venue credited it
+        uint256 nav = _nav();
+        usdg.mint(address(offVenue), 20_000e6); // an off-chain withdrawal of 20k lands (the mirror has not seen it)
+        (uint256 eq,) = offVenue.equityOf();
+        assertEq(eq, 50_000e18, "returned cash counted once");
+        assertEq(_nav(), nav, "NAV unchanged by a withdrawal landing");
+        _withdraw(1, 20_000e6); // sweep it to the account
+        (eq,) = offVenue.equityOf();
+        assertEq(eq, 30_000e18, "the mirror's stale 50k less what left");
+        assertEq(_nav(), nav, "NAV unchanged by the sweep");
+    }
+
+    function test_flowOutSeenSettlesReturnsAndIsClamped() public {
+        _activateT2();
+        _post(_noPos(), 0, 0, uint64(block.timestamp), CTRL_PK);
+        _depositTo(1, 50_000e6);
+        usdg.mint(address(offVenue), 20_000e6); // 20k back
+        _withdraw(1, 5_000e6); // 5k swept, 15k idle
+        assertEq(offVenue.flowOut(), 20_000e6);
+        _warp(block.timestamp + 1);
+        // The snapshot has seen the deposit and the 20k return: venue equity 30k.
+        _post(_noPos(), 30_000e18, 50_000e6, 20_000e6, uint64(block.timestamp), CTRL_PK);
+        (uint256 eq,) = offVenue.equityOf();
+        assertEq(eq, 45_000e18, "30k at the venue + 15k idle");
+        usdg.mint(address(offVenue), 1); // a donation raises flowOut and idle alike
+        (uint256 eq2,) = offVenue.equityOf();
+        assertEq(eq2, eq);
+        _warp(block.timestamp + 1);
+        _post(_noPos(), 30_000e18, 50_000e6, 1e30, uint64(block.timestamp), CTRL_PK); // more than ever came back
+        (eq,) = offVenue.equityOf();
+        assertEq(eq, 30_000e18 + 15_000e18 + 1e12, "flowOutSeen clamped to flowOut");
     }
 
     function test_offChainVenueCannotTradeOnChain() public {
@@ -360,51 +471,51 @@ contract PerpSleeveTest is TreasuryFixture {
         _depositTo(0, 100_000e6);
         periodClose.set(_nav() * 105 / 100); // -4.76% <= -4%
         _expectCode(guard.R8_PAUSED());
-        _short(100_000e6, 20_000e6);
+        _short(100_000e6, 40_000e6);
     }
 
     // ------------------------------------------------------------ mirror
 
     function test_mirror_onlyControllerSignature() public {
-        bytes32 d = mirror.digestOf(address(offVenue), _noPos(), 1, 0, uint64(block.timestamp));
+        bytes32 d = mirror.digestOf(address(offVenue), _noPos(), 1, 0, 0, uint64(block.timestamp));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBAD, d); // test-key
         vm.expectRevert(PositionMirror.BadSignature.selector);
-        mirror.post(address(offVenue), _noPos(), 1, 0, uint64(block.timestamp), abi.encodePacked(r, s, v));
+        mirror.post(address(offVenue), _noPos(), 1, 0, 0, uint64(block.timestamp), abi.encodePacked(r, s, v));
         // The fixture's T1 controller is `controller`; after T2 activation the controller is ctrl.
         _activateT2();
         _post(_noPos(), 1, 0, uint64(block.timestamp), CTRL_PK);
-        (,,, uint64 ts) = mirror.latest(address(offVenue));
+        (,,,, uint64 ts) = mirror.latest(address(offVenue));
         assertEq(ts, block.timestamp);
     }
 
     function test_mirror_timestampRules() public {
         _activateT2();
         uint64 t = uint64(block.timestamp);
-        bytes32 d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, t + 1);
+        bytes32 d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, 0, t + 1);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(CTRL_PK, d);
         vm.expectRevert(abi.encodeWithSelector(PositionMirror.BadTimestamp.selector, t + 1));
-        mirror.post(address(offVenue), _noPos(), 0, 0, t + 1, abi.encodePacked(r, s, v)); // future
+        mirror.post(address(offVenue), _noPos(), 0, 0, 0, t + 1, abi.encodePacked(r, s, v)); // future
 
         _post(_noPos(), 0, 0, t, CTRL_PK);
-        d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, t);
+        d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, 0, t);
         (v, r, s) = vm.sign(CTRL_PK, d);
         vm.expectRevert(abi.encodeWithSelector(PositionMirror.BadTimestamp.selector, t));
-        mirror.post(address(offVenue), _noPos(), 0, 0, t, abi.encodePacked(r, s, v)); // replay
+        mirror.post(address(offVenue), _noPos(), 0, 0, 0, t, abi.encodePacked(r, s, v)); // replay
 
         vm.warp(t + 20 minutes);
         uint64 old = t + 5 minutes;
-        d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, old);
+        d = mirror.digestOf(address(offVenue), _noPos(), 0, 0, 0, old);
         (v, r, s) = vm.sign(CTRL_PK, d);
         vm.expectRevert(abi.encodeWithSelector(PositionMirror.BadTimestamp.selector, old));
-        mirror.post(address(offVenue), _noPos(), 0, 0, old, abi.encodePacked(r, s, v)); // stale on arrival
+        mirror.post(address(offVenue), _noPos(), 0, 0, 0, old, abi.encodePacked(r, s, v)); // stale on arrival
     }
 
     function test_mirror_positionCap() public {
         _activateT2();
-        IPerpVenue.Position[] memory pos = new IPerpVenue.Position[](33);
+        PositionMirror.Position[] memory pos = new PositionMirror.Position[](33);
         bytes memory sig = new bytes(65);
         vm.expectRevert(PositionMirror.TooManyPositions.selector);
-        mirror.post(address(offVenue), pos, 0, 0, uint64(block.timestamp), sig);
+        mirror.post(address(offVenue), pos, 0, 0, 0, uint64(block.timestamp), sig);
     }
 
     // ------------------------------------------------------------ NAV with in-house perps
@@ -416,7 +527,7 @@ contract PerpSleeveTest is TreasuryFixture {
         newPrice8 = bound(newPrice8, 160e8, 220e8); // keeps net delta inside 10%..45%
         _activateT2();
         _depositTo(0, size / 2);
-        _short(size, size / 4);
+        _short(size, size * 2 / 5);
         uint256 tokens = (size * ONE + 200e18 - 1) / 200e18;
         assertEq(market.position(address(inHouse)).tokens, tokens);
 
@@ -438,7 +549,7 @@ contract PerpSleeveTest is TreasuryFixture {
         assertEq(usdg.balanceOf(address(inHouse)), venueRaw);
     }
 
-    /// deposit = size/2, collateral = size/4, 10 bps fee rounded up (paid on open, netted for the exit), no
+    /// deposit = size/2, collateral = size x 2/5, 10 bps fee rounded up (paid on open, netted for the exit), no
     /// funding or borrow.
     function _model(uint256 size, uint256 tokens, uint256 p2)
         internal
@@ -446,7 +557,7 @@ contract PerpSleeveTest is TreasuryFixture {
         returns (uint256 expected, uint256 venueRaw, uint256 fee)
     {
         uint256 deposit = size / 2;
-        uint256 coll = size / 4;
+        uint256 coll = size * 2 / 5;
         fee = (size * 10 + 9_999) / 10_000;
         uint256 buyBack = (tokens * p2 + ONE - 1) / ONE;
         venueRaw = (deposit - coll) + (coll - fee) + size - buyBack - fee;

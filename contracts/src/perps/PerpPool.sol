@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
@@ -13,8 +13,12 @@ interface IPerpMarketValuation {
     function traderPnl() external view returns (int256);
     /// Accrue funding and borrow to now (no-op if already accrued this second).
     function accrue() external;
-    /// True while the market prices open interest at a stale (hold) price.
+    /// True while the market prices open interest at a stale (hold) price, for at most its HELD_GRACE.
     function staleWithOpenInterest() external view returns (bool);
+    /// True while the market has open interest on hold at all (no grace).
+    function onHoldWithOpenInterest() external view returns (bool);
+    /// Long plus short size (asset units).
+    function openInterest() external view returns (uint256);
 }
 
 /// LP vault (ERC-4626 over USDG) that is the counterparty to every PerpMarket it lists.
@@ -32,13 +36,21 @@ interface IPerpMarketValuation {
 /// While any market prices open interest at a stale (hold) price, the share price is stale too, so deposits
 /// and withdrawals wait for a fresh price (max* return 0, the calls revert MarketOnHold): nobody enters or
 /// leaves ahead of a reprice that is already known off-chain. A held market with no open interest (e.g. a
-/// delisted token) does not block.
+/// delisted token) does not block. A hold never freezes exits for longer than the market's HELD_GRACE: after it,
+/// the market values its open interest at the reserve (the most it can pay traders) and stops blocking
+/// withdrawals; deposits stay closed until it reprices or its positions are settled (`settleHeld`), since a
+/// deposit at that conservative price would dilute the LPs already in. The owner removes a market with no open
+/// interest (`removeMarket`), so a dead market stops costing gas in every share-price read.
 contract PerpPool is ERC4626, Ownable2Step {
     using SafeERC20 for IERC20;
 
     /// Hard floor for the deploy-time REDEEM_COOLDOWN (mainnet/fork 24 hours, testnet 15 minutes).
     uint256 public constant MIN_REDEEM_COOLDOWN = 10 minutes;
     uint256 public immutable REDEEM_COOLDOWN;
+    /// Hard floor for the deploy-time TIMELOCK (mainnet/fork 48 hours, testnet 15 minutes). Listing a market,
+    /// changing the maker registrar, and (in every market) risk-param changes wait this long once LPs are in.
+    uint256 public constant MIN_TIMELOCK = 10 minutes;
+    uint256 public immutable TIMELOCK;
 
     uint256 public traderCollateral;
     uint256 public totalReserved;
@@ -50,8 +62,13 @@ contract PerpPool is ERC4626, Ownable2Step {
     mapping(address account => uint256) public lastDepositAt;
     mapping(address account => bool) public isMaker;
     mapping(address account => mapping(address operator => bool)) public isOperator;
+    /// Timelocked changes: proposal id (marketId / registrarId) => time it may be applied.
+    mapping(bytes32 id => uint256) public etaOf;
 
     event MarketAdded(address indexed market);
+    event MarketRemoved(address indexed market);
+    event ChangeProposed(bytes32 indexed id, uint256 eta);
+    event ChangeCancelled(bytes32 indexed id);
     event MakerRegistrarSet(address indexed registrar);
     event MakerSet(address indexed account, bool maker);
     event OperatorSet(address indexed account, address indexed operator, bool allowed);
@@ -68,35 +85,101 @@ contract PerpPool is ERC4626, Ownable2Step {
     error ZeroAmount();
     error MarketOnHold(address market);
     error CooldownTooShort();
+    error OpenInterest(address market);
+    error TimelockTooShort();
+    error TimelockActive(bytes32 id, uint256 eta);
+    error NotProposed(bytes32 id);
 
     modifier onlyMarket() {
         if (!isMarket[msg.sender]) revert NotMarket();
         _;
     }
 
-    constructor(IERC20 usdg, address owner_, uint256 redeemCooldown_)
+    constructor(IERC20 usdg, address owner_, uint256 redeemCooldown_, uint256 timelock_)
         ERC20("Plynth Perp LP", "pPLP")
         ERC4626(usdg)
         Ownable(owner_)
     {
         if (redeemCooldown_ < MIN_REDEEM_COOLDOWN) revert CooldownTooShort();
+        if (timelock_ < MIN_TIMELOCK) revert TimelockTooShort();
         REDEEM_COOLDOWN = redeemCooldown_;
+        TIMELOCK = timelock_;
     }
 
     // ---------------------------------------------------------------- admin
 
+    /// List a market (every LP becomes its counterparty). Instant while the pool has no LP shares (the deploy
+    /// script lists everything before any deposit); otherwise TIMELOCK after `proposeMarket(market)`, so LPs
+    /// who do not want the new exposure can leave first.
     function addMarket(address market) external onlyOwner {
         if (market == address(0)) revert ZeroAddress();
         if (isMarket[market]) revert AlreadyMarket();
+        if (totalSupply() != 0) _consume(marketId(market));
         isMarket[market] = true;
         _markets.push(market);
         emit MarketAdded(market);
     }
 
-    /// The treasury factory (todo 14) becomes the registrar: it registers each TreasuryAccount it deploys.
+    /// Drop a market with no open interest (e.g. a delisted token whose positions were settled). Instant: it
+    /// cannot move the share price (no positions, no reserve) and the market can no longer open positions.
+    function removeMarket(address market) external onlyOwner {
+        if (!isMarket[market]) revert NotMarket();
+        if (IPerpMarketValuation(market).openInterest() != 0 || reserveOf[market] != 0) revert OpenInterest(market);
+        isMarket[market] = false;
+        uint256 n = _markets.length;
+        for (uint256 i; i < n; i++) {
+            if (_markets[i] == market) {
+                _markets[i] = _markets[n - 1];
+                _markets.pop();
+                break;
+            }
+        }
+        emit MarketRemoved(market);
+    }
+
+    /// The treasury factory (todo 14) becomes the registrar: it registers each TreasuryAccount it deploys, and a
+    /// maker pays 2 bps instead of 10 (LP income). Instant while the pool has no LP shares or when clearing it
+    /// (address(0) only stops new registrations); otherwise TIMELOCK after `proposeMakerRegistrar(registrar)`.
     function setMakerRegistrar(address registrar) external onlyOwner {
+        if (totalSupply() != 0 && registrar != address(0)) _consume(registrarId(registrar));
         makerRegistrar = registrar;
         emit MakerRegistrarSet(registrar);
+    }
+
+    function proposeMarket(address market) external onlyOwner {
+        if (market == address(0)) revert ZeroAddress();
+        _propose(marketId(market));
+    }
+
+    function proposeMakerRegistrar(address registrar) external onlyOwner {
+        _propose(registrarId(registrar));
+    }
+
+    function cancel(bytes32 id) external onlyOwner {
+        if (etaOf[id] == 0) revert NotProposed(id);
+        delete etaOf[id];
+        emit ChangeCancelled(id);
+    }
+
+    function marketId(address market) public pure returns (bytes32) {
+        return keccak256(abi.encode("addMarket", market));
+    }
+
+    function registrarId(address registrar) public pure returns (bytes32) {
+        return keccak256(abi.encode("makerRegistrar", registrar));
+    }
+
+    function _propose(bytes32 id) internal {
+        uint256 eta = block.timestamp + TIMELOCK;
+        etaOf[id] = eta;
+        emit ChangeProposed(id, eta);
+    }
+
+    /// A matured proposal is used up by the change it announced.
+    function _consume(bytes32 id) internal {
+        uint256 eta = etaOf[id];
+        if (eta == 0 || block.timestamp < eta) revert TimelockActive(id, eta);
+        delete etaOf[id];
     }
 
     function setMaker(address account, bool maker) external {
@@ -126,7 +209,8 @@ contract PerpPool is ERC4626, Ownable2Step {
         return bal > traderCollateral ? bal - traderCollateral : 0;
     }
 
-    /// LP equity: cash minus what traders are up (plus what they are down) across markets.
+    /// LP equity: cash minus what traders are up (plus what they are down) across markets, each position valued
+    /// on its own by its market (floored at minus its collateral, capped at its maximum payout).
     function totalAssets() public view override returns (uint256) {
         int256 v = int256(liquidAssets());
         for (uint256 i; i < _markets.length; i++) {
@@ -149,18 +233,31 @@ contract PerpPool is ERC4626, Ownable2Step {
         return address(0);
     }
 
+    /// The first market with open interest on hold at all (grace or not), or address(0): deposits wait for it.
+    function heldMarketForDeposits() public view returns (address) {
+        for (uint256 i; i < _markets.length; i++) {
+            if (IPerpMarketValuation(_markets[i]).onHoldWithOpenInterest()) return _markets[i];
+        }
+        return address(0);
+    }
+
     function _notHeld() internal view {
         address m = heldMarket();
         if (m != address(0)) revert MarketOnHold(m);
     }
 
+    function _notHeldForDeposits() internal view {
+        address m = heldMarketForDeposits();
+        if (m != address(0)) revert MarketOnHold(m);
+    }
+
     function maxDeposit(address receiver) public view override returns (uint256) {
-        if (heldMarket() != address(0)) return 0;
+        if (heldMarketForDeposits() != address(0)) return 0;
         return super.maxDeposit(receiver);
     }
 
     function maxMint(address receiver) public view override returns (uint256) {
-        if (heldMarket() != address(0)) return 0;
+        if (heldMarketForDeposits() != address(0)) return 0;
         return super.maxMint(receiver);
     }
 
@@ -183,14 +280,14 @@ contract PerpPool is ERC4626, Ownable2Step {
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (assets == 0) revert ZeroAmount();
-        _notHeld();
+        _notHeldForDeposits();
         return super.deposit(assets, receiver);
     }
 
     function mint(uint256 shares, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (shares == 0) revert ZeroAmount();
-        _notHeld();
+        _notHeldForDeposits();
         return super.mint(shares, receiver);
     }
 

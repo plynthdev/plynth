@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -15,7 +15,8 @@ import {StockRouter} from "../core/StockRouter.sol";
 ///
 /// One `swap` proof (circuits/swap) spends a note of `assetIn`, keeps a v1 change note, and fixes an output
 /// note except for its amount: `outPartial = H(assetOut, ownerPk, blinding)`. In the same transaction this
-/// module takes `amountIn` out of the pool, pays `relayerFee` (in assetIn) to msg.sender, trades the rest, and
+/// module takes `amountIn` out of the pool, pays `relayerFee` (in assetIn) to msg.sender (the relayer the proof
+/// binds when the fee is non-zero, see `swap`), trades the rest, and
 /// inserts the output note `H(outPartial, actualOut)` (a v2 "partial note", hidden/src/lib.nr) after checking
 /// `actualOut >= minOut`. Any failure (slippage, oracle hold, deadline, cap) reverts the whole transaction,
 /// so the input note stays unspent.
@@ -167,6 +168,9 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
 
     /// Private buy / sell / park / unpark. Returns the amount received and the inserted output commitment.
     /// `maxSlippageBps` is only used for buy/sell (StockRouter's oracle guard); the proof's `minOut` binds always.
+    /// Ext hash: extHashOf(abi.encode(encryptedChange, encryptedOut)) when relayerFee == 0, else
+    /// extHashOf(abi.encode(encryptedChange, encryptedOut, msg.sender)): a fee-paying proof names its relayer, so a
+    /// copier who lands the same calldata first fails verification instead of taking the fee (external audit L-9).
     function swap(
         bytes calldata proof,
         PublicSwap calldata pub,
@@ -174,7 +178,10 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
         bytes calldata encryptedChange,
         bytes calldata encryptedOut
     ) external nonReentrant returns (uint256 out, bytes32 outCommitment) {
-        Kind kind = _begin(proof, pub, extHashOf(abi.encode(encryptedChange, encryptedOut)));
+        bytes32 ext = pub.relayerFee == 0
+            ? extHashOf(abi.encode(encryptedChange, encryptedOut))
+            : extHashOf(abi.encode(encryptedChange, encryptedOut, msg.sender));
+        Kind kind = _begin(proof, pub, ext);
         out = _trade(pub, kind, maxSlippageBps);
         outCommitment = _finish(pub, kind, out, encryptedChange, encryptedOut);
     }
@@ -244,7 +251,8 @@ contract ShieldedTrade is Ownable2Step, ReentrancyGuard {
     // ---------------------------------------------------------------- views
 
     /// keccak256(data) mod p: the public input that binds a spend's encrypted notes to its proof (swap:
-    /// abi.encode(encryptedChange, encryptedOut); settle: encryptedOut), so a relayer cannot swap them.
+    /// abi.encode(encryptedChange, encryptedOut), plus the relayer address when a fee is paid; settle:
+    /// encryptedOut), so a relayer cannot swap them.
     function extHashOf(bytes memory data) public pure returns (bytes32) {
         return bytes32(uint256(keccak256(data)) % P);
     }

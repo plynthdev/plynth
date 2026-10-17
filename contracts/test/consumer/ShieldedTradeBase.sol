@@ -108,7 +108,7 @@ abstract contract ShieldedTradeBase is Test {
     function _note(address asset, uint256 raw) internal {
         vm.prank(alice);
         pool.deposit(asset, raw, bytes32(uint256(keccak256(abi.encode(_salt++))) % P), bytes32(_salt), "");
-        vm.warp(block.timestamp + pool.MIN_PENDING_DELAY());
+        vm.warp(block.timestamp + pool.MIN_PENDING_DELAY() + pool.SOLO_INSERT_DELAY()); // a lone deposit
         pool.insertPending(type(uint256).max);
         _refreshFeed();
     }

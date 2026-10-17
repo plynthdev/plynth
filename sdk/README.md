@@ -49,7 +49,7 @@ run, and stop anvil. They need `anvil` and `forge` on PATH and the repo checked 
 | --- | --- |
 | `bun examples/send-to-stealth.ts` | Recipient registers an ERC-6538 meta-address; a sender derives a one-time stealth address from it, pays mUSDG there and announces it; the recipient scans with the viewing key, derives the stealth key and moves the funds. |
 | `bun examples/crowd-join.ts` | Three savers deposit, pick a mix, get round-ups accrued; anyone joins them to the open book; the window's jittered time is revealed at that time; the keeper executes; allocations recomputed from logs match `allocationOf`; each saver claims. |
-| `bun examples/shield-and-withdraw.ts` | Keys from one signature; deposit mUSDG into ShieldedPool; the 1 h pending queue is inserted; the note is found by scanning; a withdraw proof is made locally and a different account (a relayer) submits it to a fresh address. |
+| `bun examples/shield-and-withdraw.ts` | Keys from one signature; deposit mUSDG into ShieldedPool; the pending queue is inserted (1 h for a batch of 4+ deposits, 2 h for a smaller one); the note is found by scanning; a withdraw proof is made locally and a different account (a relayer) submits it to a fresh address. |
 
 To run against an anvil you already deployed the kit on, set `RPC_URL` and `PLYNTH_DEPLOYMENT` (path to the
 JSON the deploy script printed after `PLYNTH_DEPLOYMENT `). The examples use anvil's unlocked dev accounts and
@@ -81,6 +81,9 @@ Read these before shipping any of it.
 - **Relayers.** A relayer sees the request's IP and contents and can refuse or delay it; it cannot change it
   (the claim is signed; withdraws and trades are proven to a fixed recipient and fee). It does rate limit, and it
   only relays a withdraw or trade whose fee covers its per-asset minimum and a claim above its per-token minimum.
+  A withdraw or swap that pays a fee is proven for one relayer address (`proveWithdraw` / `proveSwap` take
+  `relayer`; a relayer publishes its sending address as `relayer` in `GET /health`, see `relayerHealth`), so nobody
+  who copies the transaction from the mempool can land it first and take the fee. Fee-less proofs can be sent by anyone.
 - **Private trades leak the sender.** Submit `swap` / `settle` through a relayer (see "Private sell, buy and park");
   sending them from your own wallet links it to the trade.
 - **Keeper and owner powers** are listed in each contract's NatSpec: the keeper can only settle users who chose
@@ -99,7 +102,8 @@ tests; `cd app && bun install` also installs the SDK's dependencies. Not publish
 ```ts
 state = await syncPool(pub, pool, state, { trade });              // also reads PartialNoteFilled
 const note = myNotes(state, keys).find((n) => n.asset === tsla && !n.spent)!;
-const s = await proveSwap({ keys, tree: state.tree, note, amountIn, assetOut: usdg, minOut, deadline, relayerFee });
+const relayer = (await relayerHealth(relayerUrl)).relayer;           // the fee is bound to this sender
+const s = await proveSwap({ keys, tree: state.tree, note, amountIn, assetOut: usdg, minOut, deadline, relayerFee, relayer });
 await relayerClient(relayerUrl).swap(s, 100);                      // the relayer submits it and keeps relayerFee
 ```
 
@@ -233,9 +237,20 @@ once synced, and a window can only start or end at a published deposit-tree root
 - **Time.** Holdings: which pool root (so roughly when) the statement holds at; spent status is checked against
   now. Savings: the window's two deposit-tree roots, whose block numbers and timestamps are on-chain, and the
   number of deposits (everyone's) synced in between.
-- **Nullifiers link future spends (holdings).** Each counted note's nullifier is in the proof. When the note is
-  later spent, the verifier sees that nullifier on-chain and links the spend to this proof. The proof stays
-  valid only until then. A fix needs a nullifier non-membership accumulator (not built).
+- **Nullifiers link future spends (holdings; accepted risk, external audit L-11).** Each counted note's
+  nullifier is in the proof. When the note is later spent, the verifier sees that nullifier on-chain and links
+  the spend to this proof. The proof stays valid only until then. A fix needs a nullifier non-membership
+  accumulator (not built). **Mitigation:** once the verifier has checked the proof, re-shield the counted notes
+  to yourself, so the spend the verifier can see is a self-transfer and your real spends later carry fresh
+  nullifiers:
+
+  ```ts
+  const proof = await proveHoldingsAtLeast({ ...req, keys, tree, notes, asset, threshold });
+  // ... the verifier checks it ...
+  for (const t of await proveUnlinkHoldings({ keys, tree, notes, proof })) await send(transferTx(pool, t)); // any account
+  ```
+
+  The verifier learns that the counted notes were moved (the proof no longer verifies after that), not where.
 - **Same proof, same person.** Two verifiers who compare the nullifiers of holdings proofs can tell both came
   from the same notes. Savings proofs carry no per-note values, but the window and threshold may still identify.
 - **Nonce binding, not identity binding.** A proof is bound to (chain, ThresholdVerifier, verifier address,
