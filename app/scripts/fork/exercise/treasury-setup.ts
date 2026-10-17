@@ -94,6 +94,23 @@ export async function treasurySetup(x: Ctx) {
   const mirror = await r.deploy("PositionMirror for off-chain venues (controller-signed snapshots)", board, "PositionMirror", [t.policy]);
   const mirrorVenue = perp && mirror && (await r.deploy("MirroredPerpVenue (an off-chain venue seen through the mirror)", board, "MirroredPerpVenue", [perp, usdg, mirror, A.trader2.address]));
   if (!basis || !basisVenue || !perp || !hedgeVenue || !mirror || !mirrorVenue) throw new Error("T2 contracts missing");
+  // v2 MainnetBeta: OWNER is the pool's maker registrar and registers each treasury's in-house venue as a maker, so
+  // a hedge open pays open spread + maker fee (40 + 6 = 46 bps), inside the guard's 50 bps per operation.
+  const PP = abiOf("PerpPool");
+  const registrar = getAddress(await r.read<Address>(pool, PP, "makerRegistrar", []));
+  const registrarActor = Object.values(A).find((a) => (a as { address?: Address }).address && getAddress((a as { address: Address }).address) === registrar) as typeof board | undefined;
+  if (registrarActor) {
+    for (const [label, venue] of [["basis", basisVenue], ["hedge", hedgeVenue]] as const) {
+      await r.send(`OWNER (maker registrar) registers the ${label} venue as a perps maker`, registrarActor, { address: pool, abi: PP, functionName: "setMaker", args: [venue, true] }, async () => {
+        const fee = await r.read<bigint>(tslaMarket, abiOf("PerpMarket"), "feeBpsFor", [venue]);
+        const maker = await r.read<bigint>(tslaMarket, abiOf("PerpMarket"), "makerFeeBps", []);
+        expect(fee === maker, `venue fee ${fee} bps, maker fee ${maker}`);
+        return `isMaker; the venue pays ${fee} bps`;
+      });
+    }
+  } else {
+    await r.check("perps maker registration (no registrar among the fork's actors on this stack)", async () => `makerRegistrar ${registrar}: venues pay the taker fee`);
+  }
   await r.send("board adds the in-house venue to the basis sleeve", board, { address: basis, abi: abiOf("BasisSleeve"), functionName: "addVenue", args: [basisVenue] });
   await r.send("board adds the in-house venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [hedgeVenue] });
   await r.send("board adds the mirrored venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [mirrorVenue] });

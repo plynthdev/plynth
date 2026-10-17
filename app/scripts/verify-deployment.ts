@@ -476,6 +476,8 @@ export async function verifyDeployment(
   if (v2) {
     await expect("perpPool.TIMELOCK()", perpPool, "function TIMELOCK() view returns (uint256)", x.timelock);
     await expect("perpPool.depositsOpen()", perpPool, "function depositsOpen() view returns (bool)", true);
+    // OWNER registers each treasury's in-house perp venue as a maker (hedges cost spread + maker fee, inside the guard).
+    await expect("perpPool.makerRegistrar() == OWNER", perpPool, "function makerRegistrar() view returns (address)", dep.owner);
   }
   for (const [sym, a] of markets) {
     await expect(`perpMarket ${sym}.pool()`, a, "function pool() view returns (address)", perpPool);

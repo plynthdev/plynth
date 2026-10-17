@@ -109,6 +109,7 @@ function world(dep: Deployment, over: Record<string, unknown> = {}): Reader {
       case "adapterOf": return a("parkAdapter");
       case "markets": return markets.map(([, m]) => m);
       case "depositsOpen": case "isMarket": return true;
+      case "makerRegistrar": return dep.owner;
       case "pool": return a("perpPool");
       case "valuer": return a("valuer");
       case "underlying": return dep.stocks[k.slice(5)]!.token;
