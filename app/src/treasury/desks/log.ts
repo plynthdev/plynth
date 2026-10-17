@@ -6,7 +6,7 @@ export type ActionRow = {
   account: string;
   desk: "cash" | "equity";
   action: string;
-  status: "sent" | "rejected" | "reverted" | "skipped" | "done";
+  status: "sent" | "rejected" | "reverted" | "skipped" | "done" | "partial";
   reasonCode?: number | null;
   reason?: string | null;
   adapter?: string | null;
@@ -24,6 +24,8 @@ export interface ActionLog {
   record(row: ActionRow): Promise<void>;
   /** True once a `rebalance_done` marker exists for this beacon key. */
   rebalanceDone(account: string, beaconKey: string): Promise<boolean>;
+  /** How many `rebalance_partial` markers this beacon key has (passes that left split buys unfilled). */
+  rebalancePartials(account: string, beaconKey: string): Promise<number>;
 }
 
 export class MemoryActionLog implements ActionLog {
@@ -33,6 +35,9 @@ export class MemoryActionLog implements ActionLog {
   }
   async rebalanceDone(account: string, beaconKey: string) {
     return this.rows.some((r) => r.action === "rebalance_done" && r.beaconKey === beaconKey && r.account.toLowerCase() === account.toLowerCase());
+  }
+  async rebalancePartials(account: string, beaconKey: string) {
+    return this.rows.filter((r) => r.action === "rebalance_partial" && r.beaconKey === beaconKey && r.account.toLowerCase() === account.toLowerCase()).length;
   }
 }
 
@@ -64,5 +69,12 @@ export class PgActionLog implements ActionLog {
       .where(and(eq(deskActions.account, account.toLowerCase()), eq(deskActions.beaconKey, beaconKey), eq(deskActions.action, "rebalance_done")))
       .limit(1);
     return rows.length > 0;
+  }
+  async rebalancePartials(account: string, beaconKey: string) {
+    const rows = await this.db
+      .select({ id: deskActions.id })
+      .from(deskActions)
+      .where(and(eq(deskActions.account, account.toLowerCase()), eq(deskActions.beaconKey, beaconKey), eq(deskActions.action, "rebalance_partial")));
+    return rows.length;
   }
 }

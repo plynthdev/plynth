@@ -24,7 +24,7 @@ export type PokeView = {
   feedUpdatedAt: bigint | null;
   maxAge: bigint;
   /** PerpMarket.unpricedSince, read only when the Valuer reverts (0 = not recorded yet). */
-  unpricedSince?: bigint;
+  unpricedSince?: bigint | undefined;
 };
 
 /** Whether poke() is worth a transaction. Pure. */

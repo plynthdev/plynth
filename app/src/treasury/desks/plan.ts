@@ -91,6 +91,8 @@ export type EquityConfig = {
   driftBps?: number | undefined;
   /** Slippage passed to the sleeve (bounded on-chain by the guard's maxOpLossBps). Default 100. */
   slippageBps?: number | undefined;
+  /** A buy the pool cannot fill within the slippage is split down to pieces of at least this much USDG (6dp). */
+  minPieceUsdg?: number | undefined;
 };
 
 export type EquityOrder = {

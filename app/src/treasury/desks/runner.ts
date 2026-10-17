@@ -18,6 +18,7 @@ import {
   type PublicClient,
   type WalletClient,
 } from "viem";
+import { splitFill } from "./split";
 import { accountAbi, beaconAbi, equitySleeveAbi, erc20Abi, guardAbi, policyAbi, valuerAbi, vaultAbi } from "@/abi/treasury-desks";
 import { beaconKey, beaconSteps, commitmentOf, offsetOf, secretFor, windowStart } from "./beacon";
 import type { DeskConfig } from "./runner-config";
@@ -61,6 +62,13 @@ const PULLS = { type: "tuple[]", components: [{ name: "token", type: "address" }
 export function wrapData(pullToken: Address, pullAmount: bigint, runData: Hex): Hex {
   return encodeAbiParameters([PULLS, { type: "bytes" }], [[{ token: pullToken, amount: pullAmount }], runData]);
 }
+
+/** Smallest piece a split buy goes down to (USDG 6dp): 250 USDG. */
+export const DEFAULT_MIN_PIECE_USDG = 250_000_000n;
+/** Pieces sent per name per pass, at most. */
+export const MAX_PIECES_PER_NAME = 16;
+/** A window's rebalance retries unfilled split buys on this many passes in all, then is marked done. */
+export const MAX_PARTIAL_PASSES = 4;
 
 /** The equity desk's slippage: the configured value (default 100 bps), capped at the guard's maxOpLossBps. */
 export function effectiveSlippageBps(configured: number | undefined, maxOpLossBps: number | undefined): number {
@@ -371,18 +379,45 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
       return amt > 0n ? [{ ...o, amount: amt, usd: amt * USDG_TO_WAD }] : [];
     });
   }
-  for (const o of buys) res.outcomes.push(await attempt(ctx, opFor(o)));
+  // Buys too big for the pool at the guard's slippage are split into pieces that each pass (split.ts), never sent
+  // with a looser bound; what a minimum piece still cannot fill waits for a later pass of this window.
+  const minPiece = BigInt(cfg.equity.minPieceUsdg ?? DEFAULT_MIN_PIECE_USDG);
+  const unfilled: { token: Address; left: string; why: string }[] = [];
+  for (const o of buys) {
+    const r = await splitFill(
+      o.amount,
+      minPiece,
+      MAX_PIECES_PER_NAME,
+      async (amount) => {
+        const sim = await simulate(ctx, opFor({ ...o, amount, usd: amount * USDG_TO_WAD }));
+        return sim.ok ? { ok: true } : { ok: false, reason: sim.rejection.reason };
+      },
+      async (amount) => {
+        const out = await attempt(ctx, opFor({ ...o, amount, usd: amount * USDG_TO_WAD }));
+        res.outcomes.push(out);
+        return out.ok;
+      },
+    );
+    if (r.stuck !== undefined && r.stuck !== "reverted") {
+      const left = o.amount - r.filled;
+      // Log the refusal of what is left once (the probes above are eth_calls and record nothing).
+      res.outcomes.push(await attempt(ctx, opFor({ ...o, amount: left < minPiece || !r.retryLater ? left : minPiece, usd: left * USDG_TO_WAD })));
+      if (r.retryLater) unfilled.push({ token: o.token, left: left.toString(), why: r.stuck });
+    }
+  }
 
+  const partials = unfilled.length > 0 ? await ctx.log.rebalancePartials(cfg.account, kToday) : 0;
+  const partial = unfilled.length > 0 && partials + 1 < MAX_PARTIAL_PASSES;
   await ctx.log.record({
     chainId: ctx.chain.id,
     account: cfg.account,
     desk: "equity",
-    action: "rebalance_done",
-    status: "done",
+    action: partial ? "rebalance_partial" : "rebalance_done",
+    status: partial ? "partial" : "done",
     beaconKey: kToday,
-    detail: { targetBps: plan.targetBps, targets: plan.targets, orders: plan.orders.length, deferred: plan.deferred.length },
+    detail: { targetBps: plan.targetBps, targets: plan.targets, orders: plan.orders.length, deferred: plan.deferred.length, unfilled },
   });
-  res.rebalanced = true;
+  res.rebalanced = !partial;
   return res;
 }
 

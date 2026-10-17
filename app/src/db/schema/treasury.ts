@@ -16,7 +16,7 @@ export const deskActions = pgTable(
     account: text("account").notNull(),
     desk: text("desk").notNull(), // "cash" | "equity"
     action: text("action").notNull(), // deposit | redeem | buy | sell | beacon_commit | beacon_reveal | rebalance_done | skip
-    status: text("status").notNull(), // sent | rejected | reverted | skipped | done
+    status: text("status").notNull(), // sent | rejected | reverted | skipped | done | partial
     reasonCode: integer("reason_code"),
     reason: text("reason"),
     adapter: text("adapter"),
