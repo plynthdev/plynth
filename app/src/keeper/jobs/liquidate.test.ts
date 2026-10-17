@@ -14,6 +14,7 @@ const KEEPER = A(0xbeef);
 const POOL = A(0x900);
 const M1 = A(0x901);
 const M2 = A(0x902);
+const USDG = A(0x05d);
 
 describe("liquidationAction mirrors PerpMarket.liquidate / settleHeld", () => {
   const base = { account: A(1), keeper: KEEPER, keeperIsOperator: false, liquidatable: false, settleable: false };
@@ -37,6 +38,10 @@ type Chain = {
   operatorOf?: Set<string>;
   throwOn?: Set<string>;
   revertOn?: Record<string, string>;
+  /** treasury venues: venue -> { sleeve, idle } (review5 R5-PERP-1) */
+  venues?: Record<string, { sleeve: Address; idle: bigint }>;
+  /** Displaced events per market: the displaced accounts */
+  displaced?: Record<string, Address[]>;
 };
 
 function fakeCtx(chain: Chain, markets: Address[]) {
@@ -44,8 +49,14 @@ function fakeCtx(chain: Chain, markets: Address[]) {
   const key = (m: Address, a: unknown) => `${m}:${String(a)}`.toLowerCase();
   const pub = {
     getBlock: async () => ({ timestamp: 1_800_000_000n }),
+    getBlockNumber: async () => 1_000n,
+    getLogs: async ({ address }: { address: Address }) => (chain.displaced?.[address] ?? []).map((account) => ({ args: { account } })),
     readContract: async ({ address, functionName, args }: { address: Address; functionName: string; args: unknown[] }) => {
       if (functionName === "openPositionCount") return 0n; // the poke phase: nothing to poke here
+      const v = chain.venues?.[String(address).toLowerCase()];
+      if (functionName === "sleeve") { if (!v) throw new Error("execution reverted"); return v.sleeve; }
+      if (functionName === "cash") { if (!v) throw new Error("execution reverted"); return USDG; }
+      if (functionName === "balanceOf") return chain.venues?.[String(args[0]).toLowerCase()]?.idle ?? 0n;
       if (functionName === "openPositions") {
         if (chain.throwOn?.has(`${address}:list`.toLowerCase())) throw new Error("execution reverted");
         return chain.positions[address] ?? [];
@@ -83,6 +94,34 @@ function fakeCtx(chain: Chain, markets: Address[]) {
 }
 
 describe("runLiquidate over a fake chain", () => {
+  test("review5 R5-PERP-1: a displaced treasury venue's idle cash is swept back to its treasury; a trader is skipped", async () => {
+    const venue = A(0x7e1), sleeve = A(0x5e1), trader = A(0x77);
+    const { ctx, sent } = fakeCtx(
+      { positions: {}, liquidatable: new Set(), venues: { [venue.toLowerCase()]: { sleeve, idle: 49_000_000_000n } }, displaced: { [M1]: [venue, trader] } },
+      [M1],
+    );
+    const r = await runLiquidate(ctx);
+    expect(sent).toEqual([`sweepvenueidle:${sleeve}:${venue}`.toLowerCase()]);
+    expect(r.ok).toBe(true);
+    expect(r.notes.join("|")).toMatch(/idle cash swept/);
+  });
+
+  test("review5 R5-PERP-1: after settleRetired on a treasury venue, its idle cash is swept; nothing idle, nothing sent", async () => {
+    const venue = A(0x7e2), sleeve = A(0x5e2);
+    const due = fakeCtx(
+      { positions: { [M1]: [venue] }, liquidatable: new Set(), retireAt: { [M1]: 1_800_000_000n }, venues: { [venue.toLowerCase()]: { sleeve, idle: 1n } } },
+      [M1],
+    );
+    await runLiquidate(due.ctx);
+    expect(due.sent).toEqual([`settleretired:${M1}:${venue}`.toLowerCase(), `sweepvenueidle:${sleeve}:${venue}`.toLowerCase()]);
+    const empty = fakeCtx(
+      { positions: { [M1]: [venue] }, liquidatable: new Set(), retireAt: { [M1]: 1_800_000_000n }, venues: { [venue.toLowerCase()]: { sleeve, idle: 0n } } },
+      [M1],
+    );
+    await runLiquidate(empty.ctx);
+    expect(empty.sent).toEqual([`settleretired:${M1}:${venue}`.toLowerCase()]);
+  });
+
   test("liquidates every liquidatable account; a throwing account does not stop the pass", async () => {
     const a1 = A(1), a2 = A(2), a3 = A(3);
     const { ctx, sent } = fakeCtx(

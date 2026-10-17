@@ -56,9 +56,11 @@ interface ICloseFeeHook {
 /// R3-TREAS-2, review4 R4-TREAS-2): only value nothing the board writes can inflate: the account's balance of the
 /// close's cash asset (USDG) at 1:1, its balances of registry-canonical Stock Tokens at Valuer prices, and the
 /// proven private part, less the fee. Every sleeve's `valueOf`, cash vaults (board-chosen ERC-4626 code), venue
-/// equity and any non-canonical token count 0 there. `claimBasisNow()` then subtracts what was withdrawn to the
-/// board since the measurement, so value lent in for the snapshot block and withdrawn again (a flash loan) never
-/// lifts the cap. The fee recipient is the FeeRouter in production.
+/// equity and any non-canonical token count 0 there. `claimBasisNow()` then subtracts every later DECREASE of the
+/// account's trusted holdings below the measurement (review5 R5-TREAS-1), whatever form the value leaves in (USDG or
+/// stock withdrawn, USDG moved into vault shares or a venue and withdrawn from there, stock shielded and spent): so
+/// value lent in for the snapshot block and taken out again never lifts the cap. A fall in trusted holdings from any
+/// cause (a loss, a price fall) lowers the cap for the rest of the period; a rise never raises it. The fee recipient is the FeeRouter in production.
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
@@ -150,6 +152,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     mapping(address token => uint256) private _withdrawnPending; // the same, at the pinned snapshot
     /// The pinned snapshot's measurement: guard-valued tokens (G), trusted value (T), withdrawn since mark (W).
     uint256[3] private _snapMeasure;
+    /// The account's public trusted holdings (T) at the last close's measurement, less the fee it paid.
+    uint256 public trustedAtClose;
 
     event BookSnapshotted(uint64 takenAt, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps);
     event PeriodClosed(
@@ -371,8 +375,10 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint256 g = _gNow + proven;
         uint256 base = (statementNav > g ? statementNav : g) + _wNow;
         periodStartNav = base > feeUsd ? base - feeUsd : 0;
-        uint256 t = _tNow + proven;
-        claimBasisNav = t > feeUsd ? t - feeUsd : 0;
+        uint256 t = _tNow;
+        t = t > feeUsd ? t - feeUsd : 0;
+        trustedAtClose = t;
+        claimBasisNav = t + proven;
         (address[] memory assets,,) = account.trackedAssets();
         for (uint256 i; i < assets.length; ++i) {
             withdrawnMark[assets[i]] = _withdrawnPending[assets[i]];
@@ -410,16 +416,17 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         if (valuer.registry().isCanonical(a)) (usd,) = valuer.value(a, raw);
     }
 
-    /// The claim basis less what was withdrawn to the board since the last close's measurement (trusted value).
+    /// The claim basis less every decrease of the account's trusted holdings since the last close's measurement.
     function claimBasisNow() external view returns (uint256) {
-        uint256 basis = claimBasisNav;
         (address[] memory assets,,) = account.trackedAssets();
-        for (uint256 i; i < assets.length && basis != 0; ++i) {
-            uint256 since = account.boardWithdrawn(assets[i]) - withdrawnMark[assets[i]];
-            uint256 v = _trustedUsd(assets[i], since);
-            basis = basis > v ? basis - v : 0;
+        uint256 t;
+        for (uint256 i; i < assets.length; ++i) {
+            t += _trustedUsd(assets[i], IERC20(assets[i]).balanceOf(address(account)));
         }
-        return basis;
+        uint256 ref = trustedAtClose;
+        uint256 drop = ref > t ? ref - t : 0;
+        uint256 basis = claimBasisNav;
+        return basis > drop ? basis - drop : 0;
     }
 
     /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the

@@ -35,12 +35,18 @@ import {ChangeDelay} from "../libs/ChangeDelay.sol";
 ///
 /// Adapter allow-list: every treasury this factory makes refuses a new sleeve, vault-holding sleeve or perp venue
 /// whose runtime codehash is not allowed here (`TreasuryAccount.registerDesk`, `PerpSleeve` / `BasisSleeve`
-/// `addVenue`), so a board cannot plug in code of its own that reports any value to the guard. OWNER keeps the
-/// list. While the deployer still owns the factory and has queued nothing (`changeNonce == 0`, first-time setup)
-/// an entry applies at once; after the hand-over every addition waits CHANGE_DELAY (48 h, ChangeDelay) in public,
-/// and a removal (risk-reducing) applies at once. The codehash covers code and immutables: an adapter bound to one
-/// account (PerpSleeve, BasisSleeve, PrivateSleeve, a venue) has its own codehash and is approved per instance. A
-/// removal does not unregister an adapter a treasury already holds (sleeves are never removed, so NAV keeps them).
+/// `addVenue`), so a board can only plug in code that is on the list. The codehash covers code and immutables, not
+/// storage: a second deployment of a listed contract with the same immutables but different storage-held
+/// configuration (e.g. a CashSleeve with another vault list) has the same codehash and is accepted; what such an
+/// adapter can receive is still bounded by the policy's timelocked `instrumentAllowRoot` / `venueAllowRoot`
+/// (SECURITY.md, accepted risks). An adapter bound to one account (PerpSleeve, BasisSleeve, PrivateSleeve, a
+/// venue) has its own codehash and is approved per instance. OWNER keeps the list. Until the first
+/// `acceptOwnership` (`changeNonce == 0`: the deployer's first-time setup) an addition applies at once; after it
+/// every addition waits CHANGE_DELAY (48 h, ChangeDelay) in public, and a removal (risk-reducing) applies at once.
+/// Every codehash ever allowed is kept in an on-chain list, so `allowedHashes()` enumerates exactly what is allowed
+/// now (the post-deploy check compares it with what was shipped, including anything the deployer added during
+/// setup). A removal does not unregister an adapter a treasury already holds (sleeves are never removed, so NAV
+/// keeps them).
 contract TreasuryFactory is ChangeDelay {
     /// abi.encode(TreasuryPolicy.Policy): 3 bands x 2 words + 15 single-word fields.
     uint256 public constant POLICY_BYTES = 21 * 32;
@@ -64,6 +70,8 @@ contract TreasuryFactory is ChangeDelay {
     address public pendingOwner;
     /// Runtime codehashes of reviewed adapters (sleeves, venues) a factory treasury may register.
     mapping(bytes32 codehash => bool) public adapterAllowed;
+    bytes32[] private _everAllowed; // every codehash ever allowed, in order (enumerates the mapping)
+    mapping(bytes32 codehash => bool) private _listed;
 
     event AdapterAllowed(bytes32 indexed codehash, bool allowed);
     event OwnershipTransferStarted(address indexed from, address indexed to);
@@ -127,7 +135,29 @@ contract TreasuryFactory is ChangeDelay {
     function setAdapterAllowed(bytes32 codehash, bool allowed) external onlyOwner {
         if (allowed && changeNonce != 0 && !_delayed()) return;
         adapterAllowed[codehash] = allowed;
+        if (allowed && !_listed[codehash]) {
+            _listed[codehash] = true;
+            _everAllowed.push(codehash);
+        }
         emit AdapterAllowed(codehash, allowed);
+    }
+
+    /// Every codehash allowed now.
+    function allowedHashes() external view returns (bytes32[] memory out) {
+        uint256 n;
+        for (uint256 i; i < _everAllowed.length; ++i) {
+            if (adapterAllowed[_everAllowed[i]]) ++n;
+        }
+        out = new bytes32[](n);
+        n = 0;
+        for (uint256 i; i < _everAllowed.length; ++i) {
+            if (adapterAllowed[_everAllowed[i]]) out[n++] = _everAllowed[i];
+        }
+    }
+
+    /// The runtime codehash the allow-list keys `adapter` by.
+    function codehashOf(address adapter) external view returns (bytes32) {
+        return adapter.codehash;
     }
 
     function isAdapterAllowed(address adapter) external view returns (bool) {

@@ -38,9 +38,10 @@ interface IPeriodCloseCap {
 ///   - the claims of one treasury filed in one period may not exceed, together, MAX_CLAIM_NAV_BPS of the
 ///     `claimBasisNow()` of the PeriodClose the factory made for it (review-v2 L-11, review3 R3-TREAS-2, review4
 ///     R4-TREAS-2): the treasury's USDG (1:1), canonical Stock Tokens (Valuer) and proven private part at the last
-///     close's measurement, less its fee and less everything withdrawn to the board since. No sleeve's own value,
-///     cash vault, venue equity or other token counts, so nothing the board writes can raise it, and value lent in
-///     for the snapshot and withdrawn again is taken back off. A swapped-in PeriodClose is not the factory's, so
+///     close's measurement, less its fee and less any later decrease of the account's USDG and canonical stock
+///     holdings, whatever form the value leaves in (review5 R5-TREAS-1). No sleeve's own value, cash vault, venue
+///     equity or other token counts, so nothing the board writes can raise it, and value lent in for the snapshot
+///     and taken out again is taken back off. A swapped-in PeriodClose is not the factory's, so
 ///     it gives cap 0. The running total (`claimedInPeriod`) is keyed by the close count, so one loss cannot be
 ///     split into many capped claims; a rejected claim gives its amount back to its period. Until the first close
 ///     the cap is 0;

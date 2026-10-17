@@ -941,6 +941,9 @@ contract MainnetBeta is Script {
         // The adapter allow-list holds exactly what we ship: the shared cash and equity sleeves.
         _is(factory.adapterAllowed(address(cashSleeve).codehash), address(factory), "allow-list: cashSleeve");
         _is(factory.adapterAllowed(address(equitySleeve).codehash), address(factory), "allow-list: equitySleeve");
+        // ... and nothing else (an entry the deployer added during setup would show here).
+        bytes32[] memory allowed = factory.allowedHashes();
+        _is(allowed.length == 2, address(factory), "allow-list: exactly the shipped sleeves");
     }
 
     function _is(bool ok, address target, string memory what) private pure {

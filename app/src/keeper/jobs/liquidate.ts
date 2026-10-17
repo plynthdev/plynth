@@ -6,6 +6,8 @@
 // (settleHeld) so open interest reaches zero and LP deposits reopen. On a market OWNER retired whose notice has passed
 // (PerpMarket.retireAt) it settles each remaining position at the oracle price (settleRetired), so the market empties
 // and the pool can drop it (review v3 R3-PERP-5, KEEP-5); a Hold refusal (market closed) just waits for the next pass.
+// After each close, and for every Displaced event, a treasury BasisSleeve venue's idle cash is swept back to its
+// treasury (venue-sweep.ts, review5 R5-PERP-1).
 //
 // Isolation: each account is its own try/catch, so one account that reverts or throws never stops the others,
 // and each skip is a note. The market refuses a liquidation by the account itself or by one of its operators, so
@@ -15,6 +17,7 @@ import type { Address } from "viem";
 import { perpMarketKeeperAbi, perpPoolKeeperAbi } from "@/abi/keeper";
 import { chainNow, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { runPerpPoke } from "./perp-poke";
+import { sweepDisplaced, sweepVenueIdleOf } from "./venue-sweep";
 
 export type LiquidationView = {
   account: Address;
@@ -50,6 +53,13 @@ export function liquidationAction(v: LiquidationView): LiquidationAction {
 
 export async function runLiquidate(ctx: Ctx): Promise<JobResult> {
   const res = await liquidatePhase(ctx);
+  // A treasury basis short someone else closed (displaced, liquidated, settled) leaves its payout idle in the
+  // treasury's venue: sweep it back (review5 R5-PERP-1). Best effort, never fails the job.
+  try {
+    await sweepDisplaced(ctx, res);
+  } catch (err) {
+    res.notes.push(`displaced-venue sweep failed (${firstLine(err)})`);
+  }
   // Then keep each market's stored price recent (perp-poke.ts): after the liquidations, never before them.
   try {
     const poke = await runPerpPoke(ctx);
@@ -119,6 +129,14 @@ async function liquidatePhase(ctx: Ctx): Promise<JobResult> {
         }
         await ctx.sender.sendCall(market, perpMarketKeeperAbi as any, fn, [account], `perp.${fn}`);
         res.actions++;
+        try {
+          if ((await sweepVenueIdleOf(ctx, account)) === "swept") {
+            res.actions++;
+            res.notes.push(`${market} ${account}: ${fn}, then its idle venue cash swept to its treasury`);
+          }
+        } catch (err) {
+          res.notes.push(`${market} ${account}: venue sweep after ${fn} failed (${firstLine(err)})`);
+        }
       } catch (err) {
         res.ok = false;
         res.notes.push(`${market} ${account}: failed (${firstLine(err)})`);

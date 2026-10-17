@@ -41,9 +41,13 @@ contract R4PrivateSleeveForeignNoteTest is PrivateSleeveFixture {
     }
 
     function _check(uint256 book, uint256 debited, uint256 forwarded) internal {
+        _check(book, debited, forwarded, F.AMOUNT);
+    }
+
+    function _check(uint256 book, uint256 debited, uint256 forwarded, uint256 wantForwarded) internal {
         assertEq(debited, 0, "a note never in the book debits nothing");
         assertEq(sleeve.bookUsd(), book, "book unchanged");
-        assertEq(forwarded, F.AMOUNT, "the board's tokens still reach the account (exits never stuck)");
+        assertEq(forwarded, wantForwarded, "forwarded at once only when nothing was shielded since the last proof");
         assertFalse(sleeve.isSleeveNullifier(bytes32(F.NF)));
         vm.prank(board);
         vm.expectRevert(TreasuryAccount.PrivateBookOpen.selector);
@@ -56,7 +60,12 @@ contract R4PrivateSleeveForeignNoteTest is PrivateSleeveFixture {
         _warp(block.timestamp + PERIOD + 4 days + 1);
         assertTrue(sleeve.bookStale());
         (uint256 debited, uint256 forwarded) = _boardNoteToSleeve();
-        _check(book, debited, forwarded);
+        // The book is unproven (opened by shields): the proceeds are held until the next proof (review5 R5-TREAS-3).
+        _check(book, debited, forwarded, 0);
+        (, , uint256 heldRaw) = sleeve.heldProceeds(bytes32(F.NF));
+        assertEq(heldRaw, F.AMOUNT, "held in the sleeve");
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.HeldUntilProof.selector, bytes32(F.NF)));
+        sleeve.release(bytes32(F.NF));
         assertTrue(sleeve.bookStale(), "L-6 stale refusal still on");
     }
 

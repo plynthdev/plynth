@@ -38,6 +38,14 @@ interface INavAccount {
 ///   OP_OPEN_PAIR  (venueIdx, abi.encode(underlying, sizeUsd, collateral, maxSlippageBps)) pull = collateral
 ///   OP_CLOSE_PAIR (pairId)                                                                 proceeds -> account
 ///   OP_ADD_MARGIN (pairId, abi.encode(amount))                                             pull = amount
+///
+/// Idle venue cash (review5 R5-PERP-1): a pair's short can be closed by someone else (a displacing open, a
+/// liquidation, `settleHeld`, `settleRetired`), and the payout then lands as idle USDG in the venue, which no pair
+/// operation moves. `sweepVenueIdle` (anyone: the keeper after a settle or a Displaced event, or the desk) sends a
+/// venue's whole idle balance to the account. Pairs never leave cash idle between operations (they post exactly
+/// their collateral and take back exactly their close), so a sweep only ever moves stranded proceeds, and it can
+/// only pay the account: NAV is unchanged (venue equity counts idle cash), the cash just moves from the basis band
+/// to the account.
 contract BasisSleeve is ISleeve, IPositionSleeve {
     using SafeERC20 for IERC20;
 
@@ -74,6 +82,7 @@ contract BasisSleeve is ISleeve, IPositionSleeve {
 
     event VenueAdded(address indexed venue);
     event VenueProposed(address indexed venue, uint64 eta);
+    event VenueIdleSwept(address indexed venue, uint256 amount);
     event PairOpened(uint256 indexed pairId, address indexed underlying, uint256 venueIdx, uint256 tokens, uint256 entryPriceUsd, uint256 entryMultiplier);
     event PairClosed(uint256 indexed pairId, uint256 cashBack, int256 cumulativeFundingUsd);
     event PairMargin(uint256 indexed pairId, uint256 amount);
@@ -111,6 +120,15 @@ contract BasisSleeve is ISleeve, IPositionSleeve {
 
     /// The board adds a venue: during the account's setup window at once, after it only a proposed venue whose
     /// TIMELOCK has passed; on a factory treasury only an allow-listed one (AdapterGate).
+    /// Anyone: sends the idle cash of one of this sleeve's venues back to the account (see the contract notes).
+    function sweepVenueIdle(IPerpVenue venue) external returns (uint256 amount) {
+        if (!isVenue[address(venue)]) revert BadVenue();
+        amount = cash.balanceOf(address(venue));
+        if (amount == 0) return 0;
+        venue.withdrawMarginToAccount(amount);
+        emit VenueIdleSwept(address(venue), amount);
+    }
+
     function addVenue(IPerpVenue venue) external {
         if (msg.sender != ITreasuryAccount(account).board()) revert NotBoard();
         AdapterGate.apply_(venueEta, account, address(venue));

@@ -357,6 +357,19 @@ export async function verifyDeployment(
     for (const k of ["cashSleeve", "equitySleeve"]) {
       await expect(`treasuryFactory.isAdapterAllowed(${k})`, addr("treasuryFactory"), "function isAdapterAllowed(address) view returns (bool)", true, [addr(k)]);
     }
+    // ... and exactly those: every codehash allowed now (the factory enumerates them), against the shipped set.
+    try {
+      const f = addr("treasuryFactory")!;
+      const allowed = ((await read(f, "function allowedHashes() view returns (bytes32[])")) as Hex[]).map((h) => h.toLowerCase());
+      const want: string[] = [];
+      for (const k of ["cashSleeve", "equitySleeve"]) want.push(String(await read(f, "function codehashOf(address) view returns (bytes32)", [addr(k)])).toLowerCase());
+      const extra = allowed.filter((h) => !want.includes(h));
+      const missing = want.filter((h) => !allowed.includes(h));
+      if (extra.length === 0 && missing.length === 0) push("ok", "treasuryFactory allow-list == shipped sleeves", allowed.join(", "));
+      else push("FAIL", "treasuryFactory allow-list == shipped sleeves", `allowed ${allowed.join(", ") || "(none)"}; extra ${extra.join(", ") || "-"}; missing ${missing.join(", ") || "-"}`);
+    } catch (e) {
+      push("FAIL", "treasuryFactory.allowedHashes()", firstLine(e));
+    }
   }
   try {
     const v = (await read(addr("cashSleeve")!, "function vaults() view returns (address[])")) as Address[];

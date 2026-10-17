@@ -149,6 +149,7 @@ export const perpMarketKeeperAbi = parseAbi([
   "function underlying() view returns (address)",
   "function poke()",
   "event Liquidated(address indexed account, address indexed by, uint256 size, int256 equity, uint256 reward, uint256 price)",
+  "event Displaced(address indexed account, address indexed by, uint256 size)",
   "error NotAuthorized()",
   "error NoPosition()",
   "error NotLiquidatable()",
@@ -158,3 +159,13 @@ export const perpMarketKeeperAbi = parseAbi([
 ]);
 
 export const perpPoolKeeperAbi = parseAbi(["function isOperator(address account, address operator) view returns (bool)"]);
+
+// Job liquidate, venue sweep (review5 R5-PERP-1): a treasury's InHousePerpVenue and its BasisSleeve.
+export const perpVenueKeeperAbi = parseAbi([
+  "function sleeve() view returns (address)",
+  "function cash() view returns (address)",
+  "function balanceOf(address account) view returns (uint256)",
+  "function sweepVenueIdle(address venue) returns (uint256)",
+  "event VenueIdleSwept(address indexed venue, uint256 amount)",
+  "error BadVenue()",
+]);

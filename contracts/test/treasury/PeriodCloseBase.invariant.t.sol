@@ -128,6 +128,20 @@ contract CloseBaseHandler is Test {
         MockUSDG(t).transfer(address(account), raw);
     }
 
+    /// USDG leaves as cash-vault shares (review5 R5-TREAS-1): into the vault, then the shares to the board.
+    function vaultRoute(uint256 raw) external {
+        uint256 bal = usdg.balanceOf(address(account));
+        if (bal == 0) return;
+        raw = bound(raw, 1, bal);
+        vm.startPrank(address(account));
+        usdg.approve(address(vault), raw);
+        uint256 shares = vault.deposit(raw, address(account));
+        vm.stopPrank();
+        vm.prank(board);
+        account.withdrawToBoard(address(vault), shares);
+        withdrawnSinceSnapUsd += vault.convertToAssets(shares) * 1e12;
+    }
+
     function outsideDeposit(uint256 raw) external {
         usdg.mint(address(account), bound(raw, 1, 1e12));
     }
@@ -190,6 +204,7 @@ contract PeriodCloseBaseInvariantTest is TreasuryFixture {
         );
         aaplFeed.transferOwnership(address(handler)); // the handler keeps the feeds fresh across its warps
         nvdaFeed.transferOwnership(address(handler));
+        usdg.transferOwnership(address(handler)); // outside deposits are minted by the handler
         targetContract(address(handler));
     }
 

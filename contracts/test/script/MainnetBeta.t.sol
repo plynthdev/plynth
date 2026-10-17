@@ -305,6 +305,24 @@ contract MainnetBetaTest is Test {
         assertFalse(fac.adapterAllowed(keccak256("x")));
     }
 
+    /// review5 Info: an entry the deployer adds during first-time setup (instantly, before OWNER accepts) is listed
+    /// and fails the post-deploy check.
+    function test_verifyDeploymentFailsOnAnExtraAllowListEntry() public {
+        string memory json = _mainnetDeploy();
+        TreasuryFactory fac = TreasuryFactory(_a(json, "treasuryFactory"));
+        vm.prank(_a(json, "deployer"));
+        fac.setAdapterAllowed(keccak256("the deployer's own adapter"), true); // still first-time setup: instant
+        assertEq(fac.allowedHashes().length, 3);
+        MainnetBeta v = new MainnetBeta();
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        vm.writeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f), json);
+        vm.expectRevert(
+            abi.encodeWithSelector(MainnetBeta.HandoffIncomplete.selector, address(fac), "allow-list: exactly the shipped sleeves")
+        );
+        v.verifyDeployment(f);
+        vm.removeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f));
+    }
+
     function test_verifyDeploymentFailsWithoutTheAllowList() public {
         string memory json = _mainnetDeploy();
         _acceptAll(json);

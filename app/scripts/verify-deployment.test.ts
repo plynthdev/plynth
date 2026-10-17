@@ -112,6 +112,8 @@ function world(dep: Deployment, over: Record<string, unknown> = {}): Reader {
       case "adapterOf": return a("parkAdapter");
       case "markets": return markets.map(([, m]) => m);
       case "depositsOpen": case "isMarket": case "isAdapterAllowed": return true;
+      case "codehashOf": return keccak256(String(args![0]).toLowerCase() as Hex);
+      case "allowedHashes": return [keccak256(a("cashSleeve").toLowerCase() as Hex), keccak256(a("equitySleeve").toLowerCase() as Hex)];
       case "makerRegistrar": return dep.owner;
       case "pool": return a("perpPool");
       case "valuer": return a("valuer");
@@ -422,6 +424,23 @@ describe("adapter allow-list (v2)", () => {
     const dep = v2File();
     const checks = await verifyDeployment(dep, world(dep, { "treasuryFactory.owner": dep.deployer }), codeAll, dep.chainId, { now: NOW, strict: true });
     expect(fails(checks, /treasuryFactory hand-over/).length).toBe(1);
+  });
+});
+
+describe("adapter allow-list enumeration (v2)", () => {
+  test("an extra allowed codehash (e.g. added by the deployer during setup) is a FAIL that names it", async () => {
+    const dep = v2File();
+    const extra = keccak256("0x1234");
+    const reader = world(dep, { "treasuryFactory.allowedHashes": [keccak256(getAddress(dep.cashSleeve as string).toLowerCase() as Hex), keccak256(getAddress(dep.equitySleeve as string).toLowerCase() as Hex), extra] });
+    const checks = await verifyDeployment(dep, reader, codeAll, dep.chainId, { now: NOW });
+    const f = fails(checks, /allow-list == shipped sleeves/);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.detail).toContain(extra);
+  });
+  test("the shipped set passes", async () => {
+    const dep = v2File();
+    const checks = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW });
+    expect(fails(checks, /allow-list/)).toHaveLength(0);
   });
 });
 });
