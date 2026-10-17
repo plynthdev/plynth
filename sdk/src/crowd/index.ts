@@ -58,8 +58,10 @@ export function setMixTx(vault: Address, mix: readonly MixEntry[]): UnsignedTx {
 export const joinTx = (crowd: Address, user: Address) => tx(crowd, crowdBuyAbi, "join", [user]);
 /** cancel(asset, bookId): sender's whole order in a not-yet-executed book goes back to their vault balance. */
 export const cancelTx = (crowd: Address, asset: Address, bookId: bigint) => tx(crowd, crowdBuyAbi, "cancel", [asset, bookId]);
-/** execute(asset): the keeper, once the crowd is big enough and the window's beacon time has passed; anyone from
- *  windowEnd - GRACE on (a dead keeper never blocks a book), then with half the slippage band. */
+/** execute(asset): the keeper, once the crowd is big enough and the window's beacon time has passed. A book the keeper
+ *  missed (it had its crowd at a window's windowEnd - GRACE and did not execute) runs publicly: anyone, at any later
+ *  open-market time, once per window, on a fresh feed round, within the pool's fee + 10 bps of the oracle (never more
+ *  than half the keeper band). A dead keeper never blocks a book (review v2 L-3, L-4). */
 export const executeTx = (crowd: Address, asset: Address) => tx(crowd, crowdBuyAbi, "execute", [asset]);
 /** claimOpen(asset, bookId): the ungated exit, tokens to the sender's own address (public). */
 export const claimOpenTx = (crowd: Address, asset: Address, bookId: bigint) => tx(crowd, crowdBuyAbi, "claimOpen", [asset, bookId]);
