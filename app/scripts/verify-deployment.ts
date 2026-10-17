@@ -274,7 +274,7 @@ export async function verifyDeployment(
   }
 
   // ---- owners: every admin role with OWNER, nothing pending, nothing left with the deployer
-  const twoStep = ["stockTokenRegistry", "eligibilityRegistry", "savingsVault", "crowdBuy", "shieldedPool", "shieldedTrade", "perpPool", ...(v2 ? ["valuer"] : [])];
+  const twoStep = ["stockTokenRegistry", "eligibilityRegistry", "savingsVault", "crowdBuy", "shieldedPool", "shieldedTrade", "perpPool", ...(v2 ? ["valuer", "treasuryFactory"] : [])];
   const oneStep = ["stockRouter", "jitterBeacon", ...(token ? ["feeRouter"] : [])];
   if (eq(O, dep.deployer)) push("FAIL", "owner", "OWNER equals the deployer");
   for (const k of oneStep) await expect(`${k}.owner() == OWNER`, addr(k), "function owner() view returns (address)", O);
@@ -333,6 +333,12 @@ export async function verifyDeployment(
   await w("cashSleeve.valuer()", "cashSleeve", "valuer", "valuer");
   await w("perpPool.asset()", "perpPool", "asset", "usdg");
   await expect("treasuryFactory.feeRecipient()", addr("treasuryFactory"), "function feeRecipient() view returns (address)", token ? addr("feeRouter") : O);
+  if (v2) {
+    // The adapter allow-list (registerDesk / addVenue refuse any other code): the shipped shared sleeves are on it.
+    for (const k of ["cashSleeve", "equitySleeve"]) {
+      await expect(`treasuryFactory.isAdapterAllowed(${k})`, addr("treasuryFactory"), "function isAdapterAllowed(address) view returns (bool)", true, [addr(k)]);
+    }
+  }
   try {
     const v = (await read(addr("cashSleeve")!, "function vaults() view returns (address[])")) as Address[];
     if (v.length === 1 && eq(v[0], addr("steakUsdg"))) push("ok", "cashSleeve.vaults() == [steakUSDG]", show(v));

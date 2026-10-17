@@ -82,7 +82,7 @@ contract MarketplaceTest is TreasuryFixture {
 
     function _factory(address feeTo, TemplateRegistry r) internal returns (TreasuryFactory) {
         TreasuryPolicy.Policy memory none;
-        return new TreasuryFactory(
+        TreasuryFactory f = new TreasuryFactory(
             address(new TreasuryPolicy(address(0), none, 48 hours)),
             address(new TreasuryAccount(address(0), TreasuryPolicy(address(0)), PolicyGuard(address(0)), address(0))),
             address(
@@ -97,6 +97,8 @@ contract MarketplaceTest is TreasuryFixture {
             ITierSource(address(0)),
             r
         );
+        _allowFixtureAdapters(f);
+        return f;
     }
 
     function _submitListed(address who) internal returns (uint256 id) {

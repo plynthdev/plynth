@@ -38,7 +38,7 @@ interface IPrivateSleeve {
     /// The book is not empty and its last proof is older than the policy period + PROOF_GRACE (no new shields).
     function bookStale() external view returns (bool);
     function checkClose(PrivateClose calldata p, BookContext calldata ctx) external view returns (bytes32);
-    function onClose(uint256 provenUsd) external;
+    function onClose(uint256 provenUsd, bytes32[8] calldata nullifiers) external;
 }
 
 /// Private sleeve: Equity (or Basis) holdings of one TreasuryAccount moved into ShieldedPool notes, so the book
@@ -58,15 +58,23 @@ interface IPrivateSleeve {
 ///   proof submitted straight to `ShieldedPool.withdraw` then still lands here, and `sweep` (anyone, with that same
 ///   proof) forwards it and debits the book, so an unshield can never be counted both in the account and in the
 ///   book.
-/// - Only what a pool withdraw actually paid this sleeve debits the book (review-v2 L-8, review3 R3-TREAS-1):
-///   `sweep(nullifier, asset, raw)` requires the pool's record of that withdraw (`ShieldedPool.withdrawnOf`) to be
-///   exactly (this sleeve, asset, raw) and the nullifier not forwarded before, then forwards `raw` and debits its
-///   value. A plain transfer to the sleeve (e.g. the board's own AAPL after `withdrawToBoard`) debits nothing, and a
-///   second proof of the same note cannot be used: the nullifier binds the note, not the amount, so a 1-wei
-///   withdraw (the rest left as change) can only ever debit 1 wei. The book therefore cannot be recycled to zero,
-///   which would skip the stale-proof refusal (L-6) and the PrivateBookOpen guard. Non-private assets sent here
-///   count 0 against the book and `forwardOther` returns them; a private asset sent here stays (it cannot be told
-///   apart from proceeds still to be swept, and forwarding it without a debit would count those twice).
+/// - Only proceeds of the sleeve's OWN proven notes debit the book (review-v2 L-8, review3 R3-TREAS-1, review4
+///   R4-TREAS-1). A withdraw is permissionless and its recipient is any address, so neither "the pool paid this
+///   sleeve" nor a valid withdraw proof shows the note was the sleeve's: the board could withdraw a note of its own
+///   to the sleeve and debit the book with it. What does show it is a treasury_close proof: it opens notes owned by
+///   the sleeve's key (`owner_pk` is a public input) and publishes their nullifiers, so every nullifier of a proven
+///   close or refresh is recorded in `isSleeveNullifier`. `unshield` / `sweep(nullifier, asset, raw)` forward what
+///   the pool recorded paying this sleeve for that nullifier (`ShieldedPool.withdrawnOf` must be exactly (this
+///   sleeve, asset, raw)), once per nullifier, and debit its value only if the nullifier is a proven sleeve note.
+///   Anything else (a foreign note, or a sleeve note shielded since the last proof) is forwarded to the account
+///   with no debit, so exits never wait for a proof. The book can therefore only fall by notes that were proven to
+///   be in it and really left the pool; it cannot be recycled to zero while the sleeve's notes stay shielded, which
+///   would skip the stale-proof refusal (L-6) and the PrivateBookOpen guard. Residual: a sleeve note shielded since
+///   the last proof and withdrawn straight to the sleeve counts both in the account and in the book until the next
+///   proof (bounded by the L-6 staleness window); a debit is valued at the price of the day, so a proven note
+///   withdrawn after a rise debits more than it was proven at (the next close corrects it). Non-private assets sent
+///   here count 0 against the book and `forwardOther` returns them; a private asset sent here by plain transfer
+///   stays (it cannot be told apart from proceeds still to be swept).
 /// - refund (`refund`): a deposit still pending in the pool returns to the account, ungated.
 /// - close (`checkClose` / `onClose`, from PeriodClose): a treasury_close proof replaces `bookUsd` with the
 ///   proven private NAV.
@@ -116,6 +124,8 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     mapping(uint256 pendingId => uint256 usd) public pendingUsd;
     /// Pool-withdraw nullifiers whose proceeds were already forwarded to the account (and debited).
     mapping(bytes32 nullifier => bool) public proceedsForwarded;
+    /// Nullifiers of notes a treasury_close proof (close or refresh) showed are owned by this sleeve's key.
+    mapping(bytes32 nullifier => bool) public isSleeveNullifier;
 
     event KeysSet(bytes32 ownerPk, bytes32 viewingPub);
     event Shielded(address indexed asset, uint256 raw, uint256 usd, uint256 indexed pendingId);
@@ -238,8 +248,8 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
 
     // ---------------------------------------------------------------- unshield / refund (never gated)
 
-    /// Anyone: runs `pool.withdraw` for a note of this sleeve's key, paid to this sleeve, then forwards it to the
-    /// account and debits the book. The proof binds the recipient; this contract insists it is itself and that no
+    /// Anyone: runs `pool.withdraw` for a note paid to this sleeve, then forwards it to the account and debits the
+    /// book if the note is a proven sleeve note. The proof binds the recipient; this contract insists it is itself and that no
     /// relayer fee leaves the treasury.
     function unshield(bytes calldata proof, ShieldedPool.PublicWithdraw calldata pub) external nonReentrant {
         if (pub.recipient != address(this)) revert BadRecipient();
@@ -250,9 +260,9 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     }
 
     /// Anyone: forwards the proceeds of a withdraw submitted straight to `ShieldedPool.withdraw` (recipient this
-    /// sleeve) and debits their value from the book. `raw` must be exactly what the pool recorded paying this
-    /// sleeve for `nullifier` (amount less relayer fee), and each nullifier is forwarded once, so the book drops
-    /// only by proceeds that really arrived (review-v2 L-8, review3 R3-TREAS-1).
+    /// sleeve). `raw` must be exactly what the pool recorded paying this sleeve for `nullifier` (amount less relayer
+    /// fee), each nullifier is forwarded once, and the book is debited only for a proven sleeve note (see the
+    /// contract notes: review-v2 L-8, review3 R3-TREAS-1, review4 R4-TREAS-1).
     function sweep(bytes32 nullifier, address asset, uint256 raw) external nonReentrant {
         if (pool.withdrawnOf(nullifier) != keccak256(abi.encode(address(this), asset, raw))) {
             revert NotWithdrawnHere(nullifier);
@@ -288,7 +298,7 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     /// unspent distinct nullifiers, prices pinned from the Valuer now (none on hold) and the given public book and
     /// bands. Returns the prices commitment (for the close event).
     function checkClose(PrivateClose calldata p, BookContext calldata ctx) external view returns (bytes32 pc) {
-        if (pool.rootSeq(p.root) == 0) revert UnknownRoot(p.root);
+        if (!pool.isKnownRoot(p.root)) revert UnknownRoot(p.root); // provable wherever spendable (I-3)
         if (p.navUsd > MAX_USD || ctx.pubNav > MAX_USD) revert OutOfRange();
         bytes32 pk = ownerPk;
         if (pk == 0) revert NoKeys();
@@ -329,9 +339,13 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     }
 
     /// PeriodClose, after a proven close (or a proven refresh): the guard's book becomes the proven private NAV.
-    function onClose(uint256 provenUsd) external {
+    /// Records the proof's nullifiers as the sleeve's own notes (only they may debit the book later).
+    function onClose(uint256 provenUsd, bytes32[8] calldata nullifiers) external {
         address pc = ITreasuryAccount(account).periodClose();
         if (msg.sender != pc || pc == address(0)) revert NotPeriodClose();
+        for (uint256 i; i < MAX_NOTES; ++i) {
+            if (nullifiers[i] != 0) isSleeveNullifier[nullifiers[i]] = true;
+        }
         bookUsd = provenUsd;
         lastProvenAt = uint64(block.timestamp);
         emit BookReset(provenUsd);
@@ -372,13 +386,15 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         if (!tiers.tierOf(board).privateSleeve) revert TierTooLow(board);
     }
 
-    /// Forwards one withdraw's proceeds to the account and debits their value, once per nullifier.
+    /// Forwards one withdraw's proceeds to the account, once per nullifier, and debits their value only if the
+    /// note was proven to be the sleeve's.
     function _forwardProceeds(bytes32 nullifier, address asset, uint256 raw) private returns (uint256 usd) {
         if (proceedsForwarded[nullifier]) revert AlreadyForwarded(nullifier);
         proceedsForwarded[nullifier] = true;
         if (raw == 0) return 0;
-        usd = _valueOrZero(asset, raw);
         IERC20(asset).safeTransfer(account, raw);
+        if (!isSleeveNullifier[nullifier]) return 0; // not a proven sleeve note: forwarded, never debited
+        usd = _valueOrZero(asset, raw);
         _debit(usd);
     }
 

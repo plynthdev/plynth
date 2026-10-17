@@ -39,18 +39,26 @@ interface ICloseFeeHook {
 ///
 /// After the checks a platform fee of navUsd x 25 bps x elapsed / 365 days is paid from the account's idle
 /// cash (USDG) to `feeRecipient`; what idle cash cannot cover is carried as `feeOwed` to the next close.
-/// `periodStartNav` (read by the PolicyGuard drawdown rule) becomes the checked statement's NAV (the controller-
-/// signed `navUsd`, equal to the book at the snapshot or at a live commit) less the fee paid in this close. It is
-/// never re-read from the live book after the checks (review3 R3-TREAS-3: a board batch of withdrawToBoard ->
-/// commitSnapshot -> transfer back stored a $460k start for a $1M book and switched the drawdown rule off for
-/// the period). `claimBasisNav` (read by the ExceptionInsurancePool claim cap) is `periodStartNav` without the
-/// value of sleeves registered since the previous close (measured with the statement): a new sleeve counts only
-/// from the next period, so a sleeve the board registers just before a close cannot lift the cap (review3
-/// R3-TREAS-2). Residual: a sleeve that has been registered for a whole period counts like any other, and the
-/// statement NAV is the book at the controller's snapshot block, so a real withdrawal between snapshot and commit
-/// (at most SNAPSHOT_MAX_AGE) counts against the next period's drawdown: move funds before the snapshot or after
-/// the commit. The fee recipient is the FeeRouter in
-/// production.
+/// Drawdown base (`periodStartNav`, read by the PolicyGuard drawdown rule). It is never re-read from the live
+/// book after the checks (review3 R3-TREAS-3), and no board withdrawal can lower it (review4 R4-TREAS-3: a
+/// withdrawToBoard just before the controller's snapshot, returned right after, stored $460k for a $1M book). At
+/// the snapshot (or a live commit) the close measures, besides the signed statement S:
+///   - G, the account's tracked token balances valued exactly as the guard values them (AssetValuation; no
+///     sleeve's own `valueOf`, so a board-written sleeve that under-reports cannot lower it);
+///   - W, the USD value of everything withdrawn to the board (`TreasuryAccount.boardWithdrawn`, per token)
+///     since the previous close's measurement.
+/// periodStartNav = max(S, G + proven private) + W - fee paid. A withdrawal therefore counts as drawdown in the
+/// period it is made and in the next one, whether it comes back or not; a board that wants a lower base for a
+/// legitimate reason changes the policy's drawdown bands (timelocked). Residual: the guard itself trusts the
+/// board's adapters for venue and vault values (not part of G or of this fix).
+///
+/// Insurance claim basis (`claimBasisNav`, read by the ExceptionInsurancePool claim cap; review-v2 L-11, review3
+/// R3-TREAS-2, review4 R4-TREAS-2): only value nothing the board writes can inflate: the account's balance of the
+/// close's cash asset (USDG) at 1:1, its balances of registry-canonical Stock Tokens at Valuer prices, and the
+/// proven private part, less the fee. Every sleeve's `valueOf`, cash vaults (board-chosen ERC-4626 code), venue
+/// equity and any non-canonical token count 0 there. `claimBasisNow()` then subtracts what was withdrawn to the
+/// board since the measurement, so value lent in for the snapshot block and withdrawn again (a flash loan) never
+/// lifts the cap. The fee recipient is the FeeRouter in production.
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
@@ -128,15 +136,20 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     Close[] private _closes;
     uint256 public periodStartNav;
-    /// `periodStartNav` without the sleeves registered during the period just closed (insurance claim basis).
-    uint256 public claimBasisNav;
-    /// Sleeves of the account (append-only list) that count in `claimBasisNav`: those registered before the last
-    /// close (or before this contract was set up).
-    uint256 public sleevesCounted;
-    uint256 private _snapNewSleeveUsd; // value of the not-yet-counted sleeves at the pinned snapshot
-    uint256 private transient _newSleeveUsdNow; // the same, for the commit in progress
+    uint256 private transient _gNow;
+    uint256 private transient _tNow;
+    uint256 private transient _wNow;
+    uint256 private transient _provenNow;
     uint256 public feeOwed; // cash raw units not yet paid
     BookSnapshot private _snap;
+    // Appended after the pre-review3 layout (review4 I-3).
+    /// Insurance claim basis at the last close: USDG + canonical Stock Tokens + proven private, less the fee.
+    uint256 public claimBasisNav;
+    /// `TreasuryAccount.boardWithdrawn(token)` at the last close's measurement (W and `claimBasisNow` count from it).
+    mapping(address token => uint256) public withdrawnMark;
+    mapping(address token => uint256) private _withdrawnPending; // the same, at the pinned snapshot
+    /// The pinned snapshot's measurement: guard-valued tokens (G), trusted value (T), withdrawn since mark (W).
+    uint256[3] private _snapMeasure;
 
     event BookSnapshotted(uint64 takenAt, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps);
     event PeriodClosed(
@@ -201,7 +214,6 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         feeRecipient = feeRecipient_;
         startTime = uint64(block.timestamp);
         tiers = tiers_;
-        sleevesCounted = account_.sleeves().length;
     }
 
     // ---------------------------------------------------------------- commit
@@ -211,7 +223,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     function commit(Close calldata c, bytes calldata controllerSig) external {
         (bytes32 posHash,) = _positions(true);
         (uint256 nav,) = account.navUsd();
-        _newSleeveUsdNow = _newSleeveUsd();
+        _measureNow();
         _commitPublic(c, controllerSig, posHash, nav, _bandUsd());
     }
 
@@ -223,7 +235,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     ) external {
         (bytes32 posHash,) = _positions(true);
         (uint256 pubNav,) = account.navUsd();
-        _newSleeveUsdNow = _newSleeveUsd();
+        _measureNow();
         _commitPrivate(c, controllerSig, p, posHash, pubNav, _bandUsd());
     }
 
@@ -242,7 +254,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         ctx.bandMin = [pol.cash.minBps, pol.equity.minBps, pol.basis.minBps];
         ctx.bandMax = [pol.cash.maxBps, pol.equity.maxBps, pol.basis.maxBps];
         bytes32 pc = ps.checkClose(p, ctx);
-        ps.onClose(p.navUsd);
+        ps.onClose(p.navUsd, p.nullifiers);
         emit PrivateBookRefreshed(p.root, p.navUsd, pc, p.nullifiers);
     }
 
@@ -259,7 +271,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint256[3] memory band = _bandUsd();
         (cashBps, equityBps) = _weightsOf(band, navUsd);
         _snap = BookSnapshot(uint64(block.timestamp), navUsd, cashBps, equityBps, positionsHash, band);
-        _snapNewSleeveUsd = _newSleeveUsd();
+        _snapMeasure = _measure();
         emit BookSnapshotted(uint64(block.timestamp), positionsHash, navUsd, cashBps, equityBps);
     }
 
@@ -282,12 +294,13 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     function _useSnapshot(uint64 periodEnd) private returns (BookSnapshot memory b) {
         b = _snap;
-        _newSleeveUsdNow = _snapNewSleeveUsd;
+        uint256[3] memory m = _snapMeasure;
+        (_gNow, _tNow, _wNow) = (m[0], m[1], m[2]);
         if (b.takenAt == 0) revert NoSnapshot();
         if (b.takenAt < periodEnd) revert SnapshotBeforePeriodEnd(b.takenAt, periodEnd);
         if (block.timestamp > b.takenAt + SNAPSHOT_MAX_AGE) revert SnapshotExpired(b.takenAt);
         delete _snap; // consumed once
-        delete _snapNewSleeveUsd;
+        delete _snapMeasure;
     }
 
     function _commitPublic(
@@ -334,8 +347,9 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         bytes32 pc = _checkPrivate(c, p, ps, pubNav, pubBand);
         if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
 
+        _provenNow = p.navUsd;
         uint256 index = _record(c, prevEnd); // c.navUsd = checked public part + proven private part
-        ps.onClose(p.navUsd);
+        ps.onClose(p.navUsd, p.nullifiers);
         emit PrivateSleeveProven(index, p.root, p.navUsd, pc, p.nullifiers);
     }
 
@@ -348,25 +362,64 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         _setStart(c.navUsd, paid);
     }
 
-    /// The next period's start: the checked statement NAV less the fee paid now (never the live book, R3-TREAS-3),
-    /// and the claim basis without the sleeves registered during the period just closed (R3-TREAS-2).
+    /// The next period's drawdown base and claim basis from this close's measurement (see the contract notes), and
+    /// the withdrawal marks move to the measurement's counters.
     function _setStart(uint256 statementNav, uint256 feePaidRaw) private {
-        uint256 newSleeveUsd = _newSleeveUsdNow;
         uint8 dec = cashDecimals;
         uint256 feeUsd = dec <= 18 ? feePaidRaw * 10 ** (18 - dec) : feePaidRaw / 10 ** (dec - 18);
-        uint256 start = statementNav > feeUsd ? statementNav - feeUsd : 0;
-        periodStartNav = start;
-        claimBasisNav = start > newSleeveUsd ? start - newSleeveUsd : 0;
-        sleevesCounted = account.sleeves().length;
+        uint256 proven = _provenNow;
+        uint256 g = _gNow + proven;
+        uint256 base = (statementNav > g ? statementNav : g) + _wNow;
+        periodStartNav = base > feeUsd ? base - feeUsd : 0;
+        uint256 t = _tNow + proven;
+        claimBasisNav = t > feeUsd ? t - feeUsd : 0;
+        (address[] memory assets,,) = account.trackedAssets();
+        for (uint256 i; i < assets.length; ++i) {
+            withdrawnMark[assets[i]] = _withdrawnPending[assets[i]];
+        }
     }
 
-    /// Value of the sleeves registered since the last close (not yet counted in the claim basis).
-    function _newSleeveUsd() private view returns (uint256 usd) {
-        address[] memory s = account.sleeves();
-        for (uint256 i = sleevesCounted; i < s.length; ++i) {
-            (uint256 v,) = ISleeve(s[i]).valueOf(address(account));
-            usd += v;
+    function _measureNow() private {
+        uint256[3] memory m = _measure();
+        (_gNow, _tNow, _wNow) = (m[0], m[1], m[2]);
+    }
+
+    /// [G, T, W] now (see the contract notes); records the board-withdrawal counters as pending marks.
+    function _measure() private returns (uint256[3] memory m) {
+        (address[] memory assets, uint8[] memory kinds,) = account.trackedAssets();
+        for (uint256 i; i < assets.length; ++i) {
+            address a = assets[i];
+            uint256 out = account.boardWithdrawn(a);
+            _withdrawnPending[a] = out;
+            (uint256 g,) = AssetValuation.value(valuer, a, kinds[i], IERC20(a).balanceOf(address(account)));
+            m[0] += g;
+            m[1] += _trustedUsd(a, IERC20(a).balanceOf(address(account)));
+            uint256 since = out - withdrawnMark[a];
+            if (since != 0) {
+                (uint256 w,) = AssetValuation.value(valuer, a, kinds[i], since);
+                m[2] += w;
+            }
         }
+    }
+
+    /// Value that nothing the board writes can inflate: the close's cash asset 1:1, canonical Stock Tokens at
+    /// Valuer prices, everything else 0.
+    function _trustedUsd(address a, uint256 raw) private view returns (uint256 usd) {
+        if (raw == 0) return 0;
+        if (a == address(cash)) return AssetValuation.to1e18(raw, cashDecimals);
+        if (valuer.registry().isCanonical(a)) (usd,) = valuer.value(a, raw);
+    }
+
+    /// The claim basis less what was withdrawn to the board since the last close's measurement (trusted value).
+    function claimBasisNow() external view returns (uint256) {
+        uint256 basis = claimBasisNav;
+        (address[] memory assets,,) = account.trackedAssets();
+        for (uint256 i; i < assets.length && basis != 0; ++i) {
+            uint256 since = account.boardWithdrawn(assets[i]) - withdrawnMark[assets[i]];
+            uint256 v = _trustedUsd(assets[i], since);
+            basis = basis > v ? basis - v : 0;
+        }
+        return basis;
     }
 
     /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the

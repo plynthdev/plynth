@@ -126,10 +126,6 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard, ChangeDelay {
     mapping(bytes32 root => uint256 seq) public rootSeq;
 
     mapping(bytes32 nullifier => bool) public nullifierSpent;
-    /// What each `withdraw` actually paid out: keccak256(abi.encode(recipient, asset, amount - relayerFee)), so a
-    /// recipient contract can account for proceeds without trusting a second proof of the same note (review3
-    /// R3-TREAS-1: the nullifier does not bind amount, recipient or change). Zero for trade spends.
-    mapping(bytes32 nullifier => bytes32) public withdrawnOf;
     /// Final roots of full trees: known forever, so their notes can always be spent.
     mapping(bytes32 root => bool) public archivedRoot;
     /// Smallest direct `deposit` per asset (0 = none). CrowdBuy deliveries (`depositFor`) are exempt.
@@ -142,6 +138,11 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard, ChangeDelay {
     mapping(address asset => CapProposal) public capProposal;
     /// Raw units of `asset` in the pool's notes and pending deposits (deposits - refunds - withdrawals).
     mapping(address asset => uint256) public shielded;
+    // Appended last (review4 I-3): earlier slots keep the layout they had before it (archivedRoot = slot 31).
+    /// What each `withdraw` actually paid out: keccak256(abi.encode(recipient, asset, amount - relayerFee)), so a
+    /// recipient contract can account for proceeds without trusting a second proof of the same note (review3
+    /// R3-TREAS-1: the nullifier does not bind amount, recipient or change). Zero for trade spends.
+    mapping(bytes32 nullifier => bytes32) public withdrawnOf;
 
     event CrowdSet(address indexed crowd);
     event TradeSet(address indexed trade);

@@ -11,6 +11,7 @@ import {AssetValuation} from "../../libs/AssetValuation.sol";
 import {ISleeve} from "../../interfaces/ISleeve.sol";
 import {IPerpVenue, IPositionSleeve} from "../../interfaces/IPerpVenue.sol";
 import {ITreasuryAccount} from "../../interfaces/ITreasuryAccount.sol";
+import {AdapterGate} from "../../libs/AdapterGate.sol";
 import {InHousePerpVenue} from "./InHousePerpVenue.sol";
 
 /// What the sleeve reads from its account besides ITreasuryAccount.
@@ -72,6 +73,7 @@ contract BasisSleeve is ISleeve, IPositionSleeve {
     mapping(uint256 venueIdx => mapping(address underlying => uint256)) public openPairOf; // pairId + 1
 
     event VenueAdded(address indexed venue);
+    event VenueProposed(address indexed venue, uint64 eta);
     event PairOpened(uint256 indexed pairId, address indexed underlying, uint256 venueIdx, uint256 tokens, uint256 entryPriceUsd, uint256 entryMultiplier);
     event PairClosed(uint256 indexed pairId, uint256 cashBack, int256 cumulativeFundingUsd);
     event PairMargin(uint256 indexed pairId, uint256 amount);
@@ -98,8 +100,20 @@ contract BasisSleeve is ISleeve, IPositionSleeve {
         _cashDecimals = IERC20Metadata(address(cash_)).decimals();
     }
 
+    /// venue => when `addVenue` may take it (0 = not proposed).
+    mapping(address venue => uint64) public venueEta;
+
+    /// Starts the account's policy TIMELOCK for a venue (it must be on the factory allow-list).
+    function proposeVenue(IPerpVenue venue) external {
+        if (msg.sender != ITreasuryAccount(account).board()) revert NotBoard();
+        emit VenueProposed(address(venue), AdapterGate.propose(venueEta, account, address(venue)));
+    }
+
+    /// The board adds a venue: during the account's setup window at once, after it only a proposed venue whose
+    /// TIMELOCK has passed; on a factory treasury only an allow-listed one (AdapterGate).
     function addVenue(IPerpVenue venue) external {
         if (msg.sender != ITreasuryAccount(account).board()) revert NotBoard();
+        AdapterGate.apply_(venueEta, account, address(venue));
         if (address(venue) == address(0) || isVenue[address(venue)] || venue.sleeve() != address(this)) {
             revert BadVenue();
         }

@@ -44,6 +44,7 @@ contract LooseCashTest is TreasuryFixture {
             ITierSource(address(0)),
             TemplateRegistry(address(0))
         );
+        _allowFixtureAdapters(factory); // reviewed adapters (the fixture's sleeves) on the allow-list
         TreasuryPolicy.Policy memory p = _policy();
         p.cash = TreasuryPolicy.Band(0, 10_000); // all cash is inside the band before the first trade
         (address a, address pol, address c) = factory.deploy(abi.encode(p), board);

@@ -61,7 +61,7 @@ contract ThresholdVerifier {
 
     /// What an accepted holdings proof tells the verifier besides "asset, threshold met".
     struct HoldingsResult {
-        uint256 poolRootSeq;
+        uint256 poolRootSeq; // 0 = a full tree's archived final root (older than every published root)
         uint256 notes; // real slots; MAX_NOTES - notes were padding
     }
 
@@ -153,8 +153,10 @@ contract ThresholdVerifier {
     {
         if (claim.asset == address(0)) revert ZeroAddress();
         if (claim.threshold > MAX_THRESHOLD) revert BadThreshold();
-        r.poolRootSeq = pool.rootSeq(claim.root);
-        if (r.poolRootSeq == 0) revert UnknownRoot(claim.root);
+        // Provable exactly where spendable (review I-3): any root the pool accepts for spends (`isKnownRoot`),
+        // including a full tree's archived final root, which was never published and so has no sequence number.
+        if (!pool.isKnownRoot(claim.root)) revert UnknownRoot(claim.root);
+        r.poolRootSeq = pool.rootSeq(claim.root); // 0 for an archived-only root
 
         bytes32[] memory inputs = new bytes32[](4 + MAX_NOTES);
         inputs[0] = claim.root;

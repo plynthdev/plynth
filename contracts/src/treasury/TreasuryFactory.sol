@@ -10,13 +10,15 @@ import {PeriodClose} from "./PeriodClose.sol";
 import {BoardApprovals} from "./BoardApprovals.sol";
 import {ITierSource} from "../interfaces/ITierSource.sol";
 import {TemplateRegistry} from "./TemplateRegistry.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 /// One call gives a board a working treasury: EIP-1167 clones of TreasuryPolicy, TreasuryAccount, PeriodClose
 /// and BoardApprovals, wired to each other and to the shared PolicyGuard.
 ///
 /// `compiledPolicy` is `abi.encode(TreasuryPolicy.Policy)` exactly as the policy compiler emits it (21 words);
 /// it is validated by TreasuryPolicy itself and becomes version 1, active at once. The board (a Safe in
-/// production) owns every clone; the factory keeps no rights over anything it created. Anyone may call
+/// production) owns every clone; the factory keeps no rights over anything it created beyond its adapter allow-list
+/// (below), which only decides what code a treasury may register later. Anyone may call
 /// `deploy` (it only creates contracts the named board controls), but the dashboard hands the board Safe an
 /// unsigned transaction so in practice the Safe calls it.
 ///
@@ -30,7 +32,16 @@ import {TemplateRegistry} from "./TemplateRegistry.sol";
 /// TemplateRegistry lists. The compiled policy must equal the template with only `controller` filled in
 /// (`templateHash`), and the account records `templateOf` so the FeeRouter can pay the template's author a
 /// share of the treasury's platform fee (`closeAuthor`).
-contract TreasuryFactory {
+///
+/// Adapter allow-list: every treasury this factory makes refuses a new sleeve, vault-holding sleeve or perp venue
+/// whose runtime codehash is not allowed here (`TreasuryAccount.registerDesk`, `PerpSleeve` / `BasisSleeve`
+/// `addVenue`), so a board cannot plug in code of its own that reports any value to the guard. OWNER keeps the
+/// list. While the deployer still owns the factory and has queued nothing (`changeNonce == 0`, first-time setup)
+/// an entry applies at once; after the hand-over every addition waits CHANGE_DELAY (48 h, ChangeDelay) in public,
+/// and a removal (risk-reducing) applies at once. The codehash covers code and immutables: an adapter bound to one
+/// account (PerpSleeve, BasisSleeve, PrivateSleeve, a venue) has its own codehash and is approved per instance. A
+/// removal does not unregister an adapter a treasury already holds (sleeves are never removed, so NAV keeps them).
+contract TreasuryFactory is ChangeDelay {
     /// abi.encode(TreasuryPolicy.Policy): 3 bands x 2 words + 15 single-word fields.
     uint256 public constant POLICY_BYTES = 21 * 32;
 
@@ -49,6 +60,16 @@ contract TreasuryFactory {
     mapping(address account => uint256) public templateOf; // 0 = not built from a template
     mapping(address close => address) public accountOfClose;
     address[] private _accounts;
+    address public owner;
+    address public pendingOwner;
+    /// Runtime codehashes of reviewed adapters (sleeves, venues) a factory treasury may register.
+    mapping(bytes32 codehash => bool) public adapterAllowed;
+
+    event AdapterAllowed(bytes32 indexed codehash, bool allowed);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferred(address indexed from, address indexed to);
+    error NotOwner();
+    error NotPendingOwner();
 
     event TreasuryCreated(
         address indexed board,
@@ -93,6 +114,41 @@ contract TreasuryFactory {
         feeRecipient = feeRecipient_;
         tiers = tiers_;
         templates = templates_;
+        owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    /// Adds (delayed after setup) or removes (at once) a reviewed adapter's runtime codehash.
+    function setAdapterAllowed(bytes32 codehash, bool allowed) external onlyOwner {
+        if (allowed && changeNonce != 0 && !_delayed()) return;
+        adapterAllowed[codehash] = allowed;
+        emit AdapterAllowed(codehash, allowed);
+    }
+
+    function isAdapterAllowed(address adapter) external view returns (bool) {
+        return adapter.code.length != 0 && adapterAllowed[adapter.codehash];
+    }
+
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
+    }
+
+    function transferOwnership(address to) external onlyOwner {
+        pendingOwner = to;
+        emit OwnershipTransferStarted(owner, to);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        pendingOwner = address(0);
+        _bumpChangeNonce(); // a new owner starts with no queued changes, and every later addition is delayed
     }
 
     /// Creates and wires a treasury for `boardSafe`. Reverts with TreasuryPolicy's own error if the policy is

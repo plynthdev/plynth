@@ -89,6 +89,12 @@ contract PerpSleeveTest is TreasuryFixture {
         p.controller = ctrl;
     }
 
+    function _proposeVenueAndWait(InHousePerpVenue v) internal {
+        vm.prank(board);
+        perp.proposeVenue(v);
+        _warp(block.timestamp + 48 hours);
+    }
+
     function _activateT2() internal {
         vm.prank(board);
         policy.propose(_t2());
@@ -357,6 +363,7 @@ contract PerpSleeveTest is TreasuryFixture {
         PerpMarket[] memory ms = new PerpMarket[](1);
         ms[0] = market;
         InHousePerpVenue extra = new InHousePerpVenue(address(perp), pool, ms);
+        _proposeVenueAndWait(extra); // past the setup window: a new venue waits the policy TIMELOCK
         vm.prank(board);
         perp.addVenue(extra);
         _expectCode(guard.R6_VENUE_NOT_ALLOWED());
@@ -366,9 +373,10 @@ contract PerpSleeveTest is TreasuryFixture {
     function test_venueListChangeMidOpIsUnknownChange() public {
         _activateT2();
         // Snapshot before, then the board adds a venue: a stale before-snapshot no longer matches.
-        PolicyGuard.Snapshot memory before = guard.snapshot(address(account));
         PerpMarket[] memory ms = new PerpMarket[](0);
         InHousePerpVenue extra = new InHousePerpVenue(address(perp), pool, ms);
+        _proposeVenueAndWait(extra);
+        PolicyGuard.Snapshot memory before = guard.snapshot(address(account));
         vm.prank(board);
         perp.addVenue(extra);
         vm.prank(address(account));

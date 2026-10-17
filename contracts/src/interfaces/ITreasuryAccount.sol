@@ -6,6 +6,10 @@ import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
 /// What the PolicyGuard and BoardApprovals read from a TreasuryAccount.
 interface ITreasuryAccount {
     function board() external view returns (address);
+    /// The TreasuryFactory whose adapter allow-list applies (zero for a directly constructed account).
+    function factory() external view returns (address);
+    /// End of the setup window (the first policy TIMELOCK after creation).
+    function setupEndsAt() external view returns (uint64);
     function policy() external view returns (TreasuryPolicy);
     function approvals() external view returns (address);
     function periodClose() external view returns (address);

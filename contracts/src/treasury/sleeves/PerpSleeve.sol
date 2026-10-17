@@ -6,6 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ISleeve} from "../../interfaces/ISleeve.sol";
 import {IPerpVenue, IPositionSleeve} from "../../interfaces/IPerpVenue.sol";
 import {ITreasuryAccount} from "../../interfaces/ITreasuryAccount.sol";
+import {AdapterGate} from "../../libs/AdapterGate.sol";
 
 /// The perp sleeve of ONE TreasuryAccount (hedge overlay or basis carry). Its value lives at perp venues, behind
 /// one `IPerpVenue` interface each, so it declares no ERC-20 assets; the PolicyGuard reads the venues itself
@@ -34,6 +35,7 @@ contract PerpSleeve is ISleeve, IPositionSleeve {
     mapping(address venue => bool) public isVenue;
 
     event VenueAdded(address indexed venue);
+    event VenueProposed(address indexed venue, uint64 eta);
 
     error NotAccount();
     error NotBoard();
@@ -50,8 +52,20 @@ contract PerpSleeve is ISleeve, IPositionSleeve {
         _band = band_;
     }
 
+    /// venue => when `addVenue` may take it (0 = not proposed).
+    mapping(address venue => uint64) public venueEta;
+
+    /// Starts the account's policy TIMELOCK for a venue (it must be on the factory allow-list).
+    function proposeVenue(IPerpVenue venue) external {
+        if (msg.sender != ITreasuryAccount(account).board()) revert NotBoard();
+        emit VenueProposed(address(venue), AdapterGate.propose(venueEta, account, address(venue)));
+    }
+
+    /// The board adds a venue: during the account's setup window at once, after it only a proposed venue whose
+    /// TIMELOCK has passed; on a factory treasury only an allow-listed one (AdapterGate).
     function addVenue(IPerpVenue venue) external {
         if (msg.sender != ITreasuryAccount(account).board()) revert NotBoard();
+        AdapterGate.apply_(venueEta, account, address(venue));
         if (address(venue) == address(0) || isVenue[address(venue)] || venue.sleeve() != address(this)) {
             revert BadVenue();
         }

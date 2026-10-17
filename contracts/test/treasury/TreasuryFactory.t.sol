@@ -47,6 +47,7 @@ contract TreasuryFactoryTest is TreasuryFixture {
             ITierSource(address(0)),
             TemplateRegistry(address(0))
         );
+        _allowFixtureAdapters(factory); // reviewed adapters (the fixture's sleeves) on the allow-list
     }
 
     function _deploy(address b) internal returns (address a, address p, address c) {

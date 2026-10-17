@@ -265,7 +265,7 @@ contract MainnetBetaTest is Test {
         assertEq(Ownable(_a(json, "jitterBeacon")).owner(), owner);
         assertEq(TemplateRegistry(_a(json, "templateRegistry")).committee(), owner);
         address[] memory p = vm.parseJsonAddressArray(json, ".acceptOwnership");
-        assertEq(p.length, 11); // registry, vault, crowd, pool, trade, perp pool, valuer + 4 markets
+        assertEq(p.length, 12); // registry, vault, crowd, pool, trade, perp pool, valuer, treasury factory + 4 markets
         for (uint256 i; i < p.length; ++i) {
             assertEq(IOwned2(p[i]).pendingOwner(), owner);
             assertEq(IOwned2(p[i]).owner(), dep);
@@ -291,6 +291,32 @@ contract MainnetBetaTest is Test {
         vm.prank(dep);
         vm.expectRevert(StockTokenRegistry.NotOwner.selector);
         reg.delist(tsla);
+        // The adapter allow-list holds the shipped sleeves, and later additions are OWNER's, behind 48 h.
+        TreasuryFactory fac = TreasuryFactory(_a(json, "treasuryFactory"));
+        assertTrue(fac.adapterAllowed(_a(json, "cashSleeve").codehash));
+        assertTrue(fac.adapterAllowed(_a(json, "equitySleeve").codehash));
+        vm.prank(dep);
+        vm.expectRevert(TreasuryFactory.NotOwner.selector);
+        fac.setAdapterAllowed(keccak256("x"), true);
+        vm.prank(owner);
+        fac.setAdapterAllowed(keccak256("x"), true); // queued, not applied
+        assertFalse(fac.adapterAllowed(keccak256("x")));
+    }
+
+    function test_verifyDeploymentFailsWithoutTheAllowList() public {
+        string memory json = _mainnetDeploy();
+        _acceptAll(json);
+        TreasuryFactory fac = TreasuryFactory(_a(json, "treasuryFactory"));
+        vm.prank(owner);
+        fac.setAdapterAllowed(_a(json, "cashSleeve").codehash, false); // removal applies at once
+        MainnetBeta v = new MainnetBeta();
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        vm.writeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f), json);
+        vm.expectRevert(
+            abi.encodeWithSelector(MainnetBeta.HandoffIncomplete.selector, address(fac), "allow-list: cashSleeve")
+        );
+        v.verifyDeployment(f);
+        vm.removeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f));
     }
 
     function test_botsSitWhereTheyShould() public {

@@ -557,6 +557,10 @@ contract MainnetBeta is Script {
             tokens[i] = s[i].token;
         }
         equitySleeve = new EquitySleeve(router, tokens);
+        // The reviewed adapters treasuries may register (first-time setup: applies at once while the deployer owns
+        // the factory; after OWNER accepts, every addition waits 48 h).
+        factory.setAdapterAllowed(address(cashSleeve).codehash, true);
+        factory.setAdapterAllowed(address(equitySleeve).codehash, true);
     }
 
     function _consumer() private {
@@ -664,6 +668,7 @@ contract MainnetBeta is Script {
         shieldedPool.transferOwnership(o);
         shieldedTrade.transferOwnership(o);
         perpPool.transferOwnership(o);
+        factory.transferOwnership(o);
         for (uint256 i; i < perpMarkets.length; ++i) {
             PerpMarket(perpMarkets[i]).transferOwnership(o);
         }
@@ -676,7 +681,7 @@ contract MainnetBeta is Script {
 
     /// Contracts OWNER must call acceptOwnership() on after the deploy.
     function pendingAccepts() public view returns (address[] memory a) {
-        a = new address[](7 + perpMarkets.length);
+        a = new address[](8 + perpMarkets.length);
         a[0] = address(registry);
         a[1] = address(vault);
         a[2] = address(crowd);
@@ -684,8 +689,9 @@ contract MainnetBeta is Script {
         a[4] = address(shieldedTrade);
         a[5] = address(perpPool);
         a[6] = address(valuer);
+        a[7] = address(factory);
         for (uint256 i; i < perpMarkets.length; ++i) {
-            a[7 + i] = perpMarkets[i];
+            a[8 + i] = perpMarkets[i];
         }
     }
 
@@ -771,6 +777,8 @@ contract MainnetBeta is Script {
         templates = TemplateRegistry(vm.parseJsonAddress(j, ".templateRegistry"));
         factory = TreasuryFactory(vm.parseJsonAddress(j, ".treasuryFactory"));
         policyImpl = factory.policyImpl();
+        cashSleeve = CashSleeve(vm.parseJsonAddress(j, ".cashSleeve"));
+        equitySleeve = EquitySleeve(vm.parseJsonAddress(j, ".equitySleeve"));
         perpPool = PerpPool(vm.parseJsonAddress(j, ".perpPool"));
         delete perpMarkets;
         address[] memory ms = perpPool.markets();
@@ -873,6 +881,10 @@ contract MainnetBeta is Script {
         _is(factory.guard() == guard && address(factory.cash()) == USDG, address(factory), "factory wiring");
         address feeTo = cfg.deployToken ? address(feeRouter) : cfg.owner;
         _is(factory.feeRecipient() == feeTo, address(factory), "factory fee recipient");
+        _owned(address(factory), "treasuryFactory");
+        // The adapter allow-list holds exactly what we ship: the shared cash and equity sleeves.
+        _is(factory.adapterAllowed(address(cashSleeve).codehash), address(factory), "allow-list: cashSleeve");
+        _is(factory.adapterAllowed(address(equitySleeve).codehash), address(factory), "allow-list: equitySleeve");
     }
 
     function _is(bool ok, address target, string memory what) private pure {

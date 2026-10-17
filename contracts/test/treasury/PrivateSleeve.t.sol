@@ -128,6 +128,13 @@ abstract contract PrivateSleeveFixture is TreasuryFixture {
         assertEq(pool.currentRoot(), _b(".root"), "fixture tree != pool tree");
     }
 
+    /// A permissionless refresh with the fixture's close proof: the three shields become proven sleeve notes
+    /// (their nullifiers are recorded), the only notes whose withdraws may debit the book (R4-TREAS-1).
+    function _proveBook() internal {
+        vm.prank(stranger);
+        pc.refreshPrivateBook(_private());
+    }
+
     function _private() internal view returns (IPrivateSleeve.PrivateClose memory p) {
         p.proof = _hex(".close.proofHex");
         p.root = _b(".root");
@@ -533,13 +540,14 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
 
     function test_onCloseOnlyFromPeriodClose() public {
         vm.expectRevert(PrivateSleeve.NotPeriodClose.selector);
-        sleeve.onClose(1);
+        sleeve.onClose(1, [bytes32(0), 0, 0, 0, 0, 0, 0, 0]);
     }
 
     // ------------------------------------------------------------ unshield / refund (never gated)
 
     function test_unshieldAlwaysWorks() public {
         _shieldBook();
+        _proveBook(); // the sleeve's notes are proven: their withdraws debit the book
         // Take away everything that gates other paths: tier, desks, the private-desk designation's desk.
         tiers.set(false);
         vm.startPrank(board);
@@ -567,6 +575,7 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
     /// in guard NAV until the next close). Its proceeds must reach the account only through a path that debits.
     function test_poc_directPoolWithdrawCannotSkipBookDebit() public {
         _shieldBook();
+        _proveBook(); // the sleeve's notes are proven: their withdraws debit the book
         uint256 navBefore = guard.snapshot(address(account)).nav;
         uint256 before = aapl.balanceOf(address(account));
         vm.prank(stranger);
@@ -588,6 +597,7 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
     /// review-v2 L-8 / review3 R3-TREAS-1: `sweep` debits only what the pool recorded paying this sleeve.
     function test_sweepNeedsThePoolsRecordOfAWithdrawToTheSleeve() public {
         _shieldBook();
+        _proveBook(); // the sleeve's notes are proven: their withdraws debit the book
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         aapl.mint(address(sleeve), 200e18); // tokens are there, but no withdraw happened
         vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, w.nullifier));

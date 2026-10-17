@@ -443,7 +443,8 @@ contract PeriodCloseTest is TreasuryFixture {
         _commit(c);
         assertEq(pc.feeOwed(), fee1);
         assertEq(usdg.balanceOf(feeTo), 0);
-        assertEq(pc.periodStartNav(), c.navUsd);
+        // review4 R4-TREAS-3: the withdrawal made during the period is added back to the drawdown base.
+        assertEq(pc.periodStartNav(), c.navUsd + FUNDING * 1e12);
 
         usdg.mint(address(account), 1_000e6);
         _warp(T0 + 2 * PERIOD);

@@ -10,10 +10,12 @@ import {MockStockToken} from "../../src/testnet/MockStockToken.sol";
 import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 import {Valuer} from "../../src/core/Valuer.sol";
 import {SplitWithdrawFixture as F} from "../review3/SplitWithdrawFixture.sol";
+import {BoardNoteFixture as B} from "../review4/BoardNoteFixture.sol";
 
 /// Random board / stranger moves against an open private book: plain transfers of private and other assets into
 /// the sleeve (including the board's own AAPL taken out with withdrawToBoard), forged and real sweeps, the real
-/// pool withdraw, unshield, forwardOther. Ghost: the value of proven withdraw proceeds the sleeve forwarded.
+/// pool withdraw, unshield, forwardOther, the controller's split proofs of one note, and a note the BOARD deposited
+/// itself withdrawn to the sleeve (review4 R4-TREAS-1). Ghost: what the pool paid out of the sleeve's own notes.
 contract SleeveBookHandler is Test {
     PrivateSleeve immutable sleeve;
     ShieldedPool immutable pool;
@@ -27,7 +29,7 @@ contract SleeveBookHandler is Test {
     ShieldedPool.PublicWithdraw realPub;
 
     uint256 public provenDebit; // USD the sleeve debited from the book
-    uint256 public paidUsd; // USD the pool actually paid the sleeve (every successful withdraw to it)
+    uint256 public paidUsd; // USD the pool paid the sleeve out of the SLEEVE'S OWN notes (foreign notes excluded)
     uint256 public calls;
 
     constructor(
@@ -71,15 +73,42 @@ contract SleeveBookHandler is Test {
     /// pool paid the sleeve may succeed; whatever it debits is counted.
     function anySweep(uint8 which, bool useNvda, uint256 amount, bytes32 randomNf) external {
         ++calls;
-        bytes32[5] memory nfs = [realPub.nullifier, bytes32(F.NF0), bytes32(F.NF1), bytes32(F.NF2), randomNf];
-        bytes32 nf = nfs[which % 5];
+        bytes32[6] memory nfs =
+            [realPub.nullifier, bytes32(F.NF0), bytes32(F.NF1), bytes32(F.NF2), bytes32(B.NF), randomNf];
+        bytes32 nf = nfs[which % 6];
         address asset = useNvda ? address(nvda) : address(aapl);
         if (amount % 4 == 0) amount = 1; // the split proofs' 1-wei withdraws
-        else if (amount % 4 == 1) amount = [uint256(200e18), F.AMT0B, F.AMT2B][amount % 3];
+        else if (amount % 4 == 1) amount = [uint256(200e18), F.AMT0B, F.AMT2B, B.AMOUNT][(amount >> 8) % 4];
         else amount = bound(amount, 0, 1e24);
         uint256 b = sleeve.bookUsd();
         try sleeve.sweep(nf, asset, amount) {
             require(pool.withdrawnOf(nf) == keccak256(abi.encode(address(sleeve), asset, amount)), "unrecorded sweep");
+            provenDebit += b - sleeve.bookUsd();
+        } catch {}
+    }
+
+    /// The board's own note (deposited in setUp, leaf 3), withdrawn in full to the sleeve. Not a sleeve note.
+    function boardNoteWithdraw() external {
+        ++calls;
+        ShieldedPool.PublicWithdraw memory w;
+        w.root = bytes32(B.ROOT);
+        w.nullifier = bytes32(B.NF);
+        w.asset = address(aapl);
+        w.amount = B.AMOUNT;
+        w.recipient = address(sleeve);
+        try pool.withdraw(B.PROOF, w) {} catch {}
+    }
+
+    /// Sweeps one of the withdraws the handler can make, with exactly the amount it paid.
+    function sweepKnown(uint8 which) external {
+        ++calls;
+        which = which % 8;
+        bytes32[8] memory nfs = [realPub.nullifier, bytes32(F.NF0), bytes32(F.NF0), bytes32(F.NF1), bytes32(F.NF1),
+            bytes32(F.NF2), bytes32(F.NF2), bytes32(B.NF)];
+        uint256[8] memory amts = [uint256(200e18), 1, F.AMT0B, 1, F.AMT1B, 1, F.AMT2B, B.AMOUNT];
+        address asset = (which == 5 || which == 6) ? address(nvda) : address(aapl);
+        uint256 b = sleeve.bookUsd();
+        try sleeve.sweep(nfs[which], asset, amts[which]) {
             provenDebit += b - sleeve.bookUsd();
         } catch {}
     }
@@ -136,9 +165,10 @@ contract SleeveBookHandler is Test {
     }
 }
 
-/// V2-L8 / R3-TREAS-1 invariant: the private book never drops by more than the pool actually paid the sleeve, so
-/// it can never be zeroed while notes are still in the pool, whatever mix of plain transfers, forged sweeps, the
-/// controller's split proofs (1 wei + change vs full note, same nullifier) and real withdraws runs.
+/// V2-L8 / R3-TREAS-1 / R4-TREAS-1 invariant: the private book never drops by more than the pool paid out of the
+/// sleeve's OWN notes (prices constant), so it never falls below the value of the sleeve's notes still shielded,
+/// whatever mix of plain transfers, forged sweeps, split proofs of one note, the board's own note withdrawn to the
+/// sleeve and real withdraws runs.
 contract PrivateSleeveBookInvariantTest is PrivateSleeveFixture {
     SleeveBookHandler handler;
     uint256 book0;
@@ -146,7 +176,17 @@ contract PrivateSleeveBookInvariantTest is PrivateSleeveFixture {
     function setUp() public override {
         super.setUp();
         _shieldBook();
+        _proveBook(); // the three shields are proven sleeve notes
         book0 = sleeve.bookUsd();
+        // The board's own note goes in as leaf 3 (BoardNoteFixture's tree), before anything else is inserted.
+        vm.startPrank(board);
+        account.withdrawToBoard(address(aapl), B.AMOUNT);
+        aapl.approve(address(pool), B.AMOUNT);
+        pool.deposit(address(aapl), B.AMOUNT, bytes32(B.BOARD_PK), bytes32(B.BLINDING), bytes(""));
+        vm.stopPrank();
+        _warp(block.timestamp + 2 hours + 1);
+        pool.insertPending(10);
+        assertEq(pool.currentRoot(), bytes32(B.ROOT));
         handler = new SleeveBookHandler(
             sleeve, pool, account, aapl, nvda, usdg, board, _hex(".withdraw.proofHex"), _withdrawPub()
         );
@@ -160,6 +200,6 @@ contract PrivateSleeveBookInvariantTest is PrivateSleeveFixture {
     /// forge-config: ci.invariant.depth = 500
     function invariant_bookDropsOnlyByProvenProceeds() public view {
         assertEq(sleeve.bookUsd() + handler.provenDebit(), book0, "book moved other than by a sweep/unshield");
-        assertLe(handler.provenDebit(), handler.paidUsd(), "book debited by more than the pool paid the sleeve");
+        assertLe(handler.provenDebit(), handler.paidUsd(), "book debited by more than the sleeve's own notes paid out");
     }
 }

@@ -50,6 +50,7 @@ contract DeskTiersTest is TreasuryFixture {
             staking,
             TemplateRegistry(address(0))
         );
+        _allowFixtureAdapters(factory); // reviewed adapters (the fixture's sleeves) on the allow-list
         (address a,,) = factory.deploy(abi.encode(_policy()), board);
         fAccount = TreasuryAccount(payable(a));
     }

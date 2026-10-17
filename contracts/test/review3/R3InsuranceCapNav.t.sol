@@ -45,6 +45,13 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
     address committee = makeAddr("committee");
     ExceptionInsurancePool ins;
 
+    /// The factory allow-list (review5) now refuses a board-written adapter. To keep testing the claim basis as a
+    /// second line of defence, these tests put the fake on the list as if it had passed review and misreports.
+    function _allowListed(address a) internal returns (address) {
+        factory.setAdapterAllowed(a.codehash, true);
+        return a;
+    }
+
     function _setupFactoryTreasury() internal {
         _deploy(board);
         usdg.mint(address(fAccount), 1_000_000e6); // $1M loose cash
@@ -67,6 +74,16 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
         _warp(block.timestamp < next ? next + 1 : block.timestamp + 1);
     }
 
+    function _snapshotAndSign() internal returns (bytes memory sig, bytes memory cdata) {
+        PeriodClose.Close memory c;
+        (c, sig) = _signedSnapshotClose();
+        cdata = abi.encode(c);
+    }
+
+    function _commitEncoded(bytes memory cdata, bytes memory sig) internal {
+        fClose.commitSnapshot(abi.decode(cdata, (PeriodClose.Close)), sig);
+    }
+
     function _honestClose() internal {
         (PeriodClose.Close memory c, bytes memory sig) = _signedSnapshotClose();
         fClose.commitSnapshot(c, sig);
@@ -85,6 +102,7 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
         assertEq(c.navUsd, 1_000_000e18, "controller signed the honest $1M book");
 
         BoardSleeve fake = new BoardSleeve(1e12 * 1e18);
+        _allowListed(address(fake));
         vm.prank(board);
         fAccount.registerDesk("fake", board, _one(address(fake)));
 
@@ -104,6 +122,7 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
     function test_r3_boardSleeveBeforeSnapshotCountsOnlyFromNextPeriod() public {
         _setupFactoryTreasury();
         BoardSleeve fake = new BoardSleeve(1e12 * 1e18);
+        _allowListed(address(fake));
         vm.prank(board);
         fAccount.registerDesk("fake", board, _one(address(fake)));
         _honestClose();
@@ -130,10 +149,12 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
         assertGt(ins.claimCapUsd(fAccount), 0, "a new period, a new cap");
     }
 
-    /// The live `commit` path does the same, and a sleeve that has been registered for a full period counts.
-    function test_r3_liveCommitNewSleeveCountsFromNextPeriod() public {
+    /// The live `commit` path does the same, and (review4 R4-TREAS-2) a board sleeve's own value never counts in the
+    /// claim basis, however long it has been registered; it still counts in the drawdown base (stricter).
+    function test_r3_liveCommitBoardSleeveNeverCountsInClaimBasis() public {
         _setupFactoryTreasury();
         BoardSleeve extra = new BoardSleeve(500_000e18);
+        _allowListed(address(extra));
         vm.prank(board);
         fAccount.registerDesk("extra", board, _one(address(extra)));
         _toNextPeriodEnd();
@@ -142,9 +163,9 @@ contract R3InsuranceCapNavTest is TreasuryFactoryTest {
         PeriodClose.Close memory c = _liveClose(posHash, nav);
         (uint8 vv, bytes32 r, bytes32 s_) = vm.sign(controllerKey, fClose.digest(c));
         fClose.commit(c, abi.encodePacked(r, s_, vv));
-        assertEq(fClose.claimBasisNav(), fClose.periodStartNav() - 500_000e18, "new this period: left out");
+        assertEq(fClose.claimBasisNav(), fClose.periodStartNav() - 500_000e18, "board sleeve: left out");
         _honestClose();
-        assertEq(fClose.claimBasisNav(), fClose.periodStartNav(), "a period later: counted");
+        assertEq(fClose.claimBasisNav(), fClose.periodStartNav() - 500_000e18, "a period later: still left out");
     }
 
     function _peek() internal returns (bytes32 posHash, uint256 nav, uint16 cashBps, uint16 eqBps) {

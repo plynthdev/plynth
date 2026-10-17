@@ -18,6 +18,11 @@ interface IPrivateSleeveAccount {
     function bookUsd() external view returns (uint256);
 }
 
+/// The factory's adapter allow-list (TreasuryFactory.isAdapterAllowed).
+interface IAdapterAllowList {
+    function isAdapterAllowed(address adapter) external view returns (bool);
+}
+
 /// The part of a PeriodClose the account reads: the cash asset fees are paid in (USDG).
 interface IPeriodCloseCash {
     function cash() external view returns (address);
@@ -88,6 +93,14 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     /// A PeriodClose replacement waiting out the policy's TIMELOCK (zero = none) and when it can be applied.
     address public pendingPeriodClose;
     uint64 public pendingPeriodCloseEta;
+    /// Cumulative raw amount of each token sent to the board by `withdrawToBoard` (address(0) = ETH).
+    mapping(address token => uint256) public boardWithdrawn;
+    /// The TreasuryFactory that initialized this clone (its adapter allow-list applies); zero when constructed.
+    address public factory;
+    /// Desks registered before this (the first policy TIMELOCK after creation) need no proposal: the setup window.
+    uint64 public setupEndsAt;
+    /// deskProposalId(deskId, key, adapters) => when `registerDesk` may apply it (0 = not proposed).
+    mapping(bytes32 id => uint64 eta) public deskEta;
 
     event DeskRegistered(bytes32 indexed deskId, address indexed key, address[] adapters);
     event DeskRevoked(bytes32 indexed deskId);
@@ -101,6 +114,8 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     event CloseFeePaid(address indexed token, address indexed to, uint256 amount);
     event PrivateSleeveSet(address indexed sleeve, bytes32 indexed deskId);
     event TiersSet(address indexed tiers);
+    event DeskProposed(bytes32 indexed id, bytes32 indexed deskId, address key, address[] adapters, uint64 eta);
+    event DeskProposalCancelled(bytes32 indexed id);
 
     error NotBoard();
     error ZeroAddress();
@@ -120,6 +135,8 @@ contract TreasuryAccount is ReentrancyGuardTransient {
     error PeriodCloseNotSet();
     error NothingPending();
     error TimelockActive(uint64 eta);
+    error DeskNotProposed(bytes32 id);
+    error AdapterNotAllowed(address adapter);
 
     modifier onlyBoard() {
         if (msg.sender != board) revert NotBoard();
@@ -149,6 +166,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         ITierSource tiers_
     ) external {
         _init(board_, policy_, guard_, approvals_);
+        factory = msg.sender; // the TreasuryFactory clones and initializes in one call
         if (periodClose_ != address(0)) {
             periodClose = periodClose_;
             emit PeriodCloseSet(periodClose_);
@@ -170,14 +188,50 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         policy = policy_;
         guard = guard_;
         approvals = approvals_;
+        setupEndsAt = uint64(block.timestamp + policy_.TIMELOCK());
     }
 
     // ---------------------------------------------------------------- board
 
+    /// A proposal expires this long after its eta (it must be proposed again, with a fresh public notice).
+    uint64 public constant DESK_PROPOSAL_EXPIRY = 14 days;
+
+    function deskProposalId(bytes32 deskId, address key, address[] calldata adapters) public pure returns (bytes32) {
+        return keccak256(abi.encode(deskId, key, adapters));
+    }
+
+    /// Starts the policy TIMELOCK for a desk (review4 trust note: no new sleeve, vault or venue instantly). Every
+    /// adapter not registered yet must be on the factory's allow-list now and again when it is applied.
+    function proposeDesk(bytes32 deskId, address key, address[] calldata adapters) external onlyBoard {
+        for (uint256 i; i < adapters.length; ++i) {
+            if (!isSleeve[adapters[i]]) _checkAllowed(adapters[i]);
+        }
+        bytes32 id = deskProposalId(deskId, key, adapters);
+        uint64 eta = uint64(block.timestamp + policy.TIMELOCK());
+        deskEta[id] = eta;
+        emit DeskProposed(id, deskId, key, adapters, eta);
+    }
+
+    function cancelDeskProposal(bytes32 id) external onlyBoard {
+        if (deskEta[id] == 0) revert DeskNotProposed(id);
+        delete deskEta[id];
+        emit DeskProposalCancelled(id);
+    }
+
+    /// Registers a desk. During the setup window (the first policy TIMELOCK after creation) it applies at once;
+    /// after it, only a `proposeDesk` of exactly these arguments whose TIMELOCK has passed (and has not expired).
+    /// A factory treasury also refuses any new adapter whose runtime codehash is not on the factory's allow-list.
     function registerDesk(bytes32 deskId, address key, address[] calldata adapters) external onlyBoard {
         if (deskId == bytes32(0) || key == address(0)) revert BadDesk();
         if (_desks[deskId].active) revert DeskActive();
         if (adapters.length == 0 || adapters.length > MAX_ADAPTERS_PER_DESK) revert BadAdapters();
+        if (block.timestamp > setupEndsAt) {
+            bytes32 id = deskProposalId(deskId, key, adapters);
+            uint64 eta = deskEta[id];
+            if (eta == 0 || block.timestamp > uint256(eta) + DESK_PROPOSAL_EXPIRY) revert DeskNotProposed(id);
+            if (block.timestamp < eta) revert TimelockActive(eta);
+            delete deskEta[id];
+        }
         if (address(tiers) != address(0)) {
             uint256 maxDesks = tiers.tierOf(board).maxDesks;
             if (activeDeskCount >= maxDesks) revert TierTooLow(board, maxDesks);
@@ -186,7 +240,10 @@ contract TreasuryAccount is ReentrancyGuardTransient {
             for (uint256 j; j < i; ++j) {
                 if (adapters[i] == adapters[j]) revert BadAdapters();
             }
-            if (!isSleeve[adapters[i]]) _addSleeve(adapters[i]);
+            if (!isSleeve[adapters[i]]) {
+                _checkAllowed(adapters[i]);
+                _addSleeve(adapters[i]);
+            }
         }
         _desks[deskId] = Desk(key, true, adapters);
         ++_activeDesksOfKey[key];
@@ -257,8 +314,11 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         emit PrivateSleeveSet(sleeve, deskId);
     }
 
-    /// Sends `amount` of `token` (address(0) = ETH) to the board. Never gated by policy, guard or desks.
+    /// Sends `amount` of `token` (address(0) = ETH) to the board. Never gated by policy, guard or desks. Counted per
+    /// token in `boardWithdrawn`, so PeriodClose can add withdrawals back to the drawdown base and take them off the
+    /// insurance claim basis (review4 R4-TREAS-2/3); the counter never gates the withdrawal.
     function withdrawToBoard(address token, uint256 amount) external onlyBoard {
+        boardWithdrawn[token] += amount;
         if (token == address(0)) {
             (bool ok,) = board.call{value: amount}("");
             require(ok, "eth");
@@ -414,6 +474,11 @@ contract TreasuryAccount is ReentrancyGuardTransient {
             if (d.adapters[i] == adapter) return true;
         }
         return false;
+    }
+
+    function _checkAllowed(address adapter) private view {
+        address f = factory;
+        if (f != address(0) && !IAdapterAllowList(f).isAdapterAllowed(adapter)) revert AdapterNotAllowed(adapter);
     }
 
     function _addSleeve(address sleeve) private {

@@ -291,6 +291,9 @@ contract TestnetStack is Script {
             tokens[i] = address(stocks[i].token);
         }
         equitySleeve = new EquitySleeve(router, tokens);
+        // The adapter allow-list (first-time setup, the deployer owns the factory): the shared sleeves.
+        factory.setAdapterAllowed(address(cashSleeve).codehash, true);
+        factory.setAdapterAllowed(address(equitySleeve).codehash, true);
     }
 
     function _consumer() private {

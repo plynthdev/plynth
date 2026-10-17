@@ -250,6 +250,37 @@ export async function attempt(ctx: DeskContext, op: Op): Promise<Outcome> {
   return { ok: true, txHash: hash };
 }
 
+/** Records what a split order left unfilled, without sending anything. A size or budget stop ("min piece", "max
+ *  sends") is retried by a later pass: logged as skipped. A rule rejection is simulated for its code and filed as an
+ *  exception, as attempt() does. */
+async function logLeft(ctx: DeskContext, op: Op, stuck: string, retryLater: boolean): Promise<Outcome> {
+  const row = {
+    chainId: ctx.chain.id,
+    account: ctx.cfg.account,
+    desk: op.desk,
+    action: op.action,
+    adapter: op.adapter,
+    asset: op.asset,
+    amount: op.amount,
+    notionalUsd: op.usd,
+    beaconKey: op.beaconKey ?? null,
+  };
+  const sim = retryLater ? undefined : await simulate(ctx, op);
+  if (sim === undefined || sim.ok) {
+    await ctx.log.record({ ...row, status: "skipped", reason: `split: ${stuck}` });
+    return { ok: false, rejection: { code: null, reason: `split: ${stuck}` }, sent: false };
+  }
+  await ctx.log.record({ ...row, status: "rejected", reasonCode: sim.rejection.code, reason: sim.rejection.reason });
+  if (ctx.onException) {
+    try {
+      await ctx.onException(ctx, op, sim.rejection);
+    } catch (e) {
+      ctx.say?.(`exception filing failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { ok: false, rejection: sim.rejection, sent: false };
+}
+
 // -------------------------------------------------------------------------------------------- cash desk
 
 async function cashOps(ctx: DeskContext, s: State, opts: { extraNeedUsdg?: bigint; redeemOnly?: boolean }): Promise<Op[]> {
@@ -361,7 +392,48 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
       ? { desk: "equity", action: "buy", adapter: cfg.equitySleeve, data: wrapData(s.usdg, o.amount, equityRunData("buy", o.token, o.amount, slip)), increased: o.token, asset: o.token, amount: o.amount, usd: o.usd, beaconKey: kToday }
       : { desk: "equity", action: "sell", adapter: cfg.equitySleeve, data: wrapData(o.token, o.amount, equityRunData("sell", o.token, o.amount, slip)), increased: s.usdg, asset: o.token, amount: o.amount, usd: o.usd, beaconKey: kToday };
 
-  for (const o of plan.orders.filter((o) => o.action === "sell")) res.outcomes.push(await attempt(ctx, opFor(o)));
+  // Pieces sent per name in this pass, across every order for it (review3 R3-TREAS-4: the budget was per order, so
+  // five orders for one name could send 5 x 16 pieces).
+  const used = new Map<string, number>();
+  const minPiece = BigInt(cfg.equity.minPieceUsdg ?? DEFAULT_MIN_PIECE_USDG);
+  const unfilled: { token: Address; left: string; why: string }[] = [];
+  /** Splits one order (buy in USDG, sell in token raw) into passing pieces within the name's budget. */
+  const fill = async (o: (typeof plan.orders)[number], minAmount: bigint) => {
+    const key = o.token.toLowerCase();
+    const budget = MAX_PIECES_PER_NAME - (used.get(key) ?? 0);
+    const usdOf = (amount: bigint) => (o.amount === 0n ? 0n : (o.usd * amount) / o.amount);
+    const r = budget <= 0
+      ? { filled: 0n, sends: 0, stuck: "max sends", retryLater: true }
+      : await splitFill(
+          o.amount,
+          minAmount,
+          budget,
+          async (amount) => {
+            const sim = await simulate(ctx, opFor({ ...o, amount, usd: usdOf(amount) }));
+            return sim.ok ? { ok: true } : { ok: false, reason: sim.rejection.reason };
+          },
+          async (amount) => {
+            const out = await attempt(ctx, opFor({ ...o, amount, usd: usdOf(amount) }));
+            res.outcomes.push(out);
+            return out.ok;
+          },
+        );
+    used.set(key, (used.get(key) ?? 0) + r.sends);
+    if (r.stuck !== undefined && r.stuck !== "reverted") {
+      const left = o.amount - r.filled;
+      // Log what is left once, WITHOUT sending it (review3 R3-TREAS-4: this used attempt(), which sent an
+      // un-budgeted extra piece whenever its simulation passed, e.g. after "max sends").
+      res.outcomes.push(await logLeft(ctx, opFor({ ...o, amount: left, usd: usdOf(left) }), r.stuck, r.retryLater === true));
+      if (r.retryLater) unfilled.push({ token: o.token, left: left.toString(), why: r.stuck });
+    }
+  };
+
+  // Sells first, split like buys (a sell too big for the pool is risk-reducing and must still get out, e.g. under
+  // DERISK); the minimum piece is the USDG minimum in token units at the order's price.
+  for (const o of plan.orders.filter((o) => o.action === "sell")) {
+    const minRaw = o.usd === 0n ? o.amount : (minPiece * USDG_TO_WAD * o.amount + o.usd - 1n) / o.usd;
+    await fill(o, minRaw);
+  }
 
   let buys = plan.orders.filter((o) => o.action === "buy");
   if (buys.length > 0) {
@@ -381,30 +453,7 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
   }
   // Buys too big for the pool at the guard's slippage are split into pieces that each pass (split.ts), never sent
   // with a looser bound; what a minimum piece still cannot fill waits for a later pass of this window.
-  const minPiece = BigInt(cfg.equity.minPieceUsdg ?? DEFAULT_MIN_PIECE_USDG);
-  const unfilled: { token: Address; left: string; why: string }[] = [];
-  for (const o of buys) {
-    const r = await splitFill(
-      o.amount,
-      minPiece,
-      MAX_PIECES_PER_NAME,
-      async (amount) => {
-        const sim = await simulate(ctx, opFor({ ...o, amount, usd: amount * USDG_TO_WAD }));
-        return sim.ok ? { ok: true } : { ok: false, reason: sim.rejection.reason };
-      },
-      async (amount) => {
-        const out = await attempt(ctx, opFor({ ...o, amount, usd: amount * USDG_TO_WAD }));
-        res.outcomes.push(out);
-        return out.ok;
-      },
-    );
-    if (r.stuck !== undefined && r.stuck !== "reverted") {
-      const left = o.amount - r.filled;
-      // Log the refusal of what is left once (the probes above are eth_calls and record nothing).
-      res.outcomes.push(await attempt(ctx, opFor({ ...o, amount: left < minPiece || !r.retryLater ? left : minPiece, usd: left * USDG_TO_WAD })));
-      if (r.retryLater) unfilled.push({ token: o.token, left: left.toString(), why: r.stuck });
-    }
-  }
+  for (const o of buys) await fill(o, minPiece);
 
   const partials = unfilled.length > 0 ? await ctx.log.rebalancePartials(cfg.account, kToday) : 0;
   const partial = unfilled.length > 0 && partials + 1 < MAX_PARTIAL_PASSES;

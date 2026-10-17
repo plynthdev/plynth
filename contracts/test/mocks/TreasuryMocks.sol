@@ -17,6 +17,10 @@ contract MockPeriodClose {
     uint256 public claimBasisNav;
     uint256 public closeCount;
 
+    function claimBasisNow() external view returns (uint256) {
+        return claimBasisNav;
+    }
+
     function set(uint256 v) external {
         periodStartNav = v;
         claimBasisNav = v;

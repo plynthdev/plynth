@@ -108,7 +108,7 @@ function world(dep: Deployment, over: Record<string, unknown> = {}): Reader {
       case "capProposal": return [0n, 0n];
       case "adapterOf": return a("parkAdapter");
       case "markets": return markets.map(([, m]) => m);
-      case "depositsOpen": case "isMarket": return true;
+      case "depositsOpen": case "isMarket": case "isAdapterAllowed": return true;
       case "makerRegistrar": return dep.owner;
       case "pool": return a("perpPool");
       case "valuer": return a("valuer");
@@ -365,4 +365,18 @@ describe("exit code", () => {
     expect(exitCode(summarize([c("FAIL")]), false)).toBe(1);
     expect(summarize([c("ok"), c("WARN"), c("FAIL")])).toEqual({ ok: 1, warn: 1, fail: 1, total: 3 });
   });
+
+describe("adapter allow-list (v2)", () => {
+  test("a shipped sleeve missing from the treasury factory's allow-list is a FAIL", async () => {
+    const dep = v2File();
+    const checks = await verifyDeployment(dep, world(dep, { "treasuryFactory.isAdapterAllowed": false }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(checks, /isAdapterAllowed\(cashSleeve\)/).length).toBe(1);
+    expect(fails(checks, /isAdapterAllowed\(equitySleeve\)/).length).toBe(1);
+  });
+  test("the treasury factory's ownership is checked like every two-step role", async () => {
+    const dep = v2File();
+    const checks = await verifyDeployment(dep, world(dep, { "treasuryFactory.owner": dep.deployer }), codeAll, dep.chainId, { now: NOW, strict: true });
+    expect(fails(checks, /treasuryFactory hand-over/).length).toBe(1);
+  });
+});
 });

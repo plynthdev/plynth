@@ -7,6 +7,7 @@ import {StockTokenRegistry} from "../../src/core/StockTokenRegistry.sol";
 import {Valuer} from "../../src/core/Valuer.sol";
 import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 import {MockStockToken} from "../../src/testnet/MockStockToken.sol";
+import {TreasuryFactory} from "../../src/treasury/TreasuryFactory.sol";
 import {MockFeed} from "../../src/testnet/MockFeed.sol";
 import {TreasuryPolicy} from "../../src/treasury/TreasuryPolicy.sol";
 import {PolicyGuard} from "../../src/treasury/PolicyGuard.sol";
@@ -241,6 +242,12 @@ abstract contract TreasuryFixture is Test {
     }
 
     /// Warps and keeps every feed fresh (as if markets were open).
+    /// Puts the fixture's reviewed adapters on a factory's allow-list (the test owns the factory, first-time setup).
+    function _allowFixtureAdapters(TreasuryFactory f) internal {
+        f.setAdapterAllowed(address(cashSleeve).codehash, true);
+        f.setAdapterAllowed(address(eqSleeve).codehash, true);
+    }
+
     function _warp(uint256 t) internal {
         vm.warp(t);
         aaplFeed.setUpdatedAt(t);

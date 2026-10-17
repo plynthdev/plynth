@@ -64,6 +64,7 @@ contract RV2PrivateSleeveSweepTest is PrivateSleeveFixture {
     /// board's AAPL transferred in is refused, so the book cannot go below the notes still in the pool.
     function test_rv2_realProceedsDebitOnlyOnce() public {
         _shieldBook();
+        _proveBook(); // the sleeve's notes are proven: their withdraws debit the book
         uint256 book = sleeve.bookUsd();
         pool.withdraw(_hex(".withdraw.proofHex"), _withdrawPub());
         sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);

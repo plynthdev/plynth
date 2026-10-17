@@ -61,6 +61,7 @@ contract R3PrivateSleeveSplitSweepTest is PrivateSleeveFixture {
 
     function test_r3_splitProofSweepCannotZeroTheBook() public {
         _shieldBook();
+        _proveBook(); // proven sleeve notes: the 1-wei withdraws do debit (1 wei each)
         uint256 book = sleeve.bookUsd();
         _warp(block.timestamp + PERIOD + 4 days + 1);
         assertTrue(sleeve.bookStale(), "stale: shields refused until a fresh proof");
@@ -78,6 +79,7 @@ contract R3PrivateSleeveSplitSweepTest is PrivateSleeveFixture {
 
     function test_r3_splitProofSweepCannotResetStaleness() public {
         _shieldBook();
+        _proveBook(); // proven sleeve notes: the 1-wei withdraws do debit (1 wei each)
         _warp(block.timestamp + PERIOD + 4 days + 1);
         _allRounds();
         aapl.mint(address(account), 10e18);
@@ -89,6 +91,7 @@ contract R3PrivateSleeveSplitSweepTest is PrivateSleeveFixture {
     /// The honest full withdraw still debits the whole note.
     function test_r3_fullWithdrawStillDebitsTheNote() public {
         _shieldBook();
+        _proveBook(); // the sleeve's notes are proven: their withdraws debit the book
         uint256 book = sleeve.bookUsd();
         pool.withdraw(F.PROOF0B, _pub(F.NF0, address(aapl), F.AMT0B, 0));
         sleeve.sweep(bytes32(F.NF0), address(aapl), F.AMT0B);
