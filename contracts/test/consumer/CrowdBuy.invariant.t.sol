@@ -146,6 +146,8 @@ contract CrowdBuyInvariantTest is CrowdBuyBase {
     /// R9: Stock Token balance >= unclaimed allocations + dust; USDG balance == sum of open orders.
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 300
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_R9_balancesCoverObligations() public view {
         uint256 openUsdg;
         for (uint256 k; k < assetList.length; ++k) {
@@ -178,6 +180,8 @@ contract CrowdBuyInvariantTest is CrowdBuyBase {
     /// R3 across every fully settled book: sum of allocations + that book's dust == rawOut.
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 300
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_R3_dustIsExactForSettledBooks() public view {
         for (uint256 k; k < assetList.length; ++k) {
             address asset = assetList[k];

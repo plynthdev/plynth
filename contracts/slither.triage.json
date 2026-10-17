@@ -1,0 +1,641 @@
+{
+ "_doc": "Reviewed Slither Medium/High findings, one per detector and function. script/slither-gate.py fails CI on anything not listed here. Add an entry only with a reason a reviewer can check.",
+ "accepted": [
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "BasisSleeve._addMargin",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "BasisSleeve._openPair",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "InHousePerpVenue.depositMargin",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "MirroredPerpVenue.depositMargin",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "PerpPool.lockCollateral",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "PerpSleeve.run",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "arbitrary-send-erc20",
+   "where": "PrivateSleeve.run",
+   "impact": "High",
+   "reason": "The `from` is not caller-chosen: sleeves pull only from their own account after `msg.sender == account`, venues are onlySleeve, and PerpPool.lockCollateral is onlyMarket (owner-listed markets; see SECURITY.md)."
+  },
+  {
+   "check": "divide-before-multiply",
+   "where": "PeriodClose.feeFor",
+   "impact": "Medium",
+   "reason": "Scaling a 1e18 USD amount to a token with more than 18 decimals; the division happens at 1e18 precision, so the loss is below one 1e-18 USD unit."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "CrowdBuy.execute",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool._absorbLoss",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool._process",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool._returnIdle",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool.deposit",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool.pendingValueOf",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ExceptionInsurancePool.requestWithdraw",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "FeeRouter.buyMinOut",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "FeeRouter.onCloseFee",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "MorphoBluePark.expectedSupply",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PeriodClose._positionsView",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._accrue",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._decrease",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._indicesNow",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.equityOf",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.exitValueOf",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.fundingRate",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.isLiquidatable",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.staleWithOpenInterest",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PlinthStaking._roll",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PlinthStaking._rolledView",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PolicyGuard._assetRules",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PolicyGuard._bandsOk",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PolicyGuard._overlayRules",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PolicyGuard._record",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PolicyGuard._weight",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PrivateSleeve._valueOrZero",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ShieldedPool.applyCap",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ShieldedTrade._trade",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ShieldedTrade.applyAdapter",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "ThresholdVerifier.checkSavings",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "TreasuryPolicy.activate",
+   "impact": "Medium",
+   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "reentrancy-balance",
+   "where": "CashSleeve.run",
+   "impact": "High",
+   "reason": "Output is measured by balance change around a call to a contract fixed at construction or behind a timelock (StockRouter, allow-listed ERC-4626 vault, park adapter); those contracts are trusted and the caller (account execute / ShieldedTrade entry points) is reentrancy-guarded."
+  },
+  {
+   "check": "reentrancy-balance",
+   "where": "EquitySleeve.run",
+   "impact": "High",
+   "reason": "Output is measured by balance change around a call to a contract fixed at construction or behind a timelock (StockRouter, allow-listed ERC-4626 vault, park adapter); those contracts are trusted and the caller (account execute / ShieldedTrade entry points) is reentrancy-guarded."
+  },
+  {
+   "check": "reentrancy-balance",
+   "where": "ShieldedTrade._execute",
+   "impact": "High",
+   "reason": "Output is measured by balance change around a call to a contract fixed at construction or behind a timelock (StockRouter, allow-listed ERC-4626 vault, park adapter); those contracts are trusted and the caller (account execute / ShieldedTrade entry points) is reentrancy-guarded."
+  },
+  {
+   "check": "reentrancy-no-eth",
+   "where": "BasisSleeve._openPair",
+   "impact": "Medium",
+   "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
+  },
+  {
+   "check": "reentrancy-no-eth",
+   "where": "CrowdBuy.execute",
+   "impact": "Medium",
+   "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
+  },
+  {
+   "check": "reentrancy-no-eth",
+   "where": "FeeRouter.push",
+   "impact": "Medium",
+   "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
+  },
+  {
+   "check": "reentrancy-no-eth",
+   "where": "PerpPool.settle",
+   "impact": "Medium",
+   "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "CashSleeve.run",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "CrowdBuy.join",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "EquitySleeve.run",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "FeeRouter.push",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "InHousePerpVenue.positionOf",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "MorphoBluePark.expectedSupply",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PeriodClose._checkPrivate",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PeriodClose._positionsView",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PerpMarket._decrease",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PerpMarket.exitValueOf",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PolicyGuard._snapshotPrivate",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PolicyGuard._snapshotVenues",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PolicyGuard.check",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PolicyGuard.packProofs",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PrivateSleeve.checkClose",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PrivateSleeve.pricesCommitment",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "SavingsVault.setMix",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedPool._verify",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedPool.tradeInsert",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedPool.transfer",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedTrade._verify",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "TemplateRegistry.listedIds",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ThresholdVerifier._verify",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "TreasuryAccount.trackedAssets",
+   "impact": "Medium",
+   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "unused-return",
+   "where": "BasisSleeve._policy",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "BasisSleeve.venueNotional",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "CashSleeve.valueOf",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "CrowdBuy._deliverHidden",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "CrowdBuy.execute",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "EquitySleeve.run",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "EquitySleeve.valueOf",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "ExceptionInsurancePool.attest",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "FeeRouter.unlockCallback",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "MirroredPerpVenue.equityOf",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "MirroredPerpVenue.positionOf",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "MorphoBluePark.constructor",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "MorphoBluePark.park",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "MorphoBluePark.unpark",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._bandUsd",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._checkPolicy",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._checkPrivate",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._checkTier",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._positionsView",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.commit",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.commitWithPrivateSleeve",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.nextPeriodEnd",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.preview",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PolicyGuard.check",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PositionMirror.post",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PrivateSleeve.setKeys",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "Receipts.controllerOf",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "ShieldedTrade._execute",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "StealthClaims.claim",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "StockRouter.unlockCallback",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "ThresholdVerifier.verifyHoldings",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "ThresholdVerifier.verifySavings",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "TreasuryAccount.looseCash",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "Valuer.quote",
+   "impact": "Medium",
+   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "weak-prng",
+   "where": "PolicyGuard._record",
+   "impact": "High",
+   "reason": "Not randomness: `hour % DAY_BUCKETS` indexes a fixed ring buffer of hourly buckets."
+  }
+ ]
+}

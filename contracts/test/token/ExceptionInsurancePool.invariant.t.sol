@@ -251,7 +251,10 @@ contract InsuranceHandler is Test {
 
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 200
+/// forge-config: ci.invariant.runs = 256
+/// forge-config: ci.invariant.depth = 500
 /// forge-config: default.invariant.fail-on-revert = true
+/// forge-config: ci.invariant.fail-on-revert = true
 contract ExceptionInsurancePoolInvariantTest is TreasuryFixture {
     ExceptionInsurancePool pool;
     InsuranceHandler handler;

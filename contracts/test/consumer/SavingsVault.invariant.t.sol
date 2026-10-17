@@ -109,8 +109,11 @@ contract VaultHandler is Test {
 }
 
 /// forge-config: default.invariant.fail-on-revert = true
+/// forge-config: ci.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 64
+/// forge-config: ci.invariant.runs = 256
+/// forge-config: ci.invariant.depth = 500
 contract SavingsVaultInvariantTest is SavingsVaultBase {
     VaultHandler internal handler;
 

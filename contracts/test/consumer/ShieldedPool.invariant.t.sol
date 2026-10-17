@@ -168,6 +168,19 @@ contract ShieldedPoolHandler is Test {
     }
 }
 
+/// SCOPE: this suite runs the pool with a MOCK verifier (`SwitchVerifier`, which accepts every proof), so it
+/// checks the pool's ACCOUNTING under random honest traffic, not proof soundness:
+///   - the pool's balance covers every unspent note (plus pending deposits), per asset, and `shielded` is exact;
+///   - no nullifier is ever spent twice.
+/// It cannot catch a verifier that accepts a forged proof or a circuit that under-constrains a value. That is
+/// covered by the tests that use the real generated UltraHonk verifiers with real proof fixtures:
+///   - test/consumer/ShieldedPoolProofs.t.sol (ShieldedPoolProofsTest): the pool with the real Transfer and
+///     Withdraw verifiers end to end on SDK-made proofs, replay, swapped outputs, recipient/fee/amount binding,
+///     unknown roots, relayer tampering with encrypted notes;
+///   - test/consumer/verifiers/HiddenVerifiers.t.sol (TransferVerifierTest, WithdrawVerifierTest,
+///     SwapVerifierTest, SettleVerifierTest): each verifier accepts its client proof and rejects every flipped
+///     public input, a tampered proof, a wrong input count, and relayer changes to recipient, fee or terms;
+///   - test/consumer/ThresholdVerifier.t.sol (ThresholdVerifierTest): the threshold holdings/savings verifiers.
 contract ShieldedPoolInvariantTest is Test {
     ShieldedPool pool;
     ShieldedPoolHandler h;
@@ -203,6 +216,8 @@ contract ShieldedPoolInvariantTest is Test {
 
     /// forge-config: default.invariant.runs = 128
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     /// Σ pool balances >= Σ unspent note values (+ pending deposits), per asset; accounting is exact.
     function invariant_poolCoversUnspentNotes() public view {
         assertGe(usdg.balanceOf(address(pool)), h.shadow(address(usdg)));
@@ -213,6 +228,8 @@ contract ShieldedPoolInvariantTest is Test {
 
     /// forge-config: default.invariant.runs = 128
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_noNullifierSpentTwice() public view {
         assertEq(h.doubleSpendAccepted(), 0);
     }

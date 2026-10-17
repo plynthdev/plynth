@@ -75,3 +75,10 @@ sdk/.test-dist-*/
 !app/src/**/plan.ts
 !app/src/**/plan.test.ts
 .claude/
+
+# Scoped analysis builds (contracts/script/slither.sh).
+contracts/out-*/
+contracts/cache-*/
+
+# Mutation-testing output (contracts/script/mutation.sh).
+contracts/mutation/out/

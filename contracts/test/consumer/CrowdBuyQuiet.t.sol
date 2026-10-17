@@ -84,6 +84,21 @@ contract CrowdBuyQuietTest is CrowdBuyBase {
         crowd.deliver(address(tokA), 0, users[2], QUIET);
     }
 
+    /// A Hidden-mode user is not Quiet either (mutation testing: `mode != QUIET` must not become `mode < QUIET`).
+    function test_deliverQuietRefusesHiddenModeUser() public {
+        address[] memory users = _executed();
+        address u = users[2];
+        SavingsVault.Settings memory s = vault.settingsOf(u);
+        s.mode = 2;
+        vm.startPrank(u);
+        vault.setSettings(s);
+        reg.registerKeys(1, META);
+        vm.stopPrank();
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.NotQuiet.selector, u));
+        crowd.deliver(address(tokA), 0, u, QUIET);
+    }
+
     function test_deliverRequiresRegisteredMetaAddress() public {
         address[] memory users = _executed();
         address u = users[2];

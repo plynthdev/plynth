@@ -1,0 +1,41 @@
+# gitleaks configuration (CI: `gitleaks git --config .github/gitleaks.toml`, full history).
+# The default rules stay on. Every allowlist below is a value that is public by design; anything else fails CI.
+title = "plynth"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Lines carrying the repo's own markers (public-guard): well-known dev keys and 32-byte hashes"
+regexTarget = "line"
+regexes = ['''//\s*(test-key|not-a-key)\b''']
+
+[[allowlists]]
+description = "Public EVM addresses (contract and token addresses in deployment files, tests and scripts)"
+regexTarget = "secret"
+regexes = ['''^0x[0-9a-fA-F]{40}$''']
+
+[[allowlists]]
+description = "Anvil / Hardhat default dev accounts 0-9 (published with Foundry), matched by prefix"
+regexTarget = "secret"
+regexes = ['''^0x(ac0974be|59c6995e|5de4111a|7c852118|47e179ec|8b3a350c|92db14e4|4bbbf85c|dbda1821|2a871d07)[0-9a-f]{56}$''']
+
+[[allowlists]]
+description = "ERC-5564 reference test vector (ephemeral key from the EIP's test cases)"
+regexTarget = "secret"
+regexes = ['''^0xd952fe07[0-9a-f]{56}$''']
+
+[[allowlists]]
+description = "Fixed HMAC secrets used only by local tests"
+regexTarget = "secret"
+regexes = ['''^(mcp-test-secret|mcp-e2e-secret|whsec-test)-[0-9a-f-]+$''']
+
+[[allowlists]]
+description = "Coinbase Wallet's public WalletConnect explorer id (wallet picker, since removed)"
+regexTarget = "secret"
+regexes = ['''^fd20dc426fb37566d803205b19bbc1d4[0-9a-f]{32}$''']
+
+[[allowlists]]
+description = "A non-secret env example line the generic rule misreads"
+regexTarget = "secret"
+regexes = ['''^RISK_INTERVAL_SEC=\d+$''']

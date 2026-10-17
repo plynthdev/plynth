@@ -196,18 +196,24 @@ contract TreasuryInvariantTest is TreasuryFixture {
 
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_bandsHoldOrImproveAfterEverySuccess() public view {
         assertFalse(handler.bandViolated());
     }
 
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_dayCapNeverExceeded() public view {
         assertFalse(handler.dayCapViolated());
     }
 
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_boardCanAlwaysWithdraw() public {
         uint256 bal = usdg.balanceOf(address(account));
         uint256 s = vm.snapshotState();

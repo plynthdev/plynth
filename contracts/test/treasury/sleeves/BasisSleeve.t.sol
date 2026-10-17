@@ -336,12 +336,14 @@ contract BasisSleeveTest is TreasuryFixture {
         uint256 bal0 = usdg.balanceOf(address(account));
         _closePair(0);
         BasisSleeve.Pair memory p = basis.pair(0);
-        uint256 cashBack = usdg.balanceOf(address(account)) - bal0;
-        (uint256 exitUsd,) = valuer.value(address(aapl), p.perpTokens);
-        PerpMarket.Position memory none = market.position(address(venue));
-        assertEq(none.size, 0);
-        int256 pricePnl = int256(size * 1e12) - int256(exitUsd);
-        assertEq(p.cumulativeFundingUsd, int256(cashBack * 1e12) - int256(p.collateral * 1e12) - pricePnl);
+        assertEq(market.position(address(venue)).size, 0);
+        // Scoped so the test also compiles without the optimizer (forge coverage).
+        {
+            uint256 cashBack = usdg.balanceOf(address(account)) - bal0;
+            (uint256 exitUsd,) = valuer.value(address(aapl), p.perpTokens);
+            int256 pricePnl = int256(size * 1e12) - int256(exitUsd);
+            assertEq(p.cumulativeFundingUsd, int256(cashBack * 1e12) - int256(p.collateral * 1e12) - pricePnl);
+        }
         // Closing costs the 10 bps fee (rounding aside) relative to the open mark.
         // (the fee is on the exit notional, so it moves with the price: +-35% of the entry fee)
         assertApproxEqAbs(p.cumulativeFundingUsd, carryOpen - int256(size * 1e12 / 1000), size * 1e12 * 35 / 100_000 + 2e12);

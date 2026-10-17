@@ -21,3 +21,37 @@ rhc_testnet = "${RHC_TESTNET_RPC_URL}"
 
 [fuzz]
 runs = 1024
+
+# CI profile. Invariant suites run at >= 100,000 calls (runs x depth) under
+# FOUNDRY_PROFILE=ci, which CI uses. Every invariant also carries inline
+# `ci.invariant.*` lines so a per-test override never drops it below that floor;
+# the inline `default.invariant.*` lines keep local runs fast.
+[profile.ci]
+# Inherits every [profile.default] key.
+
+[profile.ci.fuzz]
+runs = 1024
+
+[profile.ci.invariant]
+runs = 256
+depth = 500
+
+# Used only by script/mutation.sh. Every mutant recompiles the mutated contract and
+# reruns its tests, so the optimizer is off and fuzz/invariant budgets are small.
+# dynamic_test_linking is off: with it on, `vm.expectRevert(); new X(...)` ends the test at that revert
+# (deployCode is a cheatcode call), so every later line in that test silently never runs.
+[profile.mutation]
+optimizer = false
+dynamic_test_linking = false
+out = "mutation/out/forge-out"
+cache_path = "mutation/out/forge-cache"
+
+[profile.mutation.lint]
+lint_on_build = false
+
+[profile.mutation.fuzz]
+runs = 64
+
+[profile.mutation.invariant]
+runs = 16
+depth = 50

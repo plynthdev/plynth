@@ -176,6 +176,8 @@ contract PerpInvariantTest is Test {
     /// Pool solvency: LP cash covers every trader's maximum (capped) profit at any price.
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 80
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_poolCoversMaxTraderProfit() public view {
         (uint256 maxProfit,) = handler.maxTraderProfit();
         assertGe(pool.liquidAssets(), maxProfit);
@@ -184,6 +186,8 @@ contract PerpInvariantTest is Test {
 
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 80
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_bookkeepingMatches() public view {
         (uint256 maxProfit, uint256 coll) = handler.maxTraderProfit();
         uint256 reserved;

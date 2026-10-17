@@ -2,7 +2,7 @@
 
 Smart contracts, backend services and the web app for Plynth: savings that buy stock tokens, and policy-enforced treasuries, on Robinhood Chain (chain ID `4663`; testnet `46630`).
 
-Consumer: savers top up USDG and add round-ups of their spending; the savings are pooled into Stock Token buys (Crowd Buy) and delivered openly, quietly to a stealth address (Quiet) or as shielded notes (Hidden Vault). Treasury: a board writes an investment policy, desk bots trade only inside it (every operation is checked against the policy on-chain and reverted on a breach), and each period ends with a NAV statement the chain recomputes from the holdings. No contract here has had an external audit.
+Consumer: savers top up USDG and add round-ups of their spending; the savings are pooled into Stock Token buys (Crowd Buy) and delivered openly, quietly to a stealth address (Quiet) or as shielded notes (Hidden Vault). Treasury: a board writes an investment policy, desk bots trade only inside it (every operation is checked against the policy on-chain and reverted on a breach), and each period ends with a NAV statement the chain recomputes from the holdings. No contract here has had a human audit; an external AI audit and its fixes are in [security/AUDITS.md](security/AUDITS.md). Security contact, roles and accepted risks: [SECURITY.md](SECURITY.md).
 
 ## Layout
 
@@ -12,6 +12,8 @@ circuits/    Noir circuits for the Hidden Vault and the private treasury sleeve 
 app/         Bun services: API, indexer, keeper, relayer, eligibility, MCP, treasury services, migrations
 sdk/         @plynth/sdk: stealth delivery, crowd buys, shielded vault, statements, relayer client
 web/         The site and dashboard (TanStack Start), deployed on Vercel; see Frontend (`web/`)
+security/    Threat model, invariants, incident runbook, audit history (see also SECURITY.md)
+.github/     CI workflow and its checks (pins, README vs deployments, Slither gate, Semgrep, gitleaks)
 ```
 
 ### Contracts (`contracts/src`)
@@ -75,20 +77,84 @@ No contract is upgradeable. OpenZeppelin v5.7.0 and forge-std v1.17.0 are vendor
 
 ### Deployment
 
-Not deployed to mainnet. Deployed to Robinhood Chain testnet (`46630`) with mock assets (mock USDG, three mock Stock Tokens priced from the real mainnet feeds, a mock ERC-4626 USDG vault) and the chain's real Uniswap v4 PoolManager, Permit2 and ERC-5564/6538 contracts. Every testnet address is in [`app/deployments/46630.json`](app/deployments/46630.json) (and `46630-treasury.json`); explorer: <https://explorer.testnet.chain.robinhood.com>.
+<!-- deployments:start -->
+
+**Mainnet (`4663`): closed beta, deployed at block 88,470,046** without the token contracts (PLTH, staking, FeeRouter, insurance pool), against the real USDG, Stock Tokens, Chainlink feeds and Uniswap v4 pools. Every address is in [`app/deployments/4663.json`](app/deployments/4663.json) (and `4663-treasury.json`); explorer: <https://robinhoodchain.blockscout.com>. Roles, timelocks and accepted risks are in [SECURITY.md](SECURITY.md); `bun run verify:deployment` (in `app/`) checks them on chain. This is the version the external AI audit reviewed (security/AUDITS.md); a v2 with its fixes is in progress and not deployed. When it is, the deploy rewrites `app/deployments/4663.json` and this section is regenerated from it (`python3 .github/scripts/readme-deployments.py`).
+
+| Contract | Address |
+| --- | --- |
+| `StockTokenRegistry` | `0x9BdfFB31192668b985886F00e486c055AD2903F2` |
+| `Valuer` | `0xcEe421431d22eF6386212A0ffe2D107F4116fC14` |
+| `StockRouter` | `0xD2C9A524F316AE9Db2b73a2cE964F28f415c7942` |
+| `JitterBeacon` | `0x163767bd3ae1462b1f1234e907EeB4D161b60574` |
+| `EligibilityRegistry` | `0x55AF3c30F4efe02Fa94785152b12C35456a2b3A8` |
+| `SavingsVault` | `0xfa1a413e3FE1CC9413B4a5d2D7Bd4a91543C6109` |
+| `CrowdBuy` | `0xd2CD17E79c079f637F6BF2eC1Ad2b887BF8803d0` |
+| `StealthClaims` | `0xEA97eE993DD4C82758e08f15DEAfC9581BD68D7a` |
+| `ShieldedPool` | `0x86F1AE76F7f12b5bE8d6604B1Fc9fdF386e07eB5` |
+| `ShieldedTrade` | `0x9C66134A68a59deccA1d208E8922996764F02B95` |
+| `ThresholdVerifier` | `0x3Ebf93f21D4F513A0fF50b565bA1Fb9aEf15483B` |
+| `ERC4626Park` | `0x999507F6Bf3aA80F5242a80704A1bd230edB8AA8` |
+| `TreasuryFactory` | `0x77394FA1c26a5e5fB640AbbeE269002E008C820d` |
+| `PolicyGuard` | `0x8A80B097A1046c5425AB726F0b1c35331e18Aa98` |
+| `TemplateRegistry` | `0x482f348503b8b58C513E3A1a2df8B7EbD96D58D7` |
+| `Receipts` | `0xA177b1E3F32E4dDBfd3c33eB80d521d01AC3Ca6D` |
+| `CashSleeve` | `0xDA7fC778DCAB2be015cd4197bd6696D70212e028` |
+| `EquitySleeve` | `0xA2BD384C07c0A4f9F50DfcA4Ff8FC852fa6Fc0E8` |
+| `PerpPool` | `0x5275Ef6D15AfaAaDFAB3a39bf02aa4927e3ba3Ce` |
+| USDG (external) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
+| `PerpMarket` AAPL | `0xc672C2A4F93aA917A1135f3aaeE7B58b469B5a0A` |
+| `PerpMarket` NVDA | `0x0E89aCF68Bdd413E88E341c3A9B3759916475891` |
+| `PerpMarket` SPY | `0xD2f0Fb1753aE133deF8150902C210A042F1F769A` |
+| `PerpMarket` TSLA | `0x57952521fE0113245c60BBA618992e73Ec13d612` |
+
+| Role | Address |
+| --- | --- |
+| Owner (every admin role; two-step contracts after `acceptOwnership`) | `0x633601fbBd708EA6B69ba3237c6BfC1502ae602f` |
+| Keeper bot | `0xe022a3C569785D3a7705d0420FfC0F6b211398B1` |
+| Eligibility attester | `0x1C712D7203823ABcc97d356A1fDEf3f4EBBb3E59` |
+| Relayer (no on-chain role) | `0x6862ed283418E31DfE7fbA3DFA1F223C1210b91D` |
+| Treasury controller (first treasury's policy) | `0xfbA72736D89a9aE137247146E65b3AAE00Dc8B78` |
+| Cash desk key | `0xC008c8fAb7563Fd21Fc107450a262b1a7D1F7f98` |
+| Equity desk key | `0x7F7bBFD83747716573ac4513BD10c6279B3ca80E` |
+| Deployer (keeps no role after the hand-over) | `0x30C7BA93709807eC21b6aFfc4d73659F58238Caa` |
+
+**Testnet (`46630`)** with mock assets (mock USDG, mock Stock Tokens priced from the real mainnet feeds, a mock ERC-4626 USDG vault) and the chain's real Uniswap v4 PoolManager, Permit2 and ERC-5564/6538 contracts. Every address is in [`app/deployments/46630.json`](app/deployments/46630.json) (and `46630-treasury.json`); explorer: <https://explorer.testnet.chain.robinhood.com>.
+
+| Contract | Address |
+| --- | --- |
+| `StockTokenRegistry` | `0x6abaEf343F32Cc58FaD49DB228aAe4E8B4cF3075` |
+| `Valuer` | `0xc03468fDb5616f60cD078Bc1EbCDFbb52E5bf393` |
+| `StockRouter` | `0xF3a91839BFC9711e30C3e44FB0fe3442812B14Be` |
+| `JitterBeacon` | `0x95c4cBba97742Eb27AF701a5A561ed2e0F375069` |
+| `EligibilityRegistry` | `0x43badfe08150546009AecB820da8C3CFBD80Ed45` |
+| `SavingsVault` | `0x5A0FcCDfcBF6d01004F3d5f9147674d5D2582C86` |
+| `CrowdBuy` | `0x6f13394F8199BEd29f009E139Ea887F68C3D4732` |
+| `StealthClaims` | `0x30FF88C9E275b2718FB833426F0bC9D7e52140D9` |
+| `ShieldedPool` | `0xDeFFFCe7c9B31c325E698aC8719F93fBc1650134` |
+| `ShieldedTrade` | `0x9dADEe70b6d0c89E627f067145f4c3a11e4DaeCA` |
+| `ThresholdVerifier` | `0x53f65831ae66CB9a3E92d7e3FF230054dB3b2D72` |
+| `ERC4626Park` | `0x8937AA3ffBa7EFd3f6C83A9F5263c373FF15De0f` |
+| `TreasuryFactory` | `0x1701D1C655c28611FE46FbEe8b49969821CAe2D8` |
+| `PolicyGuard` | `0xdB6E5DA49496F657E79A40EF42Bf06E860A0282f` |
+| `TemplateRegistry` | `0x8f07696DDd242cFBc8B38461Ce13647a20129eac` |
+| `Receipts` | `0xC60324a06019DE7997e1CA049AFf748A9F7fbC16` |
+| `CashSleeve` | `0xB9177afaEA62f1745e4fAe7dec4b19aC5c369fFF` |
+| `EquitySleeve` | `0xCb5f8b3FB5196983E63E8Ac6A30f566c7EceCD32` |
+| `PerpPool` | `0xeaeDA79506bd98438769B9a20D3fa6cc7116BdF9` |
+| `PLTH` | `0xD328EBF88d81bE5B8688b2Fd638568C218750073` |
+| `PlinthStaking` | `0x763a900e806697d8F75B067B65A4f40100Ed36D6` |
+| `FeeRouter` | `0xAb293D9C2B3fe481EF3C11A06037d6CCE412DeE0` |
+| `ExceptionInsurancePool` | `0x7C8ACF5bfB83DA13E89D7c26486C0F1c63C97508` |
+| `MockUSDG` (mUSDG, 6 dp) | `0x41b7b067F29E4b6EedfA995f06eF661511b53294` |
+| `PerpMarket` mAAPL | `0xbb501195Af8feEd0Ffae039765A10E64005Cf728` |
+| `PerpMarket` mSPY | `0xd3bD73d446597dbe9FF7D08dEaEd2a1BA53bbd17` |
+| `PerpMarket` mTSLA | `0x3F981299D1A66c488E137D672F1Af6711aBD3d14` |
+
+<!-- deployments:end -->
 
 Timers are deploy-time values with a hard minimum in each contract (10 minutes; the CrowdBuy window at least 1 hour and longer than the beacon GRACE). Mainnet and fork scripts keep the full values (crowd window 1 day, beacon GRACE 1 hour, Hidden Vault cap and park-adapter delays and the treasury policy timelock 48 hours, unbonding 7 days, insurance withdrawals 14 days, LP redeem cooldown 24 hours); `TestnetStack.s.sol` uses a 2 hour window, a 15 minute GRACE and 15 minutes for the rest. Services read them from the contracts.
 
-| Testnet contract | Address |
-| --- | --- |
-| `SavingsVault` | `0x8a66d61f70aEE77854F5b4595e015cdC72fbda76` |
-| `CrowdBuy` | `0x685a849E8808F97fB30584DC80c48BA12eEa3c08` |
-| `StealthClaims` | `0x84e12a37567D561dffb16cBEe6B8ce55f9Ae8b94` |
-| `ShieldedPool` | `0x84cB78EB01D69082d93660f0341609a9553193Ff` |
-| `TreasuryFactory` | `0x8169dda5181b9B5f5662Df1be7eEDA7114A76D03` |
-| `PerpPool` | `0x4A43f6c890e9c253aD04d35302FC1cB251977d1b` |
-| `PlinthStaking` | `0x1f6924f6c69AADD5D4E1d356c9bD52CF55CF9f2b` |
-| `MockUSDG` (mUSDG, 6 dp) | `0x4B27310C5C93eA469802e045735E0A02Df5DE3B8` |
 
 The deploy scripts in `contracts/script` write every address to `app/deployments/<chainId>.json`; see [Deployment file](#deployment-file).
 
@@ -146,7 +212,7 @@ TESTNET_KEEPER=<keeper> TESTNET_ATTESTER=<attester> TESTNET_COMMITTEE=<committee
 
 ```sh
 cd app
-bun install          # also installs ../sdk
+bun install --frozen-lockfile   # also installs ../sdk (frozen)
 bun run db:create
 bun run migrate
 bun run indexer
@@ -309,7 +375,7 @@ Never commit `.env` files or keys; they are ignored by `.gitignore`. Prefer Foun
 
 ### Deployment file
 
-The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored (local and fork runs write the same chain ids) except the testnet files `46630.json` and `46630-treasury.json`, written by `TestnetStack.s.sol` and `app/scripts/testnet/setup.ts`.
+The services read contract addresses from `app/deployments/<chainId>.json`, written by `contracts/script/TestnetKit.s.sol` and `TestnetConsumer.s.sol` (every core and consumer address, the stock tokens, the v4 pool ids, `deployBlock`, and `mockFeeds: true` when the feeds are the kit's MockFeeds; `TESTNET_KIT_FILE` writes the kit under another name in the same folder). `TestnetPerpKit.s.sol` and `TestnetTokenKit.s.sol` add `<chainId>-perps.json` and `<chainId>-token.json` next to it, and `TreasuryFactory.s.sol` adds `<chainId>-treasury.json`, which the API and the MCP server merge in. Each service takes its own directory (`*_DEPLOYMENTS_DIR`); the schemas are in `app/src/chain/deployment.ts`, `app/src/keeper/context.ts` and `app/src/indexer/handlers/streams.ts`. The folder is gitignored (local and fork runs write the same chain ids) except the public deployments: testnet `46630.json` and `46630-treasury.json` (written by `TestnetStack.s.sol` and `app/scripts/testnet/setup.ts`) and mainnet `4663.json` and `4663-treasury.json` (written by `MainnetBeta.s.sol` and `app/scripts/mainnet/up.sh`). The README's deployment section is generated from them (`python3 .github/scripts/readme-deployments.py`; CI fails if it drifts).
 
 ## Frontend (`web/`)
 
@@ -354,7 +420,7 @@ The site and the dashboard. The dashboard reads the API, runs every transaction 
 | Ignored Build Step | `web/vercel.json` `ignoreCommand`: no deploy when nothing under `web/`, `sdk/`, `app/deployments/` or `app/src/chain/` changed |
 | Production environment | `VITE_CHAIN_ID=4663`, `VITE_RPC_URL=https://rpc.mainnet.chain.robinhood.com`, `VITE_API_URL`, `VITE_RELAYER_URL`, `VITE_DEV_WALLET=0`, `NITRO_PRESET=vercel` |
 
-`app/deployments/4663*.json` is gitignored, so a Vercel build shows "not deployed yet" until the mainnet file is committed (as `46630.json` is) or the build is given `FORK_DEPLOYMENT_JSON`.
+`app/deployments/4663.json` is committed, so a production build inlines the mainnet deployment; without a deployment file for the chain the build shows "not deployed yet" (or is given `FORK_DEPLOYMENT_JSON`).
 
 ## API
 
@@ -397,11 +463,18 @@ bun run smoke [API_URL]       # hits every route and checks the response shape (
 bun run e2e consumer          # testnet fork: deploy, every service, three savers through Open, Quiet and Hidden
 bun run e2e treasury          # mainnet fork: factory treasury, desks over a simulated week, period close, CFO pack
 
-cd ../sdk && bun install && bun run build && bun test
-cd ../circuits && bun install --no-save && bun test && for c in */Nargo.toml; do (cd "${c%/*}" && nargo test); done
-cd ../web && bun install && bun run test && bun run build   # after the sdk build above
+cd ../sdk && bun install --frozen-lockfile && bun run build && bun test
+cd ../circuits && bun install --frozen-lockfile && bun test && for c in */Nargo.toml; do (cd "${c%/*}" && nargo test); done
+cd ../web && bun install --frozen-lockfile && bun run test && bun run build   # after the sdk build above
 cd .. && .githooks/public-guard.sh   # also the pre-commit hook (`bun install` in app/ sets core.hooksPath)
+
+cd contracts && FOUNDRY_PROFILE=ci forge test   # what CI runs: every invariant at 128,000 calls
+bash script/slither.sh                          # scoped Slither; fails on an untriaged Medium/High
+cd .. && bash .github/scripts/semgrep.sh && python3 .github/scripts/check-hygiene.py
+cd app && bun run verify:deployment && bun run verify:explorer   # live mainnet state and bytecode vs this repo
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request, plus coverage and gitleaks.
 
 The end-to-end runs use local anvil forks only (nothing is broadcast) and a throwaway `plynth_e2e_*` database.
 
