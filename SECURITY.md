@@ -30,7 +30,8 @@ No contract is upgradeable: a fix ships as a redeploy. The live bytecode is prov
 that recorded the deployment (`cd app && bun run verify:explorer`: 45 of 45 runtime codes match, immutables and
 library addresses masked), and the live configuration is asserted by `bun run verify:deployment`. Both run daily in
 CI. An external AI audit graded the deployed version 3.7/10 with nine Medium findings; they are listed under
-[Known issues](#known-issues-in-the-deployed-version) and fixed in the next version. No human audit has been done.
+[Known issues](#known-issues-in-the-deployed-version); their fixes are merged in v2 in this tree, which is not deployed
+yet. No human audit has been done.
 
 ## Roles and holders (mainnet 4663)
 
@@ -52,121 +53,155 @@ broadcasting (`contracts/script/MainnetBeta.s.sol`, `checkConfig` and `checkHand
 
 ## What each role can do
 
-This section describes the v2 contracts: the audit fixes, written and in review, **not deployed and not final**. The
-perps and treasury parts are still being changed, so their rows may change before the deploy. The live beta ("v1",
-block 88,470,046) predates the delays below: there every owner setter is instant; see
-[Differences in the live v1 deployment](#differences-in-the-live-v1-deployment).
+This section describes the **v2 contracts** in this tree: the fixes for the external audit and for the internal v2
+review (see [audit history](security/AUDITS.md)) are merged here, but **v2 is not deployed**. The live mainnet beta
+is still v1 (block 88,470,046), where every owner setter is instant; see
+[Differences in the live v1 deployment](#differences-in-the-live-v1-deployment). Values marked "mainnet" are the
+ones `contracts/script/MainnetBeta.s.sol` deploys and asserts in `checkHandoff`.
 
 **Change delay.** Owner setters that could hurt users go through a public 48 h queue (`contracts/src/libs/ChangeDelay.sol`,
 `CHANGE_DELAY = 48 hours`): the first call with given arguments only queues it and emits `ChangeQueued(id, data, eta)`;
-the identical call after the eta applies it (`ChangeApplied`); `cancelChange(id)` drops it. Only the owner can apply.
-Perps use the same pattern with `PerpPool.TIMELOCK` (48 h), treasuries with the policy `TIMELOCK` (48 h). Setters that
-stay instant are listed with the reason: each only stops or reduces something, or is a one-time deploy wiring.
+the identical call after the eta applies it (`ChangeApplied`); the owner's `cancelChange(id)` drops it. A queued change
+can be applied for 14 days after its eta (`CHANGE_EXPIRY`); after that the same call queues it again with a fresh
+notice. The change id includes `changeNonce`, which every ownership change bumps, so a change queued by one owner (for
+example the deployer) can never be applied by the next one. Contracts using it: StockTokenRegistry, StockRouter,
+Valuer, JitterBeacon, EligibilityRegistry, SavingsVault, CrowdBuy, ShieldedPool (no `cancelChange` there, contract
+size) and FeeRouter.
+
+Perps use their own proposal timelock (`PerpPool.TIMELOCK`, 48 h on mainnet): `propose*` records an eta, the setter
+after the eta applies it once, and `cancel(id)` drops it. Those proposals do not expire and are not cleared by an
+ownership change. Treasuries use the policy `TIMELOCK` (48 h). Setters that stay instant are listed with the reason:
+each only stops or reduces something, is one-time deploy wiring, or acts before anybody can be affected.
 
 | Contract | Caller | Function | Effect | Delay (mainnet) |
 | --- | --- | --- | --- | --- |
-| StockTokenRegistry | OWNER | `list(token, feed, embedded)` | First listing of a token | Instant (deploy wiring) |
+| StockTokenRegistry | OWNER | `list(token, feed, embedded)` | First listing of a token | Instant: nobody holds a position priced by a token before it is listed; users opt in through their own mix, and a perp market on it still needs the pool timelock |
 | | OWNER | `list` on a listed or delisted token | Re-points a feed, changes the flag or re-lists | 48 h change delay |
-| | OWNER | `delist(token)` | Stops new buys, crowd execution and new perp opens; exits never need a listed token | Instant: only stops new risk |
-| StockRouter | OWNER | `setPool(token, key)` | First pool for a token / replacing a pool (the oracle minimum output bounds every trade) | First: instant; replace: 48 h |
-| Valuer | OWNER | `closeDays(days)` | Marks market holidays: prices hold (crowd execution, perp opens, LP entry and exit, period closes wait) | Instant: holds only |
-| | OWNER | `reopenDay(day)` | Reopens a closed day | Only for a day at least 48 h ahead (`HOLIDAY_NOTICE`) |
-| | OWNER | `enableMarketCalendar`, `setSequencerFeed` | Turns on the market-hours hold (one-way); sets the L2 sequencer feed (once) | Instant, one-way / once |
+| | OWNER | `delist(token)` | Stops new buys, crowd execution and new perp opens; records `delistedAt`; exits never need a listed token | Instant: only stops new risk |
+| StockRouter | OWNER | `setPool(token, key)` | First pool for a token / replacing a pool (the oracle minimum output bounds every trade) | First: instant (same reason as `list`); replace: 48 h |
+| Valuer | OWNER | `enableMarketCalendar` | Turns on the market-hours hold: Friday 20:00 to Monday 01:00 UTC, marked days, and every price once the table expires | Instant, one-way (deploy) |
+| | OWNER | `closeDays(days)` / `earlyCloseDays(days)` | Marks full-day closures / early closes (held from 17:00 UTC): crowd execution, perp opens, LP entry, period closes wait | Instant: holds only. Weekdays only, at most 16 marked days per UTC year |
+| | OWNER | `reopenDay(day)` | Un-marks a day | Only for a day that starts at least 48 h ahead (`HOLIDAY_NOTICE`) |
+| | OWNER | `setCalendarValidUntil(t)` | End of the holiday table; from then on every price holds (fails closed) | First value instant (deploy: 2029-10-01 00:00 UTC); later ones forward only, at most 4 years ahead, 48 h change delay |
+| | OWNER | `setSequencerFeed(feed)` | L2 sequencer-uptime feed (prices hold while it is down and for 1 h after a restart) | 48 h change delay; must answer like an uptime feed; replaceable, never removable. Unset on mainnet (no such feed exists on Robinhood Chain; accepted risk below) |
 | JitterBeacon | OWNER | `setKeeper(k)` | Rotates the keeper (zero refused) | 48 h change delay |
 | | KEEPER | `commit` | Commits a window's secret execution time | Before the window |
-| EligibilityRegistry | OWNER | `setAttester` | Rotates the attester; records already on chain stay | Instant: only gates new buys, never exits |
+| EligibilityRegistry | OWNER | `setAttester` | Rotates the attester (the compliance trust root); records already on chain stay | 48 h change delay |
 | | ATTESTER | `revoke(user)` | Stops a user's new buys | Instant |
 | SavingsVault | OWNER | `setKeeper(k)` | Rotates the keeper / `k = 0` stops round-ups and top-ups | Nonzero: 48 h; zero: instant (withdraw never needs the keeper) |
 | | OWNER | `setCrowd`, `setEligibility` | Wiring | Once (deploy) |
 | | KEEPER | `accrue`, `pullFixedTopUp` | Moves a saver's own balance to pending within the weekly cap (max 500 USDG); pulls the top-up the saver chose, at most once per 7 days | Instant |
 | CrowdBuy | OWNER | `setKeeper(k)` | Rotates the keeper / `k = 0` leaves books to the public fallback | Nonzero: 48 h; zero: instant |
 | | OWNER | `setStealthClaims`, `setShieldedPool` | Wiring | Once (deploy) |
-| | KEEPER | `execute` (from the beacon time), `joinBatch`, `deliver`, `deliverStealth` | Runs the pooled buy within the slippage band (100 bps); delivers allocations. `deliverStealth` trusts the keeper to compute the stealth address | Instant |
-| | anyone | `execute` fallback | From `windowEnd - GRACE`, at half the slippage band, only with a crowd complete before the fallback opened and a price round at most 15 min old | GRACE 1 h |
+| | KEEPER | `execute` (from the beacon time), `joinBatch`, `deliver`, `deliverStealth` | Runs the pooled buy within the slippage band (100 bps; at most 300); joins savers who can join and skips the rest; delivers allocations. Quiet delivery needs a valid ERC-5564 meta-address on record (`metaAddressValid`); `deliverStealth` trusts the keeper to compute the stealth address | Instant |
+| | anyone | `execute` fallback | A book the keeper missed (crowd formed, its window's fallback time passed with no execution) runs publicly at any later open-market time, at the pool fee + 10 bps (never more than half the keeper band), on a price round at most 15 min old and newer than the miss | From the window's end minus GRACE (1 h) |
 | ShieldedPool | OWNER | `setDepositsPaused` | Stops deposits and Hidden Vault buy, sell, park and Hidden delivery; never withdraw, transfer, refund or unpark | Instant: emergency stop of new money only |
-| | OWNER | `proposeCap(asset, cap)` | Lowering applies at once (and drops a pending raise); raising waits, then anyone calls `applyCap` | Raise: 48 h (`CAP_DELAY`) |
-| | OWNER | `setMinDeposit` | Minimum direct deposit (dust guard) | Instant |
+| | OWNER | `proposeCap(asset, cap)` | Lowering applies at once (and drops a pending raise); raising waits, then anyone calls `applyCap` | Raise: 48 h (cap delay) |
+| | OWNER | `setMinDeposit(asset, min)` | Minimum direct deposit (dust-note guard) | Raise: instant; lower (including to 0): 48 h change delay |
+| | OWNER | `setCrowd`, `setTrade` | Wiring | Once (deploy) |
+| | anyone | `insertPending` | Inserts queued deposits into the tree: each at least 1 h old, in batches of at least 4, or alone once the oldest is 2 h old; every published root stays valid | Permissionless |
 | ShieldedTrade | OWNER | `proposeAdapter` / `disablePark` | Adds a park adapter (anyone applies after the delay) / stops new parks; unpark always works | Add: 48 h; disable: instant |
-| PerpPool (in progress) | OWNER | `proposeMarket` then `addMarket` | Lists a market (a market can lock collateral and settle payouts against LP funds) | 48 h once LPs exist (instant only before the first LP share) |
+| PerpPool | OWNER | `proposeMarket` then `addMarket` | Lists a market (a market can lock collateral and settle payouts against LP funds) | 48 h once LP shares exist; instant only while the pool has none |
+| | OWNER | `openDeposits` | Opens LP deposits. Deposits stay closed until then, so nobody can mint a share that would put the deploy's market listings behind the timelock | One-way; the deploy calls it after listing every market |
 | | OWNER | `removeMarket` | Unlists a market with no open interest and no reserve | Instant: cannot move the share price |
-| | OWNER | `proposeMakerRegistrar` / `setMakerRegistrar(0)` | Sets / clears the maker-fee registrar (unset on mainnet) | Set: 48 h; clear: instant |
-| PerpMarket (in progress) | OWNER | `proposeParams` then `setParams` | Fees (taker <= 1%), off-hours spread 5-30%, borrow <= 1%/h, funding, OI cap, profit cap, liquidation fee | 48 h (`pool.TIMELOCK`) |
+| | OWNER | `proposeMakerRegistrar` / `setMakerRegistrar(0)` | Sets / clears the maker-fee registrar (unset on mainnet) | Set: 48 h once LP shares exist; clear: instant |
+| PerpMarket | OWNER | `proposeParams` then `setParams` | Taker fee (at most 1%), maker fee (at most the taker fee; 6 bps on mainnet), off-hours spread 5-30%, borrow (at most 1%/h), funding, OI cap (at most 50%; 20% on mainnet), profit cap, liquidation fee. The open spread plus twice the cheaper fee must stay above the feeds' 50 bps deviation threshold | 48 h (`pool.TIMELOCK`); instant only while the market has no open interest and the pool no LP shares |
 | | OWNER | `setParams` lowering only `oiCapBps` | Refuses new opens beyond the lower cap | Instant: reduces risk |
-| | OWNER | `proposeGuards` then `setGuards` / raising only the open spread or minimum collateral | Open spread 10-300 bps, minimum hold 5 min-1 d, minimum liquidation reward, minimum collateral | 48 h; raising those two: instant |
-| | anyone | `liquidate`, `settleHeld` | Liquidates with a minimum reward; settles a market held longer than 5 days | Permissionless |
-| TemplateRegistry | committee (OWNER) | `list`, `delist`, `setCommittee` | Curates policy templates (a board opts in to one) | Instant |
+| | OWNER | `proposeGuards` then `setGuards` | Open spread 10-300 bps (40 on mainnet), minimum hold 5 min-1 d (30 min), minimum liquidation reward (1 USDG), minimum collateral and size (100 USDG); same round-trip floor | 48 h; raising only the open spread and/or the minimum collateral: instant |
+| | OWNER | `retire()` | Winds the market down: opens and increases stop at once; after the pool timelock anyone may `settleRetired` each position at a fresh oracle price (normal fee and profit cap, no hold spread) | Instant stop, settlement after 48 h; one-way |
+| | anyone | `liquidate`, `settleHeld`, `settleRetired`, `poke` | Liquidates (minimum reward topped up by the pool at most up to the position's own collateral); settles a market held longer than 5 days (counted from the later of the last price and the delisting); settles a retired market; records the price | Permissionless |
+| TemplateRegistry | committee (OWNER) | `list`, `delist` | Curates policy templates (a board opts in to one) | Instant |
+| | committee | `setCommittee` then `acceptCommittee` | Hands the committee role over; the new committee must accept | Two-step |
 | TreasuryPolicy | board | `propose` / `cancel` | New policy version, tightening included (validated bounds) / cancel it | Activation: 48 h |
-| TreasuryAccount (in progress) | board | `registerDesk`, `revokeDesk`, `setPrivateSleeve`, `withdrawToBoard` | Desk keys and adapters; withdrawal is never gated | Instant (the board's own treasury) |
+| TreasuryAccount | board | `registerDesk`, `revokeDesk`, `setPrivateSleeve`, `withdrawToBoard` | Desk keys and adapters; withdrawal is never gated | Instant (the board's own treasury) |
 | | board | `setPeriodClose` / `proposePeriodClose` | First wiring / replacing the period close (it can never be cleared; anyone applies) | Once / 48 h |
-| | desk key | `execute` | One operation through an allowed adapter; PolicyGuard reverts it on any breach (bands, caps, loss per operation, venues, approvals; v2 adds a daily loss bound and per-position leverage, in progress) | Instant |
+| | desk key | `execute` | One operation through an allowed adapter; PolicyGuard reverts it on any breach: bands, order and day caps, loss per operation (`maxOpLossBps`, 50 bps on mainnet), loss per 24 h (50 bps of NAV), per-position leverage (an over-cap position may keep or shrink its size, never grow it), venues, approvals | Instant |
 | BoardApprovals | board | `approve`, `reject` | One-use ticket for one exact operation, 24 h expiry | Instant |
-| PeriodClose, PositionMirror, Receipts, PrivateSleeve | CONTROLLER (named by the policy) | signed close and snapshots, receipt roots, `setKeys` | The chain recomputes NAV at close; the controller holds the private sleeve's spending key | Instant |
+| PeriodClose, PositionMirror, Receipts, PrivateSleeve | CONTROLLER (named by the policy) | signed close and snapshots, receipt roots, `setKeys` | The chain recomputes NAV at close; the controller holds the private sleeve's spending key. PrivateSleeve `sweep` debits the book only for proven, spent pool withdraws paid to the sleeve | Instant |
 | FeeRouter (token, not deployed on mainnet) | OWNER | `setKeeper`, `setTemplateFees`, `setBuyParams` | Keeper, template author share (<= 20%), buyback slippage (<= 5%) and per-push slice | First wiring instant; every later change 48 h (lowering included) |
 | | KEEPER | `observe`, `push` | Reference price; fee split and buyback, at most once per hour | Instant |
-| ExceptionInsurancePool (token; in progress) | committee (OWNER, immutable) | `approveClaim`, `rejectClaim` | Pays a factory treasury's claim, at most 25% of its NAV per claim | Approve: after a 3-day review delay |
+| ExceptionInsurancePool (token, not deployed on mainnet) | committee (OWNER, immutable) | `approveClaim`, `rejectClaim` | Pays a claim filed by a TreasuryFactory treasury's board. The claims of one treasury in one period together may ask at most 25% of the period-start NAV of the PeriodClose the factory made for it. The controller's attestation can only reject | Approve: at least 3 days after filing |
 
-Contracts with no admin: StealthClaims, ThresholdVerifier, park adapters, PolicyGuard (`maxOpLossBps` immutable),
-TreasuryFactory, PeriodClose, Receipts, PositionMirror, the sleeves, PLTH,
+Contracts with no admin: StealthClaims, ThresholdVerifier, park adapters, PolicyGuard (`maxOpLossBps` immutable, the
+day-loss bound a constant), TreasuryFactory, PeriodClose, Receipts, PositionMirror, the sleeves, PLTH,
 PlinthStaking. `renounceOwnership` is inherited and not overridden on the OpenZeppelin-owned contracts; using it would
 freeze their setters (including the pause) and is not part of any procedure. Ownership transfers are two-step where
-listed in the deploy script and are not delayed.
+listed in the deploy script and are not delayed; every ChangeDelay contract voids its queued changes on a transfer.
 
-Timers in v2 (immutable, planned mainnet values; perps, treasury and insurance values may still change): change delay, perps timelock, policy and period-close timelock, Hidden Vault cap and
-park-adapter delays and the holiday notice 48 h; crowd window 24 h ending 19:30 UTC; beacon GRACE 1 h; public
-fallback freshness 15 min; oracle staleness 26 h plus the market-hours calendar; perp LP cooldown 24 h, minimum hold
-30 min, held-market settle after 5 days; insurance review 3 days, withdrawal and fee vesting 14 days; unbonding 7 days.
+**Deploy-script rules (mainnet mode).** `MainnetBeta.s.sol` refuses an OWNER without code (a Safe is expected)
+unless `ALLOW_EOA_OWNER=1` is set explicitly, `MAX_STALENESS` above 26 h, `MIN_CROWD` below 3, duplicate role
+addresses, and a holiday table covering less than 24 months. It lists every perp market before `openDeposits`, and
+`verifyDeploymentStrict` fails while any ownership hand-over is still pending.
+
+Timers in v2 (immutable, mainnet values): change delay, perps timelock, policy and period-close timelock, Hidden Vault
+cap and park-adapter delays and the holiday notice 48 h; queued changes expire 14 days after their eta; crowd window
+24 h ending 19:30 UTC; beacon GRACE 1 h; public fallback freshness 15 min; oracle staleness 26 h plus the market-hours
+calendar (table valid until 2029-10-01 00:00 UTC); Hidden Vault insert delay 1 h, solo insert after 2 h; perp LP
+cooldown 24 h, minimum hold 30 min, held-market settle after 5 days, retire settlement after 48 h; insurance review
+3 days, withdrawal and fee vesting 14 days; unbonding 7 days.
 
 ### Differences in the live v1 deployment
 
 The beta at block 88,470,046 runs the earlier contracts (verified byte for byte by `bun run verify:explorer`). There:
-every owner setter above is instant (feeds, pools, keepers, perp markets and parameters, maker registrar), there is no
-market-hours calendar, the CrowdBuy fallback has no freshness bound, perp markets have a 100% open-interest cap and
-no open spread or minimum hold, and the Hidden Vault accepts only the last 100 roots. Those are the audit's open
-findings (see [Known issues](#known-issues-in-the-deployed-version)); v2 is meant to replace the deployment once its fixes are finished, reviewed and deployed.
+every owner setter above is instant (feeds, pools, keepers, attester, minimum deposit, perp markets and parameters,
+maker registrar), there is no market-hours calendar, the CrowdBuy fallback has no freshness bound, perp markets have a
+100% open-interest cap and no open spread, minimum hold or position floors, LP deposits are open from the start, and
+the Hidden Vault accepts only the last 100 roots. Those are the audit's open findings (see
+[Known issues](#known-issues-in-the-deployed-version)); they stay open on mainnet until v2 is deployed.
 
 ### Emergency levers
 
 In order of use (procedure: [incident runbook](security/INCIDENT-RUNBOOK.md)), all instant by design:
-`ShieldedPool.setDepositsPaused(true)`; `StockTokenRegistry.delist(token)`; `Valuer.closeDays` (hold prices);
+`ShieldedPool.setDepositsPaused(true)`; `StockTokenRegistry.delist(token)`; `Valuer.closeDays` (hold prices; v2);
 `PerpMarket.setParams` lowering only `oiCapBps` (to 0: no new opens); raising a market's open spread or minimum
-collateral; `ShieldedPool.proposeCap` with a lower cap; `ShieldedTrade.disablePark`; `CrowdBuy.setKeeper(0)` /
-`SavingsVault.setKeeper(0)`; `EligibilityRegistry.revoke`; `PerpPool.removeMarket` (no open interest). None of them
-blocks a user's exit: SavingsVault withdraw, CrowdBuy cancel and claim, Hidden Vault withdraw, transfer, refund and
-unpark, perp close, and board withdrawals stay open. There is no global pause on CrowdBuy, SavingsVault, perps or the
-FeeRouter.
+collateral; `PerpMarket.retire` (v2); `ShieldedPool.proposeCap` with a lower cap; `ShieldedTrade.disablePark`;
+`CrowdBuy.setKeeper(0)` / `SavingsVault.setKeeper(0)`; `EligibilityRegistry.revoke`; `PerpPool.removeMarket` (no open
+interest). None of them blocks a user's exit: SavingsVault withdraw, CrowdBuy cancel and claim, Hidden Vault withdraw,
+transfer, refund and unpark, perp close, and board withdrawals stay open. There is no global pause on CrowdBuy,
+SavingsVault, perps or the FeeRouter.
 
 ## Accepted risks
 
-Each item is a deliberate trade-off for the closed beta, with the reason.
+Each item is a deliberate trade-off, with the reason. "v2" items apply once v2 is deployed.
 
 | Risk | Why accepted | Mitigation |
 | --- | --- | --- |
-| OWNER is a single EOA | Closed beta with invited users | v2 (in review) makes every setter that can hurt users wait 48 h in public (queued changes are events anyone can watch); moving OWNER to a multisig is planned. `verify:deployment` reports OWNER on every run |
-| Valuer staleness is 26 h | Chainlink equity feeds stop when the market closes; a shorter bound would hold every weekday gap | v2 (in review) adds a market-hours calendar (weekends and announced holidays hold) and a 15 min freshness bound on the CrowdBuy public fallback (M-1) |
+| OWNER is a single EOA on the live v1 beta | Closed beta with invited users | v2 makes every setter that can hurt users wait 48 h in public (queued changes are events anyone can watch, expire after 14 days and die with an ownership change), and its deploy script refuses an EOA OWNER unless explicitly allowed. `verify:deployment` reports OWNER on every run |
+| Valuer staleness is 26 h | Chainlink equity feeds stop when the market closes; a shorter bound would hold every weekday gap | v2 holds weekends, NYSE holidays and early closes through the market-hours calendar, and every price-sensitive public path (the CrowdBuy fallback) needs a round at most 15 min old |
+| v2: no L2 sequencer-uptime feed | Chainlink's directory for Robinhood Chain mainnet has no sequencer-uptime feed (checked 2026-10-16); the deploy asserts the Valuer's stays unset | If the sequencer stops and restarts, prices are not held for the 1 h grace after the restart. The 26 h staleness, the calendar and the 15 min fallback freshness still apply. If a feed appears, `setSequencerFeed` (48 h, validated) adds it |
+| v2: early closes hold from 17:00 UTC all year | NYSE half-days close at 13:00 New York, 17:00 UTC in summer and 18:00 UTC in winter | Winter half-days hold an hour early; this only fails closed |
+| v2: the holiday table must be maintained | The calendar cannot derive holidays on chain | The table runs from Thanksgiving 2026 to Labor Day 2029, valid until 2029-10-01 00:00 UTC; after that every price holds until OWNER marks the next holidays and extends `calendarValidUntil` (48 h, at most 4 years ahead). Unscheduled closures are marked at once with `closeDays` |
+| v2: `closeDays` / `earlyCloseDays` are instant | They only hold prices | Weekdays only, at most 16 marked days per UTC year; un-marking needs 48 h notice |
+| v2: first-time `StockTokenRegistry.list` and `StockRouter.setPool` are instant | Nobody holds a position priced by a token before it is listed; users opt in through their own mix | Perp markets on it still need the pool timelock; changing a listed token's feed or pool waits 48 h |
+| v2: `ShieldedPool` has no `cancelChange` | Contract size | A queued `setMinDeposit` lowering applies only if OWNER sends the same call again, and expires 14 days after its eta |
+| v2: perps proposals do not expire and survive an ownership change | They use the pool's own timelock, not ChangeDelay | Only the owner can apply one, every proposal is a public event with its eta, and `cancel(id)` drops it |
+| v2: a missed crowd book can be executed by anyone at any open-market time | A dead or late keeper must never block a book | Only after the window's fallback time has passed with the crowd formed and no execution, on a round at most 15 min old, inside the pool fee + 10 bps, so pushing the pool first loses money |
+| v2: perps floors | A partial decrease that would leave less than `minCollateral` (100 USDG) of collateral or of size reverts | The trader closes in full instead, which is never blocked; treasury hedges through InHousePerpVenue / PerpSleeve follow the same rule |
+| v2: a held perp market with open interest blocks LP exits for up to 5 days, and LP deposits for the whole hold | Pricing an LP entry or exit while a market with positions has no trusted price would move value between LPs | Every weekend and holiday is a hold, so this is routine. Past 5 days (`HELD_GRACE`) the market values its open interest at the reserve and stops blocking exits, and anyone may `settleHeld` its positions; `retire` empties a market for good |
 | A holdings proof publishes the nullifiers of the notes it covers, so a later spend links to the prover | Needed so a note cannot be shown twice | Documented in `sdk/README.md`; prove with notes you are about to move, or not at all, if linkage matters |
-| The keeper chooses Quiet stealth addresses (`deliverStealth`) | The stealth address cannot be checked on chain | The keeper derives it from the saver's registered meta-address; deliveries are public events a saver can check |
+| There is no relayed private transfer | `PublicTransfer` has no fee field, so a relayed transfer would be free for the user and paid by the relayer | A Hidden Vault transfer is sent from the user's own wallet, which links that wallet to the transfer's nullifier (not to the notes' owner keys). Withdraws, swaps (with their settle) and unparks are relayed. This stays until a transfer circuit with a relayer fee ships |
+| A private swap's `maxSlippageBps` is not in the proof | Only buy and sell use it, as the StockRouter's oracle guard | The proof's `minOut` always binds the output, whoever submits the swap |
+| The keeper chooses Quiet stealth addresses (`deliverStealth`) | The stealth address cannot be checked on chain | The keeper derives it from the saver's registered meta-address, which must be a valid one; deliveries are public events a saver can check |
 | The treasury controller holds the private sleeve's spending secret | The private sleeve proves value without revealing notes | A board opts in per treasury; the period close recomputes the sleeve's value |
-| SDK private sells are sent from the user's own wallet | No relayer for trades yet | Documented; use the relayer-backed withdraw for unlinkable exits |
-| Insurance claims are attested by the treasury's own controller | Not deployed on mainnet | Revisit before the token contracts are deployed |
-| Every service runs as one Unix user with one env file on the beta server | Single small host | Each service unlocks only its own keystore; separate Unix users and env files are planned |
+| Insurance claims are attested by the treasury's own controller | Not deployed on mainnet | In v2 the attestation can only reject; the committee's approval is the independent check, after a 3-day public review, within a per-treasury, per-period cap of 25% of the factory PeriodClose's start NAV |
 
 ## Known issues in the deployed version
 
 The deployed contracts are the version the external AI audit reviewed (see [audit history](security/AUDITS.md)).
-All of its findings are open on mainnet until a fixed version is deployed:
+All of its contract findings are open on mainnet until v2 is deployed:
 
 | Id | Issue | Status |
 | --- | --- | --- |
-| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fix written for v2, in review: the public fallback needs a round at most 15 min old and a crowd complete before it opened; market-hours calendar |
-| M-2 | A held market with one small position can block LP exits | In progress for v2 (perps) |
-| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | In progress for v2 (perps) |
-| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | In progress for v2 (perps and keeper) |
-| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fix written for v2, in review: every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
-| M-6 to M-9 | Keeper, statement import, relayer zero-fee and OFX parser denial-of-service issues (services) | Fix in progress (services; no redeploy needed) |
-| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixes written for v2, in review |
-| L-4 to L-8, L-10 | Treasury and insurance Lows | In progress for v2 |
+| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fixed in v2 (merged, not deployed): the public fallback needs a round at most 15 min old, runs inside the pool fee + 10 bps, and the market-hours calendar holds weekends, holidays and early closes |
+| M-2 | A held market with one small position can block LP exits | Fixed in v2 (merged, not deployed): the hold stops blocking exits after 5 days, `settleHeld` and `retire` empty a market, and position floors stop dust positions filling the 100 slots |
+| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | Fixed in v2 (merged, not deployed): open spread (40 bps), minimum hold for a profit (30 min), a round-trip floor above the feeds' deviation threshold, OI cap 20% |
+| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | Fixed in v2 (merged, not deployed): a minimum liquidation reward, topped up by the pool at most up to the position's own collateral, and a 100 USDG minimum collateral |
+| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fixed in v2 (merged, not deployed): every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
+| M-6 to M-9 | Keeper, statement import, relayer zero-fee and OFX parser denial-of-service issues (services) | Fixed in the services code (no contract redeploy needed) |
+| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixed in v2 (merged, not deployed) |
+| L-4 to L-8, L-10 | Treasury and insurance Lows | Fixed in v2 (merged, not deployed) |
 | L-11 | Holdings-proof nullifier linkage | Accepted risk (above); the SDK adds an unlinking helper |
-| L-12 to L-15 | Service Lows | Fix in progress (services) |
+| L-12 to L-15 | Service Lows | Fixed in the services code |
 
 Until the redeploy the beta stays closed and the operator watches the levers above.
 

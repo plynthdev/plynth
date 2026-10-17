@@ -25,22 +25,23 @@ holders are in [SECURITY.md](../SECURITY.md); the invariants are in [INVARIANTS.
 | Sybil group | Many funded accounts acting as one | None | MIN_CROWD counts accounts, not people: crowd timing must not depend on it (M-1 fix) |
 | MEV searcher | Sandwich pooled swaps, front-run oracle updates | None | Keeper-only execution by default, jittered commit-reveal timing, slippage band from the oracle; public fallback and perp fills fixed for M-1 / M-3 |
 | Keeper | Accrue round-ups within caps, pull chosen top-ups, commit timing, execute crowd buys, deliver allocations | Trusted for liveness and for Quiet stealth addresses; never custodial | Cannot move funds anywhere but the saver's own account, the crowd, StealthClaims or the shielded pool; a dead keeper must not block exits (`CrowdBuy.t.sol`, L-1 fix) |
-| Relayer | Submits user-signed claims and proof-bound withdraws, earns the fee | Untrusted for funds | Recipient, fee, amount and deadline are bound into the signature or proof (`test_relayerCannotRedirectOrRaiseFee`, `test_realWithdrawBindsRecipientFeeAndAmount`) |
+| Relayer | Submits user-signed claims and proof-bound withdraws, swaps (with their settle) and unparks, earns the fee | Untrusted for funds | Recipient, fee, amount and deadline are bound into the signature or proof, and a fee-paying proof binds the relayer's address (`test_relayerCannotRedirectOrRaiseFee`, `test_realWithdrawBindsRecipientFeeAndAmount`). A private transfer is not relayed (no fee field): it links the sender's wallet to its nullifier (accepted risk, SECURITY.md) |
 | Attester (eligibility service) | Signs eligibility attestations; revokes | Trusted for who may buy | Attestations bound to user, chain and registry, with an expiry; exits never check eligibility |
 | Desk bots | `TreasuryAccount.execute` through allowed adapters | Untrusted beyond their policy | PolicyGuard re-values the account after every operation and reverts any breach; tickets bound to one operation (`TreasuryAccount.t.sol`, `PolicyGuard.t.sol`, treasury invariants) |
 | Treasury controller | Signs closes and snapshots, posts receipts, holds the private sleeve's keys | Trusted by the board that names it | NAV, weights and positions recomputed on chain at close; private sleeve value proven |
 | Board | Its treasury's policy (48 h timelock), desks, withdrawals, approvals | Trusted for its own treasury only | Cannot touch other treasuries; policy bounds validated on chain |
-| Owner | Feeds, pools, markets, keepers, attester, caps, pause | Trusted (single EOA in the beta) | Live v1: timelocks on cap raises, park adapters and policies only. v2 (in review): 48 h public delay on feed, pool, keeper and fee changes; perps and period-close timelocks in progress. Instant setters only stop or reduce risk (SECURITY.md) |
+| Owner | Feeds, pools, markets, keepers, attester, caps, pause | Trusted (single EOA in the beta) | Live v1: timelocks on cap raises, park adapters and policies only. v2 (merged, not deployed): 48 h public delay on feed, pool, keeper, attester and fee changes, perps and period-close timelocks; queued changes expire after 14 days and die with an ownership change; the deploy script expects a contract OWNER. Instant setters only stop or reduce risk, or act before anybody can be affected (SECURITY.md) |
 | Operator infrastructure | Hosts the services and their keys | Trusted | Each service has its own key; the API holds none and returns unsigned transactions |
 | External contracts | USDG, Stock Tokens (ERC-8056), Chainlink feeds, Uniswap v4 PoolManager, Permit2, ERC-5564/6538, steakUSDG | Trusted as deployed by their issuers | Addresses verified on chain and asserted after deploy (`verify:chain`, `verify:deployment`); staleness holds instead of reverting |
-| Robinhood Chain sequencer | Orders and may delay transactions | Trusted for liveness | Timers are hours long; no sequencer-uptime check yet (audit lead) |
+| Robinhood Chain sequencer | Orders and may delay transactions | Trusted for liveness | Timers are hours long. The v2 Valuer can hold prices on a sequencer-uptime feed, but Robinhood Chain has none today (accepted risk, SECURITY.md) |
 
 ## Trust assumptions
 
 1. The UltraHonk verifiers match the circuits: CI rebuilds them from `circuits/` with the pinned toolchain and fails on
    any difference; real proofs from the fixtures are verified in Foundry tests.
-2. Chainlink equity feeds report the right price while the market is open; outside market hours the 26 h staleness
-   window applies (accepted risk, SECURITY.md).
+2. Chainlink equity feeds report the right price while the market is open. Live v1 relies on the 26 h staleness
+   window outside market hours (accepted risk, SECURITY.md); v2 also holds every price on weekends, NYSE holidays and
+   early closes, and fails closed once its holiday table expires.
 3. Stock Token issuers do not block the protocol's contracts; a delisted or halted token must still let users exit
    (audit M-2 / L-2 fixes).
 4. The deployed bytecode is the reviewed source (`verify:explorer`: every runtime code equals the build of the commit
@@ -54,7 +55,7 @@ holders are in [SECURITY.md](../SECURITY.md); the invariants are in [INVARIANTS.
 | Crowd execution | Sandwich, stale price, sybil timing, dust and rounding | `CrowdBuy*.t.sol`, `CrowdBuy.invariant.t.sol`, mutation run |
 | Hidden Vault | Double spend, forged proofs, wrong public-input order, root window exhaustion, malformed keys | `ShieldedPool*.t.sol`, `HiddenVerifiers.t.sol`, `circuits/*` Noir tests, `ShieldedPool.invariant.t.sol`, mutation run |
 | Stealth claims | Redirected claims, replay | `StealthClaims.t.sol` (EIP-712 over every field) |
-| Perps | Oracle front-running, bad debt, held markets freezing LPs, first-depositor inflation | `Perp*.t.sol`, `PerpInvariant.t.sol`, mutation run |
+| Perps | Oracle front-running, bad debt, held markets freezing LPs, dust positions filling the slots, liquidation-reward farming, first-depositor inflation, a griefed deploy | `Perp*.t.sol`, `PerpInvariant.t.sol`, mutation run |
 | Treasury | Desk outside policy, NAV manipulation by donation, ticket reuse, timelock bypass | `test/treasury/*`, real-sleeve and mock-sleeve invariants |
 | Token (not deployed) | Fee capture, reward accounting, insurance claims | `PlinthStaking`, `FeeRouter`, `ExceptionInsurancePool` invariants |
 | Services | Gas griefing through the keeper and relayer, parser DoS, API amplification, auth scope | `app/src/**` tests; rate limits; audit M-6 to M-9, L-12 to L-15 |

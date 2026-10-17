@@ -4,6 +4,30 @@ Every security review of this code, newest first, with what it found and what ch
 audit: the internal passes were multi-agent AI reviews run by the team, and the external one is an AI audit. A human
 audit is required before large deposits.
 
+## 2026-10-16: internal v2 review (multi-agent AI), grade 4.9 / 10
+
+The audit fixes above, reviewed as new code before any deploy: seven area reviewers with the audit checklist, a
+skeptic pass on every finding, and the lead re-running the Medium proofs of concept. Scored state: the contract fixes
+and the services as they stood, before the CI, docs and invariant work was merged. **0 High, 5 Medium, 25 Low**, and
+several Info items. Three of the Mediums came from the fixes themselves. The Hidden Vault fixes held up completely.
+
+| Id | Finding | Status |
+| --- | --- | --- |
+| V2-M1 | The market calendar knew no holidays or early closes, and never expired (fails open about 10 trading days a year) | Fixed in v2 (merged, not deployed): NYSE closures and early closes to Labor Day 2029, `calendarValidUntil` fails closed |
+| V2-M2 | Dust positions fill all 100 slots of a perp market for about 0.6 USDG | Fixed in v2: collateral and size floors after every open, increase and partial decrease; `retire` |
+| V2-M3 | The minimum liquidation reward could be farmed from the LP pool with dust-collateral positions | Fixed in v2: the pool's top-up is capped at the position's own collateral |
+| V2-M4 | The OFX parser still had one quadratic regex | Fixed in the services: a linear scan, statements parsed in a worker |
+| V2-M5 | Sybils with 1 USDG each bought keeper transactions and stalled the core jobs | Fixed in the services: a 25-cent minimum imported round-up and a time, gas and per-user budget per pass |
+| V2-L1 to V2-L11 | Perps (settle on a stale delisted price, parameter bounds, OI cap), crowd fallback reach and band, sequencer feed setter, ChangeDelay expiry and ownership changes, a griefable perp deploy, private-sleeve sweep, per-position leverage, margin rescue, insurance cap | Fixed in v2 (merged, not deployed). V2-L5: no sequencer-uptime feed exists on Robinhood Chain, accepted (SECURITY.md) |
+| V2-L12 to V2-L18 | tRPC batching, rate-limiter sweep cost, hidden delivery reverts, treasury read gating and log scans, relayer fees vs gas, dropped nonces | Fixed in the services |
+| V2-L19 | Unparks were not relayed, and there is no relayed private transfer | Unparks relayed. The private transfer stays unrelayed (no fee field in the transfer proof): accepted (SECURITY.md) |
+| V2-L20 to V2-L24 | Post-deploy check passed with the hand-over pending, instant safety setters, EOA OWNER accepted, treasury services sharing one user, loose mainnet values | Fixed: strict post-deploy check, delayed or two-step setters (the rest accepted with reasons in SECURITY.md), contract OWNER required unless explicitly allowed, separate Unix users, mainnet value pins |
+| V2-L25 | Dependency ranges | Fixed: exact pins, a committed circuits lockfile, a test that enforces both |
+| I-2, I-8 | Swap slippage not in the proof; a held perp market holds LP flows for the first 5 days | Accepted (SECURITY.md) |
+
+Slither was re-run on the merged tree (0.11.6): every Medium and High finding in a new or changed function was reviewed
+and recorded in `contracts/slither.triage.json` with its reason; none is a defect.
+
 ## 2026-10-16: external AI audit (rubric v2, full mode) — grade 3.7 / 10
 
 Commit reviewed: `c52ef3d` on the public repository (124 commits), which is the source of the live mainnet beta
@@ -30,17 +54,17 @@ outputs and exact rounding; EIP-712 stealth claims; PerpPool reserves; relayer, 
 
 | Id | Finding | Status |
 | --- | --- | --- |
-| M-1 | CrowdBuy public fallback sandwichable on a stale (26 h) price | Fix written for v2, in review (not deployed) |
-| M-2 | A held market with one small position freezes LP exits | In progress for v2 |
-| M-3 | Traders can front-run oracle updates (same-transaction fills) | In progress for v2 |
-| M-4 | Underwater positions not liquidated; bad debt inflates LP share price | In progress for v2 |
-| M-5 | Anyone can expire in-flight Hidden Vault proofs (100-root window) | Fix written for v2, in review (not deployed) |
-| M-6 | One saver's malformed privacy keys stop Quiet and Hidden delivery | Service fix, in progress |
-| M-7 | Statement import makes the keeper pay for unlimited no-op transactions | Service fix, in progress |
-| M-8 | Relayer pays for endless zero-amount withdraws | Service fix, in progress |
-| M-9 | One OFX upload blocks the API (quadratic parser) | Service fix, in progress |
-| L-1 to L-15 | Never-committed window, delisted mix tokens, `join(user)` griefing, donation vs signed close, per-venue leverage, sleeve book drift, insurance attestation, just-in-time insurance fees, relayer fee race, sleeve withdraw book debit, holdings-proof linkage, tiny stealth claims, API rate limits, public treasury reads, statement-verify amplification | L-1 to L-3 and L-9 written for v2, in review; L-4 to L-8 and L-10 in progress; L-11 accepted (SECURITY.md); L-12 to L-15 in progress with the services |
-| D | Instant feed / pool / keeper changes, settings outside the timelock, one Unix user, webhook targets | Written for v2, in review: 48 h public change delay on feed, pool, keeper and fee setters; perps and period-close timelocks still in progress (SECURITY.md) |
+| M-1 | CrowdBuy public fallback sandwichable on a stale (26 h) price | Fixed in v2 (merged, not deployed) |
+| M-2 | A held market with one small position freezes LP exits | Fixed in v2 (merged, not deployed) |
+| M-3 | Traders can front-run oracle updates (same-transaction fills) | Fixed in v2 (merged, not deployed) |
+| M-4 | Underwater positions not liquidated; bad debt inflates LP share price | Fixed in v2 (merged, not deployed) |
+| M-5 | Anyone can expire in-flight Hidden Vault proofs (100-root window) | Fixed in v2 (merged, not deployed) |
+| M-6 | One saver's malformed privacy keys stop Quiet and Hidden delivery | Fixed in the services, plus on-chain key checks in v2 (merged, not deployed) |
+| M-7 | Statement import makes the keeper pay for unlimited no-op transactions | Fixed in the services |
+| M-8 | Relayer pays for endless zero-amount withdraws | Fixed in the services |
+| M-9 | One OFX upload blocks the API (quadratic parser) | Fixed in the services (completed after the v2 review's V2-M4) |
+| L-1 to L-15 | Never-committed window, delisted mix tokens, `join(user)` griefing, donation vs signed close, per-venue leverage, sleeve book drift, insurance attestation, just-in-time insurance fees, relayer fee race, sleeve withdraw book debit, holdings-proof linkage, tiny stealth claims, API rate limits, public treasury reads, statement-verify amplification | L-1 to L-10 fixed in v2 (merged, not deployed); L-11 accepted (SECURITY.md); L-12 to L-15 fixed in the services |
+| D | Instant feed / pool / keeper changes, settings outside the timelock, one Unix user, webhook targets | Fixed in v2 (merged, not deployed): 48 h public change delay on feed, pool, keeper, attester and fee setters, perps and period-close timelocks (SECURITY.md); treasury webhooks and marks run as their own Unix users with no keys |
 | C, E, F, G | Testing, dependencies, hygiene, docs | **Fixed** (below) |
 
 ### Fixes for C, D (tooling), E, F and G

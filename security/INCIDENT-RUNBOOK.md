@@ -28,11 +28,12 @@ keystore; never paste a key into a shell).
 | A Stock Token, feed or pool is wrong or halted | Delist: stops buys, sells, crowd execution, new perp opens | `cast send <stockTokenRegistry> "delist(address)" <token>` |
 | The market is closed unexpectedly (holiday, halt) | Hold prices for those days (v2) | `cast send <valuer> "closeDays(uint256[])" ...` |
 | A perp market is exploited | No new opens: `oiCapBps = 0` (keep the other params) | `cast send <perpMarket> "setParams(uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)" ...` |
+| A perp market must be wound down (v2) | Retire it: opens stop now, anyone settles each position at a fresh price after 48 h, then remove it | `cast send <perpMarket> "retire()"`, then `settleRetired(account)` per position and `PerpPool.removeMarket` |
 | The keeper key is compromised or the keeper misbehaves | Stop the keeper paths at once, queue the new keeper | `setKeeper(0)` on CrowdBuy and SavingsVault (instant; books run through the public fallback); `setKeeper(<new>)` on all three (v2: queued, applies 48 h later with the same call) |
-| The attester key is compromised | Rotate (stored records stay; revoke bad ones) | `cast send <eligibilityRegistry> "setAttester(address)" <new>`; `revoke(user)` from the new attester |
+| The attester key is compromised | Rotate (stored records stay; revoke bad ones) | `cast send <eligibilityRegistry> "setAttester(address)" <new>` (v2: queued, applies 48 h later with the same call; until then the old attester can still revoke and attest); `revoke(user)` from the new attester |
 | The relayer key is compromised | Stop the relayer service; it has no on-chain role | Rotate `RELAYER` in the service env; drain its gas balance |
 | A desk key or controller is compromised (treasury) | The board revokes the desk / cancels the policy / withdraws | Board: `revokeDesk`, `cancel`, `withdrawToBoard` |
-| OWNER key suspected compromised | Move ownership first, then everything else | `transferOwnership(<new owner>)` on every ownable contract (two-step ones need `acceptOwnership` from the new owner) |
+| OWNER key suspected compromised | Move ownership first, then everything else | `transferOwnership(<new owner>)` on every ownable contract (two-step ones need `acceptOwnership` from the new owner). In v2 an ownership change voids every queued ChangeDelay change; perps proposals survive it, so the new owner `cancel`s any it did not make (watch `ChangeProposed` on the pool and markets) |
 
 Then stop the affected service so it does not keep sending: `bash app/scripts/mainnet/down.sh` (or the single
 systemd unit on the server).
@@ -44,8 +45,9 @@ Exits never depend on the levers above:
 - Savers: `SavingsVault.withdraw`, `CrowdBuy.cancel` and `claimOpen`, Quiet claims through `StealthClaims` (gasless through
   the relayer, or `claimDirect`).
 - Hidden Vault: `withdraw`, `transfer`, `refundPending` and unpark keep working while deposits are paused.
-- Perp traders close positions; LPs redeem after the cooldown (a held market with open interest holds LP flows; see
-  the audit's M-2).
+- Perp traders close positions; LPs redeem after the cooldown. A held market with open interest holds LP exits for up
+  to 5 days (v2; then it stops blocking them and anyone may `settleHeld`), and on v1 for as long as the hold lasts
+  (the audit's M-2).
 - Treasury boards: `withdrawToBoard` is never gated.
 
 If the web app or API is down, publish the direct contract calls (addresses from `app/deployments/4663.json`) and
@@ -70,7 +72,8 @@ the SDK snippets for withdraw and claim. The relayer is optional for every exit.
 
 ## Contacts and keys
 
-- OWNER signs every lever above. Keep its key offline; moving it to a multisig is planned (SECURITY.md).
+- OWNER signs every lever above. Keep its key offline. The live v1 OWNER is an EOA; the v2 deploy script expects a
+  contract (a Safe) unless an EOA is explicitly allowed (SECURITY.md).
 - Bot keys (keeper, attester, relayer, controller, desks) each live only with their own service and can be rotated
   without a redeploy.
 - Security reports arrive through GitHub private vulnerability reporting on the repository.

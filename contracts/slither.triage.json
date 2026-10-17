@@ -51,9 +51,21 @@
   },
   {
    "check": "incorrect-equality",
+   "where": "ChangeDelay._cancelChange",
+   "impact": "Medium",
+   "reason": "`changeEta[id] == 0` is the not-queued sentinel of an owner-only mapping; no outsider can write it."
+  },
+  {
+   "check": "incorrect-equality",
    "where": "CrowdBuy.execute",
    "impact": "Medium",
    "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "CrowdBuy.missedFrom",
+   "impact": "Medium",
+   "reason": "`lastExecutedWindow[asset] == start + 1` compares an internal window id (stored as start + 1 so 0 means never) written only by execute; not a balance."
   },
   {
    "check": "incorrect-equality",
@@ -117,9 +129,33 @@
   },
   {
    "check": "incorrect-equality",
+   "where": "PeriodClose._useSnapshot",
+   "impact": "Medium",
+   "reason": "`b.takenAt == 0` is the no-snapshot sentinel; only the policy controller's snapshot() writes it and _useSnapshot deletes it after one use."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PeriodClose._weightsOf",
+   "impact": "Medium",
+   "reason": "`nav == 0` guards a division (pure); an empty book has zero weights. A donation can only make NAV nonzero, and commit re-checks NAV against the signed close exactly."
+  },
+  {
+   "check": "incorrect-equality",
    "where": "PerpMarket._accrue",
    "impact": "Medium",
    "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._add",
+   "impact": "Medium",
+   "reason": "`p.collateral == 0` rejects a position with no collateral before the leverage check; internal position state, not a token balance."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._consume",
+   "impact": "Medium",
+   "reason": "`eta == 0` is the not-proposed sentinel of the owner-only timelock mapping (etaOf); only proposeParams/proposeGuards write it."
   },
   {
    "check": "incorrect-equality",
@@ -132,6 +168,18 @@
    "where": "PerpMarket._indicesNow",
    "impact": "Medium",
    "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._instant",
+   "impact": "Medium",
+   "reason": "Owner changes are instant only while openInterest() == 0 and pool.totalSupply() == 0 (nobody can be hurt). An outsider can only make either nonzero (open a position or, once deposits are open, mint LP shares), which forces the timelock: it can delay an owner change, never skip the delay. Shares cannot be minted by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket._quoteAndRecord",
+   "impact": "Medium",
+   "reason": "`unpricedSince == 0` is the 'Valuer seen reverting since' sentinel, written only here; internal state."
   },
   {
    "check": "incorrect-equality",
@@ -159,9 +207,27 @@
   },
   {
    "check": "incorrect-equality",
+   "where": "PerpMarket.onHoldWithOpenInterest",
+   "impact": "Medium",
+   "reason": "`openInterest() == 0` reads the market's internal side sizes (longs.size + shorts.size), not a token balance; a market with no positions cannot block LPs."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpMarket.settleRetired",
+   "impact": "Medium",
+   "reason": "`at == 0` is the not-retired sentinel (retireAt), written once by the owner's retire(); internal state."
+  },
+  {
+   "check": "incorrect-equality",
    "where": "PerpMarket.staleWithOpenInterest",
    "impact": "Medium",
    "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PerpPool._consume",
+   "impact": "Medium",
+   "reason": "`eta == 0` is the not-proposed sentinel of the owner-only timelock mapping (etaOf); only proposeMarket/proposeMakerRegistrar write it."
   },
   {
    "check": "incorrect-equality",
@@ -207,9 +273,9 @@
   },
   {
    "check": "incorrect-equality",
-   "where": "PrivateSleeve._valueOrZero",
+   "where": "PrivateSleeve.forwardOther",
    "impact": "Medium",
-   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
+   "reason": "`raw == 0` only skips an empty transfer. The balance is outsider-changeable by design: anyone may forward a non-private asset to the account, and a donation can only add to what is forwarded; private assets are refused first."
   },
   {
    "check": "incorrect-equality",
@@ -273,6 +339,12 @@
   },
   {
    "check": "reentrancy-no-eth",
+   "where": "CrowdBuy.joinBatch",
+   "impact": "Medium",
+   "reason": "onlyKeeper. The only external calls are to the immutable SavingsVault (canBuy, balancesOf, mixOf, sweep), which moves USDG (no transfer hooks) from itself to CrowdBuy and calls nothing user-controlled; the StockTokenRegistry reads in _place are views. No untrusted code runs between the sweep and the book writes. Same flow as join(), whose sweep result is placed the same way."
+  },
+  {
+   "check": "reentrancy-no-eth",
    "where": "FeeRouter.push",
    "impact": "Medium",
    "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
@@ -291,9 +363,15 @@
   },
   {
    "check": "uninitialized-local",
-   "where": "CrowdBuy.join",
+   "where": "CrowdBuy._place",
    "impact": "Medium",
-   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+   "reason": "Deliberate zero-initialisation: `lastLive` is set by the loop (weightSum != 0 was checked, so at least one canonical entry exists and lastLive is its last index, possibly 0) and `placed` is an accumulator."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "CrowdBuy.execute",
+   "impact": "Medium",
+   "reason": "`publicFrom` stays 0 on the keeper path, where it is never read (every use is behind `fallback_`); on the public path it is set from missedFrom before use."
   },
   {
    "check": "uninitialized-local",
@@ -333,15 +411,33 @@
   },
   {
    "check": "uninitialized-local",
+   "where": "PeriodClose.refreshPrivateBook",
+   "impact": "Medium",
+   "reason": "`ctx` is a memory struct whose every field (pubNav, pubBandUsd, policyHash, bandMin, bandMax) is assigned on the next lines before checkClose reads it."
+  },
+  {
+   "check": "uninitialized-local",
    "where": "PerpMarket._decrease",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
   },
   {
    "check": "uninitialized-local",
+   "where": "PerpMarket._fill",
+   "impact": "Medium",
+   "reason": "`costBps` is 0 on a margin-only add (sizeUsd == 0: no fee, no spread), set to fee + open spread otherwise; deliberate."
+  },
+  {
+   "check": "uninitialized-local",
    "where": "PerpMarket.exitValueOf",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PolicyGuard._positionsOk",
+   "impact": "Medium",
+   "reason": "`kept` defaults to false on purpose: an over-cap position with no matching position before the operation is new or grown and must fail (review v2 L-9)."
   },
   {
    "check": "uninitialized-local",
@@ -381,6 +477,12 @@
   },
   {
    "check": "uninitialized-local",
+   "where": "PrivateSleeve.sweep",
+   "impact": "Medium",
+   "reason": "`ok` is the try/catch result: false unless the withdraw verifier returns true; a revert in the verifier leaves it false and the sweep reverts InvalidProof."
+  },
+  {
+   "check": "uninitialized-local",
    "where": "SavingsVault.setMix",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
@@ -390,6 +492,18 @@
    "where": "ShieldedPool._verify",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedPool.insertPending",
+   "impact": "Medium",
+   "reason": "`root` is assigned by every _insert and published only when inserted != 0; `oldest` (same function) is set at the first insert."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "ShieldedPool.readyCount",
+   "impact": "Medium",
+   "reason": "`oldest` is set at the first ready entry; with none, _batchOk(0, 0) is the 'nothing to insert' case. View only."
   },
   {
    "check": "uninitialized-local",
@@ -459,6 +573,12 @@
   },
   {
    "check": "unused-return",
+   "where": "CrowdBuy.joinBatch",
+   "impact": "Medium",
+   "reason": "Only the pending balance is needed to skip users with nothing to join; the available balance is irrelevant here."
+  },
+  {
+   "check": "unused-return",
    "where": "EquitySleeve.run",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
@@ -483,9 +603,9 @@
   },
   {
    "check": "unused-return",
-   "where": "MirroredPerpVenue.equityOf",
+   "where": "MirroredPerpVenue._atVenueUsd",
    "impact": "Medium",
-   "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+   "reason": "Only equity and the seen flow counters are needed; the position list and timestamp are read elsewhere (staleness comes from mirror.isStale in valueOf)."
   },
   {
    "check": "unused-return",
@@ -537,6 +657,18 @@
   },
   {
    "check": "unused-return",
+   "where": "PeriodClose._commitPrivate",
+   "impact": "Medium",
+   "reason": "The hold flag of navUsd() is not needed: the close was already checked against a hold-free book (_positions(true) reverts HoldAtClose, or the stored snapshot that did the same); this only records the next period's start NAV."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._commitPublic",
+   "impact": "Medium",
+   "reason": "Same as _commitPrivate: the book was checked hold-free before; this read only records periodStartNav after the close fee is paid."
+  },
+  {
+   "check": "unused-return",
    "where": "PeriodClose._positionsView",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
@@ -567,6 +699,30 @@
   },
   {
    "check": "unused-return",
+   "where": "PeriodClose.refreshPrivateBook",
+   "impact": "Medium",
+   "reason": "policy.current(): the version is not needed (the hash is bound into the proof). navUsd(): the public hold flag is not used; the refresh records no close, the private prices are pinned from the Valuer and revert on hold (pricesCommitment), and the book it writes is a proven lower bound of unspent notes. Public NAV only feeds the proof's band inputs, and every commit re-checks bands on a hold-free book."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.snapshot",
+   "impact": "Medium",
+   "reason": "policy.current(): only the policy itself is needed (controller check), not its hash or version. navUsd(): the hold flag is not needed because _positions(true) on the line before reverts HoldAtClose while any position is on hold."
+  },
+  {
+   "check": "unused-return",
+   "where": "PerpMarket._forget",
+   "impact": "Medium",
+   "reason": "EnumerableSet.remove's bool is not needed: _forget runs only when a position closes in full, and the account is in the side's set from its open."
+  },
+  {
+   "check": "unused-return",
+   "where": "PerpMarket._open",
+   "impact": "Medium",
+   "reason": "EnumerableSet.add's bool is not needed: _open reverts HasPosition when the account already has a position, so it is not in either set; the set is only an index for openPositions()."
+  },
+  {
+   "check": "unused-return",
    "where": "PolicyGuard.check",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
@@ -576,6 +732,12 @@
    "where": "PositionMirror.post",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "PrivateSleeve.bookStale",
+   "impact": "Medium",
+   "reason": "Only the policy's periodSeconds is needed; hash and version are not."
   },
   {
    "check": "unused-return",
@@ -627,15 +789,33 @@
   },
   {
    "check": "unused-return",
+   "where": "Valuer._isUptimeFeed",
+   "impact": "Medium",
+   "reason": "Chainlink sequencer-uptime pattern: only answer (0 up / 1 down) and startedAt carry meaning; roundId, updatedAt and answeredInRound are not used for uptime feeds. A revert counts as not an uptime feed."
+  },
+  {
+   "check": "unused-return",
    "where": "Valuer.quote",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
+  },
+  {
+   "check": "unused-return",
+   "where": "Valuer.sequencerHold",
+   "impact": "Medium",
+   "reason": "Chainlink sequencer-uptime pattern: answer and startedAt (with SEQUENCER_GRACE) decide the hold; the other fields carry no meaning for uptime feeds, and a revert holds."
   },
   {
    "check": "weak-prng",
    "where": "PolicyGuard._record",
    "impact": "High",
    "reason": "Not randomness: `hour % DAY_BUCKETS` indexes a fixed ring buffer of hourly buckets."
+  },
+  {
+   "check": "weak-prng",
+   "where": "Valuer.isClosedAt",
+   "impact": "High",
+   "reason": "False positive: no randomness. `t % 1 days` and `(t + 4 days) % 7 days` are calendar arithmetic (time of day, seconds since Sunday 00:00 UTC) for the market-hours hold; nothing is drawn or chosen from block data."
   }
  ]
 }
