@@ -87,12 +87,14 @@ export async function treasury(x: Ctx) {
     expect(w.cash >= 4000 && w.cash <= 7000 && w.equity >= 3000 && w.equity <= 6000, j(w));
     return `NAV $${Number(w.nav / 10n ** 16n) / 100}, cash ${w.cash / 100}%, equity ${w.equity / 100}%`;
   });
-  await r.check("API: nav, positions and desks for the treasury", async () => {
+  // Review v2 V2-L15: treasury reads are default-deny. NAV and positions are chain-derived and public; the desk list
+  // (last actions) needs the treasury's MCP token, read with it further down once the board has issued one.
+  await r.check("API: nav and positions are public; the desk list needs the treasury's MCP token", async () => {
     const nav = await api(`/v1/treasury/${t.account}/nav`);
     const pos = await api(`/v1/treasury/${t.account}/positions`);
     const desks = await api(`/v1/treasury/${t.account}/desks`);
-    expect(nav.status === 200 && pos.status === 200 && desks.status === 200, `${nav.status}/${pos.status}/${desks.status} ${j(nav.body).slice(0, 200)}`);
-    return `nav ${j(nav.body).slice(0, 80)}…, ${(pos.body.positions ?? pos.body).length ?? "?"} positions, ${(desks.body.desks ?? desks.body).length ?? "?"} desks`;
+    expect(nav.status === 200 && pos.status === 200 && desks.status === 401, `${nav.status}/${pos.status}/${desks.status} ${j(nav.body).slice(0, 200)}`);
+    return `nav ${j(nav.body).slice(0, 80)}…, ${(pos.body.positions ?? pos.body).length ?? "?"} positions; desks without a token: 401`;
   });
 
   // ---- guard rejections (simulated from the desk keys; nothing is sent)
@@ -215,12 +217,11 @@ export async function treasury(x: Ctx) {
       expect(!/<script|https?:\/\//i.test(html), "statement.html is not self-contained");
       return `statement.json NAV + bundle hash = on-chain; ${s.positions.length} positions; statement.html self-contained`;
     }, "cfo-pack");
-    await r.check("API: closes list and CFO pack endpoint", async () => {
+    x.state.lastClose = { bundleHash: c.bundleHash, periodEnd: c.periodEnd };
+    await r.check("API: the closes list without a token is refused (default-deny)", async () => {
       const l = await api(`/v1/treasury/${t.account}/closes`);
-      expect(l.status === 200 && JSON.stringify(l.body).includes(c.bundleHash.slice(2, 12)), `HTTP ${l.status} ${j(l.body).slice(0, 200)}`);
-      const p = await api(`/v1/treasury/${t.account}/cfo-pack/${c.periodEnd}`);
-      expect(p.status === 200, `cfo-pack HTTP ${p.status} ${j(p.body).slice(0, 200)}`);
-      return "closes list has the bundle; cfo-pack 200";
+      expect(l.status === 401, `HTTP ${l.status} ${j(l.body).slice(0, 200)}`);
+      return "HTTP 401";
     });
   }
 
@@ -251,6 +252,20 @@ export async function treasury(x: Ctx) {
   }, "board");
   const action = (await db().sql`select id, tx_hash from desk_actions where lower(account) = ${t.account!.toLowerCase()} and status = 'sent' order by id limit 1`) as unknown as { id: number }[];
   // A decision's receipt proof carries the decision row: read with the treasury's MCP token (audit L-14).
+  const lastClose = x.state.lastClose as { bundleHash: Hex; periodEnd: bigint } | undefined;
+  if (token) {
+    await r.check("API with the MCP token: desks, closes list and CFO pack endpoint", async () => {
+      const auth = { headers: { authorization: `Bearer ${token}` } };
+      const d = await api(`/v1/treasury/${t.account}/desks`, auth);
+      expect(d.status === 200, `desks HTTP ${d.status} ${j(d.body).slice(0, 200)}`);
+      if (!lastClose) return `desks 200 (${(d.body.desks ?? d.body).length ?? "?"}); no close yet`;
+      const l = await api(`/v1/treasury/${t.account}/closes`, auth);
+      expect(l.status === 200 && JSON.stringify(l.body).includes(lastClose.bundleHash.slice(2, 12)), `HTTP ${l.status} ${j(l.body).slice(0, 200)}`);
+      const p = await api(`/v1/treasury/${t.account}/cfo-pack/${lastClose.periodEnd}`, auth);
+      expect(p.status === 200, `cfo-pack HTTP ${p.status} ${j(p.body).slice(0, 200)}`);
+      return "desks 200; closes list has the bundle; cfo-pack 200";
+    });
+  }
   if (action[0] && token) {
     await r.check("API proof of a desk action verifies against the posted root (Receipts.verify)", async () => {
       const p = await api(`/v1/treasury/${t.account}/actions/${action[0]!.id}/proof`, { headers: { authorization: `Bearer ${token}` } });
@@ -309,7 +324,18 @@ export async function treasury(x: Ctx) {
       await r.reverts("DERISK: a cash -> vault deposit (cash weight not up) is refused", A.cashDesk, exec("cash", cashSleeve, wrap(usdg, 100n * U, cashRun(0, steak, 100n * U, 0n)), [proofOf(steak)]), "GuardRejected(10)");
       const bal = await r.read<bigint>(tsla, erc20Abi, "balanceOf", [t.account!]);
       if (bal > 0n) {
-        await r.send("DERISK: selling a Stock Token toward cash is allowed", A.equityDesk, exec("equity", equitySleeve, wrap(tsla, bal / 4n, equityRun(1, tsla, bal / 4n, slip)), [proofOf(usdg)]), async () => "sold 25% of the TSLA position");
+        // The sell, like the desk's own orders, stays inside the guard's slippage: halve it until the pool takes it.
+        let part = bal / 4n;
+        const sell = (a: bigint) => exec("equity", equitySleeve, wrap(tsla, a, equityRun(1, tsla, a, slip)), [proofOf(usdg)]);
+        for (let k = 0; k < 4; k++) {
+          try {
+            await r.pub.simulateContract({ account: A.equityDesk.address, ...sell(part) } as never);
+            break;
+          } catch {
+            part /= 2n;
+          }
+        }
+        await r.send("DERISK: selling a Stock Token toward cash is allowed", A.equityDesk, sell(part), async () => `sold ${Number((part * 10_000n) / bal) / 100}% of the TSLA position`);
       }
       const idle3 = await usdgOf(x, t.account!);
       await r.send("board withdraws in DERISK (never gated)", A.deployer, { address: t.account!, abi: ACC, functionName: "withdrawToBoard", args: [usdg, idle3 / 10n] });
