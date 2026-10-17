@@ -1,8 +1,22 @@
 {
+  "acceptOwnership": [
+    "0x6687F371c384991c514D2C24Bfb4058bbA7c2756"
+  ],
+  "accountImpl": "0x0814284fd55f7F3e29B94A0bFA9ab41ec3889d4f",
+  "allowEoaOwner": true,
+  "approvalsImpl": "0x8a7a557213C1F44E2b6E9E020E1a8ddE41880818",
   "chainId": 4663,
-  "treasuryFactory": "0x08b15cceD749a3fD2cb599F0d5081e62363d4b63",
-  "treasuryFactoryBlock": 90961180,
+  "closeImpl": "0x68e0CBcE6579B17d97947EFEE5E6FB460245865c",
+  "deployer": "0x30C7BA93709807eC21b6aFfc4d73659F58238Caa",
+  "legacyTreasuryFactories": [
+    "0x08b15cceD749a3fD2cb599F0d5081e62363d4b63"
+  ],
+  "owner": "0x633601fbBd708EA6B69ba3237c6BfC1502ae602f",
   "policyGuard": "0x397865EE90FF882Fd046969c0d6B54bfe98AB5eA",
+  "policyImpl": "0x4D7871C82fEb853f2F37dDf7f74152d29B26BDBB",
   "receipts": "0x3E2a514e8fF3BedF64329FC9c8ED1d1A400e856a",
-  "templateRegistry": "0x6dC880b778d1d86d7Ed1B1b0e0Fbe2a88d6389F9"
+  "templateRegistry": "0x6dC880b778d1d86d7Ed1B1b0e0Fbe2a88d6389F9",
+  "treasuryFactory": "0x6687F371c384991c514D2C24Bfb4058bbA7c2756",
+  "treasuryFactoryBlock": 91039998,
+  "treasuryVersion": "2.1"
 }
