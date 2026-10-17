@@ -33,7 +33,7 @@ keystore; never paste a key into a shell).
 | The attester key is compromised | Rotate (stored records stay; revoke bad ones) | `cast send <eligibilityRegistry> "setAttester(address)" <new>` (v2: queued, applies 48 h later with the same call; until then the old attester can still revoke and attest); `revoke(user)` from the new attester |
 | The relayer key is compromised | Stop the relayer service; it has no on-chain role | Rotate `RELAYER` in the service env; drain its gas balance |
 | A desk key or controller is compromised (treasury) | The board revokes the desk / cancels the policy / withdraws | Board: `revokeDesk`, `cancel`, `withdrawToBoard` |
-| OWNER key suspected compromised | Move ownership first, then everything else | `transferOwnership(<new owner>)` on every ownable contract (two-step ones need `acceptOwnership` from the new owner). In v2 an ownership change voids every queued ChangeDelay change; perps proposals survive it, so the new owner `cancel`s any it did not make (watch `ChangeProposed` on the pool and markets) |
+| OWNER key suspected compromised | Move ownership first, then everything else | `transferOwnership(<new owner>)` on every ownable contract (two-step ones need `acceptOwnership` from the new owner). In v2 an ownership change voids every queued ChangeDelay change and every perps proposal (PerpPool / PerpMarket), so nothing the old key queued can be applied after the hand-over |
 
 Then stop the affected service so it does not keep sending: `bash app/scripts/mainnet/down.sh` (or the single
 systemd unit on the server).
