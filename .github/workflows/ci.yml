@@ -180,6 +180,9 @@ jobs:
         with:
           version: ${{ env.FOUNDRY_VERSION }}
           cache: false
+      - name: install app (the SDK's workspace sources import app/src/chain, which resolves viem from app/)
+        working-directory: app
+        run: bun install --frozen-lockfile
       - name: build and test
         working-directory: sdk
         run: |
