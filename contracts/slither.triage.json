@@ -159,12 +159,6 @@
   },
   {
    "check": "incorrect-equality",
-   "where": "PerpMarket._decrease",
-   "impact": "Medium",
-   "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
-  },
-  {
-   "check": "incorrect-equality",
    "where": "PerpMarket._indicesNow",
    "impact": "Medium",
    "reason": "Strict equality on internal state (zero sentinels, exact window/epoch/bucket ids, full-close detection), never on a token balance an outsider can change by donation."
@@ -356,10 +350,46 @@
    "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
   },
   {
-   "check": "divide-before-multiply",
-   "where": "PerpMarket._heldSettlePrice",
+   "check": "incorrect-equality",
+   "where": "PerpMarket._close",
    "impact": "Medium",
-   "reason": "The division runs only for a feed with more than 18 decimals (Chainlink equity feeds use 8, so it never runs on mainnet), and it then loses at most the feed's sub-1e18 digits before the uiMultiplier scaling; the result is a settle price, compared against nothing."
+   "reason": "Equalities on the position's own stored size and on zero sentinels (a full close, an empty side), never on a token balance an outsider can move."
+  },
+  {
+   "check": "incorrect-equality",
+   "where": "PeriodClose._trustedUsd",
+   "impact": "Medium",
+   "reason": "`raw == 0` is a zero-amount short cut and `a == address(cash)` an address comparison; neither involves a balance an outsider can set."
+  },
+  {
+   "check": "reentrancy-no-eth",
+   "where": "PerpMarket._open",
+   "impact": "Medium",
+   "reason": "_open is nonReentrant. The external calls before the new position is written are the displacement close (the owner-listed PerpPool paying the displaced owner in USDG, a token with no transfer hooks) and the Valuer read; nothing they reach can call back into this market."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PerpMarket._close",
+   "impact": "Medium",
+   "reason": "The close's scratch struct starts zeroed on purpose and every field is written before it is read."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._measure",
+   "impact": "Medium",
+   "reason": "Only the asset list and kinds are needed from trackedAssets, and only the value from AssetValuation.value: a held price is the Valuer's last oracle price, which the board cannot write, so it may count in the measured NAV."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._setStart",
+   "impact": "Medium",
+   "reason": "Only the tracked asset list is needed from trackedAssets."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose.claimBasisNow",
+   "impact": "Medium",
+   "reason": "Only the tracked asset list is needed from trackedAssets."
   },
   {
    "check": "uninitialized-local",
@@ -372,12 +402,6 @@
    "where": "PerpMarket._heldSettlePrice",
    "impact": "Medium",
    "reason": "valuer.quote is called only to learn whether the Valuer answers (then _decrease uses its price); from latestRoundData only the answer and updatedAt matter: the round must be newer than lastPriceAt and not in the future, roundId and startedAt are not needed."
-  },
-  {
-   "check": "unused-return",
-   "where": "PeriodClose._newSleeveUsd",
-   "impact": "Medium",
-   "reason": "Only the sleeve's value is needed: it is subtracted from the insurance claim basis, so ignoring a hold flag can only lower the cap (conservative), never raise it."
   },
   {
    "check": "uninitialized-local",
@@ -447,12 +471,6 @@
   },
   {
    "check": "uninitialized-local",
-   "where": "PerpMarket._decrease",
-   "impact": "Medium",
-   "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
-  },
-  {
-   "check": "uninitialized-local",
    "where": "PerpMarket._fill",
    "impact": "Medium",
    "reason": "`costBps` is 0 on a margin-only add (sizeUsd == 0: no fee, no spread), set to fee + open spread otherwise; deliberate."
@@ -504,12 +522,6 @@
    "where": "PrivateSleeve.pricesCommitment",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
-  },
-  {
-   "check": "uninitialized-local",
-   "where": "PrivateSleeve.sweep",
-   "impact": "Medium",
-   "reason": "`ok` is the try/catch result: false unless the withdraw verifier returns true; a revert in the verifier leaves it false and the sweep reverts InvalidProof."
   },
   {
    "check": "uninitialized-local",
@@ -684,18 +696,6 @@
    "where": "PeriodClose._checkTier",
    "impact": "Medium",
    "reason": "Only the needed fields of a multi-value return are read, or the output is measured by balance change instead of the callee's return value (audited behaviour: CrowdBuy and ShieldedTrade measure received tokens)."
-  },
-  {
-   "check": "unused-return",
-   "where": "PeriodClose._commitPrivate",
-   "impact": "Medium",
-   "reason": "The hold flag of navUsd() is not needed: the close was already checked against a hold-free book (_positions(true) reverts HoldAtClose, or the stored snapshot that did the same); this only records the next period's start NAV."
-  },
-  {
-   "check": "unused-return",
-   "where": "PeriodClose._commitPublic",
-   "impact": "Medium",
-   "reason": "Same as _commitPrivate: the book was checked hold-free before; this read only records periodStartNav after the close fee is paid."
   },
   {
    "check": "unused-return",
