@@ -5,7 +5,7 @@ import { keeperRoundups } from "@/db";
 import { sql } from "drizzle-orm";
 import { getAddress } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
-import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
+import { AccrueGate, accrueSpend, DEFAULT_MIN_ONCHAIN_ACCRUE_CENTS } from "@/keeper/sources/accrue";
 import { OnchainSource } from "@/keeper/sources/onchain";
 import type { SpendLog } from "@/keeper/state";
 
@@ -36,9 +36,10 @@ async function put(ctx: Ctx, s: SpendLog, patch: Partial<Row> & { status: string
     });
 }
 
-// On-chain spends keep minAccrueCents 0: each one is a transaction its sender paid for (and the vault's own R1 math
-// covers sub-cent round-ups). The pass, per-user and time/gas budgets still apply.
-export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccrueCents: 0 })): Promise<JobResult> {
+// On-chain spends have their own, lower minimum (KEEPER_MIN_ONCHAIN_ACCRUE_CENTS, default 5): each one is a
+// transaction its sender paid for, but a 1e-6 USDG round-up still bought a full keeper transaction (review v3
+// R3-SVC-2). Smaller round-ups are skipped with the reason, never sent. The pass, per-user and time/gas budgets apply.
+export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccrueCents: ctx.accrueLimits?.minOnchainAccrueCents ?? DEFAULT_MIN_ONCHAIN_ACCRUE_CENTS })): Promise<JobResult> {
   const res: JobResult = { job: "roundups", ok: true, actions: 0, notes: [] };
   for (const { spend: s, decision: d } of await new OnchainSource(ctx).scan()) {
     if (d.kind === "skip") {

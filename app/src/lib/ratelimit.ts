@@ -66,6 +66,11 @@ export class RateLimiter {
     return true;
   }
 
+  /** Gives back the most recent hit of `key` (a request refused before any work, e.g. busy: review v3 R3-SVC-1). */
+  refund(key: string) {
+    this.hits.get(key)?.pop();
+  }
+
   private sweep(t: number) {
     this.lastSweep = t;
     for (const [k, xs] of this.hits) if (!xs.some((x) => x > t - this.windowMs)) this.hits.delete(k);

@@ -9,8 +9,9 @@ import type { Db } from "@/db";
 import {
   insertEvents,
   MAX_STATEMENT_BYTES,
+  defaultParsePool,
   ParseBusyError,
-  parseStatementOffThread,
+  type ParsePool,
   plaidAad,
   plaidFromEnv,
   sha256Hex,
@@ -61,6 +62,8 @@ export type RoundupDeps = {
   maxRowsPerWeek?: number | undefined;
   /** Wall-clock limit for parsing one statement in its worker (default 2 s). */
   parseTimeoutMs?: number | undefined;
+  /** The statement parser's worker pool (default: the process's own; tests pass a small one). */
+  parsePool?: ParsePool | undefined;
   /** The client address of a request (the API passes its proxy-aware reader). Absent = one shared key. */
   ipOf?: ((c: Context) => string) | undefined;
   /** Imports per hour per client address / per wallet (ROUNDUPS_IMPORT_IP_LIMIT / ROUNDUPS_IMPORT_USER_LIMIT). */
@@ -145,7 +148,8 @@ export function roundupRoutes(d: RoundupDeps): Hono {
     bodyLimit({ maxSize: MAX_STATEMENT_BYTES * 2, onError: (c) => c.json({ error: { message: "statement too large" } }, 413) }),
     wrap(async (c) => {
       // Before anything is read or parsed: an import is the costliest request the API serves (audit M-9).
-      if (!importIp.take(ipKey(d.ipOf?.(c) ?? "shared"))) throw new HttpError(429, "too many imports from this address; try again later");
+      const ip = ipKey(d.ipOf?.(c) ?? "shared");
+      if (!importIp.take(ip)) throw new HttpError(429, "too many imports from this address; try again later");
       const b = await json(c);
       const content = str(b, "content")!;
       const user = await authorise(d, b, "import", sha256Hex(content));
@@ -155,12 +159,23 @@ export function roundupRoutes(d: RoundupDeps): Hono {
       const debitSign = str(b, "debitSign", false);
       if (format && format !== "csv" && format !== "ofx") throw new HttpError(400, "format must be csv or ofx");
       if (debitSign && debitSign !== "negative" && debitSign !== "positive") throw new HttpError(400, "debitSign must be negative or positive");
-      // Off the event loop, with a timeout and a concurrency cap (review v2, V2-M4): one upload cannot stall the API.
-      const parsed = await parseStatementOffThread(
-        content,
-        { format: format as "csv" | "ofx" | undefined, debitSign: debitSign as "negative" | "positive" | undefined, layout: str(b, "layout", false) },
-        { timeoutMs: d.parseTimeoutMs },
-      );
+      // Off the event loop, with a timeout (review v2, V2-M4): one upload cannot stall the API. Review v3 (R3-SVC-1):
+      // one slot per client /64 and per wallet in a shared pool with a short line, and a busy refusal (503) gives
+      // both quotas back, so a crowd of fresh wallets can neither hold every slot nor burn an honest wallet's imports.
+      let parsed;
+      try {
+        parsed = await (d.parsePool ?? defaultParsePool).parse(
+          content,
+          { format: format as "csv" | "ofx" | undefined, debitSign: debitSign as "negative" | "positive" | undefined, layout: str(b, "layout", false) },
+          { timeoutMs: d.parseTimeoutMs, keys: [`ip:${ip}`, `user:${user.toLowerCase()}`] },
+        );
+      } catch (e) {
+        if (e instanceof ParseBusyError) {
+          importIp.refund(ip);
+          importUser.refund(user.toLowerCase());
+        }
+        throw e;
+      }
       // Audit M-7: rows per user per week are capped, so one wallet cannot fill the table (the keeper's own accrual
       // limits keep these rows from costing gas).
       const cap = d.maxRowsPerWeek ?? DEFAULT_MAX_IMPORT_ROWS_PER_WEEK;

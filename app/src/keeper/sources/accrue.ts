@@ -61,6 +61,13 @@ export const DEFAULT_MAX_ACCRUALS_PER_PASS = 200;
 export const DEFAULT_MAX_ACCRUALS_PER_USER_WEEK = 100;
 export const DEFAULT_MAX_ACCRUALS_PER_USER_PASS = 10;
 export const DEFAULT_MIN_ACCRUE_CENTS = 25;
+/**
+ * Review v3 (R3-SVC-2): the least round-up an ON-CHAIN spend must have for the keeper to accrue it. It used to be 0, so
+ * a linked sybil sending 0.999999 USDG transfers (about $0.004 of its own gas each) bought one 57.5k-gas keeper accrue
+ * per transfer, each moving 1e-6 USDG, ahead of sweep / beacon / execute. 5 cents: each keeper transaction moves about
+ * ten times its own gas cost (0.02 gwei, ETH $4000) of the user's money into savings.
+ */
+export const DEFAULT_MIN_ONCHAIN_ACCRUE_CENTS = 5;
 export const DEFAULT_ACCRUE_PASS_MS = 10_000;
 export const DEFAULT_ACCRUE_PASS_GAS = 5_000_000n;
 const WEEK_S = 604_800n;

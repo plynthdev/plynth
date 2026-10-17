@@ -71,6 +71,7 @@ const ctx: Ctx = { chainId, db, pub, account: account.address, sender, sealer, d
     perUserWeek: config.KEEPER_MAX_ACCRUALS_PER_USER_WEEK,
     perUserPass: config.KEEPER_MAX_ACCRUALS_PER_USER_PASS,
     minAccrueCents: config.KEEPER_MIN_ACCRUE_CENTS,
+    minOnchainAccrueCents: config.KEEPER_MIN_ONCHAIN_ACCRUE_CENTS,
     passMs: config.KEEPER_ACCRUE_PASS_MS,
     passGas: BigInt(config.KEEPER_ACCRUE_PASS_GAS),
   }, perpPokeAgeS: config.KEEPER_PERP_POKE_AGE_S, plaid: plaidFromEnv(config.env)?.api, mockFeeds, log };

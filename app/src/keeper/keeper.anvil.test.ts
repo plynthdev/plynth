@@ -192,7 +192,7 @@ describe("keeper on anvil", () => {
     [0, 3_400_000n], // 3.40 -> (1 - 0.40) x2 = 1.20
     [1, 12_750_000n], // 12.75, roundTo 5 -> 2.25
     [2, 7_010_000n], // 7.01 -> 0.99
-    [0, 9_999_999n], // 9.999999 -> 0.000001 x2
+    [0, 9_999_999n], // 9.999999 -> 0.000001 x2: under the 5-cent on-chain minimum, skipped (review v3 R3-SVC-2)
     [2, 20_000_000n], // exact multiple -> 0
   ];
   const settingsOf = (i: number) => ({ roundTo: i === 1 ? 5n : 1n, mult: i === 0 ? 2n : 1n });
@@ -201,17 +201,19 @@ describe("keeper on anvil", () => {
   test("round-ups: accruals match R1, transfers into Plynth contracts and pre-link spends are skipped, top-up pulled, sweep fills book 0", async () => {
     for (const [i, v] of SPENDS) await spend(wallets[i]!, merchant, v);
     await spend(wallets[0]!, dep.savingsVault, 5n * U); // into a Plynth contract: skipped
-    expected = users.map((_, i) => SPENDS.filter(([j]) => j === i).reduce((a, [, v]) => a + r1(v, settingsOf(i).roundTo, settingsOf(i).mult), 0n));
-    expect(expected).toEqual([1_200_002n, 2_250_000n, 990_000n]);
+    const MIN_ONCHAIN = 50_000n; // 5 cents of USDG
+    expect(r1(9_999_999n, 1n, 2n)).toBe(2n); // R1 itself is unchanged; the keeper just does not send it
+    expected = users.map((_, i) => SPENDS.filter(([j]) => j === i).reduce((a, [, v]) => { const r = r1(v, settingsOf(i).roundTo, settingsOf(i).mult); return r >= MIN_ONCHAIN ? a + r : a; }, 0n));
+    expect(expected).toEqual([1_200_000n, 2_250_000n, 990_000n]);
 
     const out = cycle();
-    expect(out).toContain("roundups: ok actions=4"); // the exact multiple adds 0: skipped, never sent (audit M-7)
+    expect(out).toContain("roundups: ok actions=3"); // the exact multiple adds 0 and the dust round-up is under the minimum: skipped, never sent
     expect(out).toContain("topups: ok actions=1");
     expect(out).toContain("sweep: ok actions=1");
 
     const rows = await t.sql`select user_address, added, status, reason, spend from keeper_roundups order by block_number, log_index`;
-    expect(rows.filter((r) => r.status === "done")).toHaveLength(4);
-    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason).sort()).toEqual(["no round-up (whole amount): the vault would add 0", "transfer into a Plynth contract"]);
+    expect(rows.filter((r) => r.status === "done")).toHaveLength(3);
+    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason).sort()).toEqual(["no round-up (whole amount): the vault would add 0", "round-up below the keeper minimum of 5 cents per accrual", "transfer into a Plynth contract"]);
     expect(rows.some((r) => BigInt(r.spend) === 1_500_000n)).toBe(false); // pre-link spend never indexed
     for (const [i, u] of users.entries()) {
       const added = rows.filter((r) => r.user_address === u.toLowerCase() && r.status === "done").reduce((a, r) => a + BigInt(r.added), 0n);
@@ -240,7 +242,7 @@ describe("keeper on anvil", () => {
     await t.sql`delete from keeper_roundups`;
     const out2 = keeper("roundups");
     expect(out2).toContain("roundups: ok actions=0");
-    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(4);
+    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(3); // the dust spend is skipped before any simulation
     expect(await pub.getTransactionCount({ address: ANVIL_ADDR_1 })).toBe(before);
   }, 120_000);
 
