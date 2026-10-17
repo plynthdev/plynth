@@ -119,6 +119,12 @@ async function main(c: Checks) {
   a.cashSleeve = await kit.deploy("CashSleeve.sol", "CashSleeve", [a.valuer, USDG, [STEAK_USDG]]);
   a.equitySleeve = await kit.deploy("EquitySleeve.sol", "EquitySleeve", [a.router, NAMES.map((n) => n.token)]);
   a.beacon = await kit.deploy("JitterBeacon.sol", "JitterBeacon", [kit.equityKey.address, d, 3600n]); // reveal window, as in treasury-kit
+  // Review v4: a factory treasury registers only reviewed adapters (the factory's codehash allow-list). The deployer
+  // still owns the factory here (first-time setup), so the additions apply at once.
+  for (const sleeve of [a.cashSleeve, a.equitySleeve]) {
+    const code = await kit.pub.getCode({ address: sleeve! });
+    await kit.send(a.factory!, "TreasuryFactory.sol", "TreasuryFactory", "setAdapterAllowed", [keccak256(code!), true]);
+  }
   await kit.send(a.account!, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("cash", { size: 32 }), kit.cashKey.address, [a.cashSleeve]]);
   await kit.send(a.account!, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("equity", { size: 32 }), kit.equityKey.address, [a.equitySleeve]]);
 
@@ -183,7 +189,10 @@ async function main(c: Checks) {
   const refused = NAMES.filter((n) => !bought.has(n.token.toLowerCase()));
   for (const n of refused) {
     const tries = r.filter((x) => x.asset === n.token.toLowerCase() && x.action === "buy");
-    c.ok(`${n.sym}: not bought only because the oracle guard refused the pool price`, tries.length > 0 && tries.every((x) => x.status === "rejected" && x.reason === "Slippage"), JSON.stringify(tries.slice(-2)));
+    // The desk splits a refused buy down to its minimum piece and logs what is left without sending it (R3-TREAS-4):
+    // "skipped" with "split: min piece" (or, for a whole-order refusal, "rejected" with the router's Slippage).
+    const sizeOnly = (x: { status: string; reason: string | null }) => (x.status === "rejected" && x.reason === "Slippage") || (x.status === "skipped" && /^split: (min piece|max sends)/.test(x.reason ?? ""));
+    c.ok(`${n.sym}: not bought only because the oracle guard refused the pool price`, tries.length > 0 && tries.every(sizeOnly), JSON.stringify(tries.slice(-2)));
     c.step(`${n.sym}: pool price is more than the desk slippage away from its Chainlink mark on this fork; buy refused`);
   }
   c.ok("equity desk bought at least 3 of the 5 names on the real pools", held.length >= 3, `${held.length}`);
