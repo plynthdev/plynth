@@ -434,6 +434,21 @@ export async function quiet(x: Ctx) {
     const nonce = await r.read<bigint>(sc, S, "nonces", [h.stealthAddress]);
     const signed = await signClaim(keyForHit(h, keys), FORK_CHAIN_ID, sc, { token: h.token!, to, raw: h.amount!, nonce, deadline: (await r.now()) + 3600n });
     const body = { token: signed.message.token, stealth: signed.message.stealth, to, raw: signed.message.raw.toString(), deadline: signed.message.deadline.toString(), sig: signed.sig };
+    // Audit L-12: the relayer pays gas and takes no fee, so it refuses a claim below its per-token minimum (stock
+    // tokens: 1e15 raw by default). The random split can make a part that small: the saver then sends the signed
+    // claim from their own wallet (StealthClaims re-checks the signature, so any sender works).
+    if (h.token!.toLowerCase() !== x.addr("usdg").toLowerCase() && h.amount! < 1_000_000_000_000_000n) {
+      await r.check(`relayer refuses stealth part ${i + 1} (${h.amount} raw, below its claim minimum)`, async () => {
+        const res = await api("/claim", { method: "POST", port: PORTS.relayer, body: JSON.stringify(body) });
+        expect(res.status === 400 && /relayer minimum/.test(String(res.body.error)), `relayer ${res.status} ${j(res.body)}`);
+        return `HTTP 400: ${res.body.error}`;
+      });
+      await r.send(`the saver sends the signed claim of part ${i + 1} from their own wallet`, A.quiet, { address: sc, abi: S, functionName: "claim", args: [body.token, body.stealth, to, BigInt(body.raw), BigInt(body.deadline), body.sig] }, async () => {
+        expect((await balanceOf(x, h.token!, to)) === h.amount!, "fresh address did not receive the part");
+        return `fresh address holds ${h.amount} raw ${r.who(h.token!)}`;
+      });
+      continue;
+    }
     await r.external(`relayer claims stealth part ${i + 1} gaslessly to a fresh address`, "relayer", async () => {
       const res = await api("/claim", { method: "POST", port: PORTS.relayer, body: JSON.stringify(body) });
       expect(res.status === 200 && res.body.txHash, `relayer ${res.status} ${j(res.body)}`);
