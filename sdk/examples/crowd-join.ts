@@ -60,13 +60,14 @@ await runExample("crowd-join", async ({ dep, pub, accounts, now, warpTo, send, c
   const secret = keccak256(toHex(crypto.getRandomValues(new Uint8Array(32))));
   await call(keeper, dep.jitterBeacon, keeperAbi, "commit", [key, tomorrow, tomorrow + DAY, keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [secret, key]))]);
 
-  // 3. Anyone joins each saver: their pending USDG moves into the open book, split by their mix.
+  // 3. Each saver joins (only the saver or the keeper may; audit L-3): their pending USDG moves into the open
+  //    book, split by their mix.
   const { bookId } = await openBook(pub, crowd, tsla);
   for (const u of savers) {
     const [, pending] = await read<readonly [bigint, bigint]>(vault, savingsVaultAbi, "balancesOf", [u]);
     check(pending === 22_980_000n, "round-up accrued");
     check(splitByMix(pending, mix)[0] === pending, "one-token mix places everything");
-    await send(anyone, joinTx(crowd, u));
+    await send(u, joinTx(crowd, u));
   }
   const { book } = await openBook(pub, crowd, tsla);
   check(book.accounts === 3 && book.usdgTotal === 3n * 22_980_000n, "book holds three accounts");

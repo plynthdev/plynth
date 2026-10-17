@@ -54,7 +54,7 @@ export function setMixTx(vault: Address, mix: readonly MixEntry[]): UnsignedTx {
 
 // ------------------------------------------------------------------ crowd (CrowdBuy)
 
-/** join(user): anyone may send it; it only moves `user`'s own pending USDG into `user`'s orders. */
+/** join(user): sent by `user` (or the keeper; audit L-3); it only moves `user`'s own pending USDG into `user`'s orders. */
 export const joinTx = (crowd: Address, user: Address) => tx(crowd, crowdBuyAbi, "join", [user]);
 /** cancel(asset, bookId): sender's whole order in a not-yet-executed book goes back to their vault balance. */
 export const cancelTx = (crowd: Address, asset: Address, bookId: bigint) => tx(crowd, crowdBuyAbi, "cancel", [asset, bookId]);

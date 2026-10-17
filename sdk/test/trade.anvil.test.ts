@@ -213,7 +213,7 @@ describe.skipIf(!tools)("private sell / buy / park on anvil (real verifiers)", (
   test("a private sell relayed by the real relayer app: the relayer is the sender and is paid the proven fee", async () => {
     await deposit(tsla(), 2n * E18);
     const note = await find(tsla(), (n) => n.raw === 2n * E18);
-    const s = await proveSwap({ keys: ka, tree: state!.tree, note, amountIn: E18, relayerFee: E18 / 50n, assetOut: usdg(), minOut: 200n * U, deadline: await deadline() });
+    const s = await proveSwap({ keys: ka, tree: state!.tree, note, amountIn: E18, relayerFee: E18 / 50n, relayer, assetOut: usdg(), minOut: 200n * U, deadline: await deadline() });
     const app = relayerApp({
       chainId: 31337,
       stealthClaims: "0x00000000000000000000000000000000000005c0",

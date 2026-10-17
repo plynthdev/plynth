@@ -48,7 +48,7 @@ run, and stop anvil. They need `anvil` and `forge` on PATH and the repo checked 
 | Script | Flow |
 | --- | --- |
 | `bun examples/send-to-stealth.ts` | Recipient registers an ERC-6538 meta-address; a sender derives a one-time stealth address from it, pays mUSDG there and announces it; the recipient scans with the viewing key, derives the stealth key and moves the funds. |
-| `bun examples/crowd-join.ts` | Three savers deposit, pick a mix, get round-ups accrued; anyone joins them to the open book; the window's jittered time is revealed at that time; the keeper executes; allocations recomputed from logs match `allocationOf`; each saver claims. |
+| `bun examples/crowd-join.ts` | Three savers deposit, pick a mix, get round-ups accrued; each joins the open book; the window's jittered time is revealed at that time; the keeper executes; allocations recomputed from logs match `allocationOf`; each saver claims. |
 | `bun examples/shield-and-withdraw.ts` | Keys from one signature; deposit mUSDG into ShieldedPool; the pending queue is inserted (1 h for a batch of 4+ deposits, 2 h for a smaller one); the note is found by scanning; a withdraw proof is made locally and a different account (a relayer) submits it to a fresh address. |
 
 To run against an anvil you already deployed the kit on, set `RPC_URL` and `PLYNTH_DEPLOYMENT` (path to the
