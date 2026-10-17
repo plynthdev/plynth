@@ -35,15 +35,20 @@ export async function runSweep(ctx: Ctx): Promise<JobResult> {
   const ready: Address[] = [];
   const gasOf = new Map<Address, bigint>();
   for (const user of await knownUsers(ctx.db, ctx.chainId, ctx.dep.vault)) {
-    const [, pending] = (await ctx.pub.readContract({ address: ctx.dep.vault, abi: vaultAbi, functionName: "balancesOf", args: [user] })) as readonly [bigint, bigint];
-    if (pending === 0n) continue;
-    const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "join", [user]);
-    if (!sim.ok) {
-      res.notes.push(`${user}: join reverts ${sim.errorName}`);
-      continue;
+    // Per user: a read or estimate that throws for one user is a note, never the end of the sweep for everyone.
+    try {
+      const [, pending] = (await ctx.pub.readContract({ address: ctx.dep.vault, abi: vaultAbi, functionName: "balancesOf", args: [user] })) as readonly [bigint, bigint];
+      if (pending === 0n) continue;
+      const sim = await simulate(ctx, ctx.dep.crowd, crowdAbi, "join", [user]);
+      if (!sim.ok) {
+        res.notes.push(`${user}: join reverts ${sim.errorName}`);
+        continue;
+      }
+      gasOf.set(user, await ctx.pub.estimateContractGas({ account: ctx.account, address: ctx.dep.crowd, abi: crowdAbi, functionName: "join", args: [user] } as any));
+      ready.push(user);
+    } catch (err) {
+      res.notes.push(`${user}: skipped this pass (${String((err as Error)?.message ?? err).split("\n")[0]})`);
     }
-    gasOf.set(user, await ctx.pub.estimateContractGas({ account: ctx.account, address: ctx.dep.crowd, abi: crowdAbi, functionName: "join", args: [user] } as any));
-    ready.push(user);
   }
   for (const batch of chunks(ready, SWEEP_BATCH)) {
     const minGas = sweepGasFloor(batch.map((u) => gasOf.get(u)!));
