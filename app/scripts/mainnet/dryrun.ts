@@ -175,7 +175,7 @@ async function main() {
       acceptGas += rc.gasUsed;
     }
     const checks: string[] = [];
-    const owned = ["stockTokenRegistry", "stockRouter", "eligibilityRegistry", "jitterBeacon", "savingsVault", "crowdBuy", "shieldedPool", "shieldedTrade", "perpPool", ...(token ? ["feeRouter"] : [])];
+    const owned = ["stockTokenRegistry", "stockRouter", "eligibilityRegistry", "jitterBeacon", "savingsVault", "crowdBuy", "shieldedPool", "shieldedTrade", "perpPool", "treasuryFactory", ...(token ? ["feeRouter"] : [])];
     const pm = (typeof dep.perpMarkets === "string" ? JSON.parse(dep.perpMarkets) : dep.perpMarkets) as Record<string, string>;
     const perp = Object.values(pm).map((x) => getAddress(x));
     for (const c of [...owned.map((k) => getAddress(dep[k] as string)), ...perp]) {
