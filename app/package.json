@@ -25,6 +25,8 @@
     "db:create": "bun run scripts/db-create.ts",
     "db:generate": "drizzle-kit generate",
     "verify:chain": "bun run scripts/verify-chain.ts",
+    "verify:deployment": "bun run scripts/verify-deployment.ts",
+    "verify:explorer": "bun run scripts/verify-explorer.ts",
     "download-ip-db": "bun run scripts/download-dbip.ts",
     "smoke": "bun run scripts/smoke.ts",
     "e2e": "bash scripts/e2e.sh",
