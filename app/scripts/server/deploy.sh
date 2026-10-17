@@ -205,6 +205,10 @@ main() {
     key="${pair%%:*}"
     var="${pair#*:}"
     want="$(jq -r --arg k "$key" '.[$k] // empty' "$dep")"
+    # A treasury overlay (treasuryVersion set) replaces the factory, as the API and keeper read it.
+    if [[ "$key" == treasuryFactory ]] && jq -e '.treasuryVersion' "$R/app/deployments/4663-treasury.json" >/dev/null 2>&1; then
+      want="$(jq -r '.treasuryFactory // empty' "$R/app/deployments/4663-treasury.json")"
+    fi
     have="$(envval "$var")"
     [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "$var in $ENV_DIR is $have but 4663.json says $key = $want"
   done
