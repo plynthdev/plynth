@@ -8,7 +8,7 @@
 //    verifiers, clone implementations and libraries found through them), each with its exact constructor
 //    arguments, rebuilt from the deployment file the way MainnetBeta.s.sol passed them. Mainnet uses Sourcify
 //    (`--verifier sourcify`; Blockscout's API is behind a Cloudflare challenge and Blockscout reads Sourcify
-//    matches); the testnet uses its Blockscout. A read-only preflight shows which contracts are verified already.
+//    matches; Sourcify's chain list, sourcify.dev/server/chains, marks 4663 supported); the testnet uses its Blockscout. A read-only preflight shows which contracts are verified already.
 //    Dry run by default: the commands are printed, nothing is submitted without --submit.
 //
 //   bun run verify:explorer                       # mainnet 4663: bytecode match + Sourcify preflight + commands

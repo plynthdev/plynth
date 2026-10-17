@@ -474,7 +474,11 @@ cd .. && bash .github/scripts/semgrep.sh && python3 .github/scripts/check-hygien
 cd app && bun run release:gate && bun run verify:explorer   # live mainnet state (strict) and bytecode vs this repo
 ```
 
-CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request, plus coverage and gitleaks.
+Source verification on mainnet goes through Sourcify (`forge verify-contract --verifier sourcify`): Sourcify lists
+Robinhood Chain mainnet (4663) as supported, and Blockscout reads Sourcify matches. `verify:explorer` prints the
+commands; it submits nothing unless run with `--submit`.
+
+The CI workflow (`.github/workflows/ci.yml`) is set to run all of the above on every push and pull request, plus coverage and gitleaks (it has not run on the repository yet).
 
 The end-to-end runs use local anvil forks only (nothing is broadcast) and a throwaway `plynth_e2e_*` database.
 

@@ -28,8 +28,8 @@ and who holds it, what each role can do and how fast, the risks we accept, and t
 
 No contract is upgradeable: a fix ships as a redeploy. The live bytecode is proven equal to the source at the commit
 that recorded the deployment (`cd app && bun run verify:explorer`: 45 of 45 runtime codes match, immutables and
-library addresses masked), and the live configuration is asserted by `bun run verify:deployment`. Both run daily in
-CI. An external AI audit graded the deployed version 3.7/10 with nine Medium findings; they are listed under
+library addresses masked), and the live configuration is asserted by `bun run verify:deployment`. The CI workflow
+runs both on a daily schedule once it runs on the repository (it has not run yet). An external AI audit graded the deployed version 3.7/10 with nine Medium findings; they are listed under
 [Known issues](#known-issues-in-the-deployed-version); their fixes are merged in v2 in this tree, which is not deployed
 yet. No human audit has been done.
 
@@ -69,8 +69,9 @@ Valuer, JitterBeacon, EligibilityRegistry, SavingsVault, CrowdBuy, ShieldedPool 
 size) and FeeRouter.
 
 Perps use their own proposal timelock (`PerpPool.TIMELOCK`, 48 h on mainnet): `propose*` records an eta, the setter
-after the eta applies it once, and `cancel(id)` drops it. Those proposals do not expire and are not cleared by an
-ownership change. Treasuries use the policy `TIMELOCK` (48 h). Setters that stay instant are listed with the reason:
+after the eta applies it once, and `cancel(id)` drops it. In v2 a matured proposal is good for 14 days after its eta
+(`PROPOSAL_EXPIRY`; later it needs a fresh proposal), and every proposal id carries `proposalNonce`, which every
+ownership change bumps, so a proposal made by the deployer can never be applied by OWNER (as ChangeDelay). Treasuries use the policy `TIMELOCK` (48 h). Setters that stay instant are listed with the reason:
 each only stops or reduces something, is one-time deploy wiring, or acts before anybody can be affected.
 
 | Contract | Caller | Function | Effect | Delay (mainnet) |
@@ -104,7 +105,8 @@ each only stops or reduces something, is one-time deploy wiring, or acts before 
 | PerpPool | OWNER | `proposeMarket` then `addMarket` | Lists a market (a market can lock collateral and settle payouts against LP funds) | 48 h once LP shares exist; instant only while the pool has none |
 | | OWNER | `openDeposits` | Opens LP deposits. Deposits stay closed until then, so nobody can mint a share that would put the deploy's market listings behind the timelock | One-way; the deploy calls it after listing every market |
 | | OWNER | `removeMarket` | Unlists a market with no open interest and no reserve | Instant: cannot move the share price |
-| | OWNER | `proposeMakerRegistrar` / `setMakerRegistrar(0)` | Sets / clears the maker-fee registrar (unset on mainnet) | Set: 48 h once LP shares exist; clear: instant |
+| | OWNER | `proposeMakerRegistrar` / `setMakerRegistrar(0)` | Sets / clears the maker-fee registrar (v2 deploy: OWNER, set before any LP share exists) | Set: 48 h once LP shares exist; clear: instant |
+| | registrar (OWNER) | `setMaker(account, bool)` | Marks an account as a maker: it pays the maker fee (6 bps) instead of the taker fee (10 bps). OWNER registers each treasury's InHousePerpVenue, so a treasury hedge open costs open spread + maker fee = 46 bps, inside the treasury guard's 50 bps per operation | Instant: only lowers one account's fee (LP income) |
 | PerpMarket | OWNER | `proposeParams` then `setParams` | Taker fee (at most 1%), maker fee (at most the taker fee; 6 bps on mainnet), off-hours spread 5-30%, borrow (at most 1%/h), funding, OI cap (at most 50%; 20% on mainnet), profit cap, liquidation fee. The open spread plus twice the cheaper fee must stay above the feeds' 50 bps deviation threshold | 48 h (`pool.TIMELOCK`); instant only while the market has no open interest and the pool no LP shares |
 | | OWNER | `setParams` lowering only `oiCapBps` | Refuses new opens beyond the lower cap | Instant: reduces risk |
 | | OWNER | `proposeGuards` then `setGuards` | Open spread 10-300 bps (40 on mainnet), minimum hold 5 min-1 d (30 min), minimum liquidation reward (1 USDG), minimum collateral and size (100 USDG); same round-trip floor | 48 h; raising only the open spread and/or the minimum collateral: instant |
@@ -174,7 +176,6 @@ Each item is a deliberate trade-off, with the reason. "v2" items apply once v2 i
 | v2: `closeDays` / `earlyCloseDays` are instant | They only hold prices | Weekdays only, at most 16 marked days per UTC year; un-marking needs 48 h notice |
 | v2: first-time `StockTokenRegistry.list` and `StockRouter.setPool` are instant | Nobody holds a position priced by a token before it is listed; users opt in through their own mix | Perp markets on it still need the pool timelock; changing a listed token's feed or pool waits 48 h |
 | v2: `ShieldedPool` has no `cancelChange` | Contract size | A queued `setMinDeposit` lowering applies only if OWNER sends the same call again, and expires 14 days after its eta |
-| v2: perps proposals do not expire and survive an ownership change | They use the pool's own timelock, not ChangeDelay | Only the owner can apply one, every proposal is a public event with its eta, and `cancel(id)` drops it |
 | v2: a missed crowd book can be executed by anyone at any open-market time | A dead or late keeper must never block a book | Only after the window's fallback time has passed with the crowd formed and no execution, on a round at most 15 min old, inside the pool fee + 10 bps, so pushing the pool first loses money |
 | v2: perps floors | A partial decrease that would leave less than `minCollateral` (100 USDG) of collateral or of size reverts | The trader closes in full instead, which is never blocked; treasury hedges through InHousePerpVenue / PerpSleeve follow the same rule |
 | v2: a held perp market with open interest blocks LP exits for up to 5 days, and LP deposits for the whole hold | Pricing an LP entry or exit while a market with positions has no trusted price would move value between LPs | Every weekend and holiday is a hold, so this is routine. Past 5 days (`HELD_GRACE`) the market values its open interest at the reserve and stops blocking exits, and anyone may `settleHeld` its positions; `retire` empties a market for good |
@@ -192,25 +193,26 @@ All of its contract findings are open on mainnet until v2 is deployed:
 
 | Id | Issue | Status |
 | --- | --- | --- |
-| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fixed in v2 (merged, not deployed): the public fallback needs a round at most 15 min old, runs inside the pool fee + 10 bps, and the market-hours calendar holds weekends, holidays and early closes |
-| M-2 | A held market with one small position can block LP exits | Fixed in v2 (merged, not deployed): the hold stops blocking exits after 5 days, `settleHeld` and `retire` empty a market, and position floors stop dust positions filling the 100 slots |
-| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | Fixed in v2 (merged, not deployed): open spread (40 bps), minimum hold for a profit (30 min), a round-trip floor above the feeds' deviation threshold, OI cap 20% |
-| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | Fixed in v2 (merged, not deployed): a minimum liquidation reward, topped up by the pool at most up to the position's own collateral, and a 100 USDG minimum collateral |
-| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fixed in v2 (merged, not deployed): every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
-| M-6 to M-9 | Keeper, statement import, relayer zero-fee and OFX parser denial-of-service issues (services) | Fixed in the services code (no contract redeploy needed) |
-| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixed in v2 (merged, not deployed) |
-| L-4 to L-8, L-10 | Treasury and insurance Lows | Fixed in v2 (merged, not deployed) |
+| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fixed in code in v2 (merged, not deployed), pending independent re-review: the public fallback needs a round at most 15 min old, runs inside the pool fee + 10 bps, and the market-hours calendar holds weekends, holidays and early closes |
+| M-2 | A held market with one small position can block LP exits | Fixed in code in v2 (merged, not deployed), pending independent re-review: the hold stops blocking exits after 5 days, `settleHeld` and `retire` empty a market, and position floors stop dust positions filling the 100 slots |
+| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | Fixed in code in v2 (merged, not deployed), pending independent re-review: open spread (40 bps), minimum hold for a profit (30 min), a round-trip floor above the feeds' deviation threshold, OI cap 20% |
+| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | Fixed in code in v2 (merged, not deployed), pending independent re-review: a minimum liquidation reward, topped up by the pool at most up to the position's own collateral, and a 100 USDG minimum collateral |
+| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fixed in code in v2 (merged, not deployed), pending independent re-review: every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
+| M-6 to M-9 | Keeper, statement import, relayer zero-fee and OFX parser denial-of-service issues (services) | Fixed in the services code, pending independent re-review (no contract redeploy needed) |
+| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixed in code in v2 (merged, not deployed), pending independent re-review |
+| L-4 to L-8, L-10 | Treasury and insurance Lows | Fixed in code in v2 (merged, not deployed), pending independent re-review |
 | L-11 | Holdings-proof nullifier linkage | Accepted risk (above); the SDK adds an unlinking helper |
-| L-12 to L-15 | Service Lows | Fixed in the services code |
+| L-12 to L-15 | Service Lows | Fixed in the services code, pending independent re-review |
 
 Until the redeploy the beta stays closed and the operator watches the levers above.
 
 ## Supply chain and CI
 
-Every push and pull request runs `.github/workflows/ci.yml` on GitHub-hosted runners with a read-only token and no
-secrets: Foundry tests with invariants at >= 100,000 calls, coverage, `nargo test` and a check that the committed
+`.github/workflows/ci.yml` is set to run on every push and pull request and on a daily schedule, on GitHub-hosted runners
+with a read-only token and no secrets. It has not run on the repository yet; this describes what it runs, not results: Foundry tests with invariants at >= 100,000 calls, coverage, `nargo test` and a check that the committed
 verifiers match a fresh circuit build, the SDK and service tests, gitleaks over the whole history, a scoped Slither
 run where every Medium or High finding is reviewed in `contracts/slither.triage.json`, and Semgrep. Actions are pinned
 to commit SHAs and downloaded tools to versions with checksums; dependencies are exact versions with committed
 lockfiles, frozen installs and a 24 h release-age guard (`.github/scripts/check-hygiene.py` enforces all of it).
-Mutation testing of CrowdBuy, ShieldedPool and PerpMarket (`contracts/script/mutation.sh`, report in `contracts/mutation/REPORT.md`) scores 94.7% of compiled mutants killed, with every survivor classified.
+Mutation testing of CrowdBuy, ShieldedPool and PerpMarket (`contracts/script/mutation.sh`, report in `contracts/mutation/REPORT.md`) scored 94.7% of compiled mutants killed on v1 (commit 106c1a4), with every survivor classified. A campaign on the v2
+contracts has not been run yet.

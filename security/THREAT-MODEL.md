@@ -59,7 +59,7 @@ holders are in [SECURITY.md](../SECURITY.md); the invariants are in [INVARIANTS.
 | Treasury | Desk outside policy, NAV manipulation by donation, ticket reuse, timelock bypass | `test/treasury/*`, real-sleeve and mock-sleeve invariants |
 | Token (not deployed) | Fee capture, reward accounting, insurance claims | `PlinthStaking`, `FeeRouter`, `ExceptionInsurancePool` invariants |
 | Services | Gas griefing through the keeper and relayer, parser DoS, API amplification, auth scope | `app/src/**` tests; rate limits; audit M-6 to M-9, L-12 to L-15 |
-| Deployment | Wrong owner, role, timer, feed or pool; source mismatch | `verify:deployment`, `verify:explorer` (CI, daily) |
+| Deployment | Wrong owner, role, timer, feed or pool; source mismatch | `verify:deployment`, `verify:explorer` (CI workflow, daily schedule) |
 
 ## Out of scope
 
