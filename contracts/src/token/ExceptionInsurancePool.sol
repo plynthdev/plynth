@@ -8,11 +8,18 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {TreasuryAccount} from "../treasury/TreasuryAccount.sol";
 import {TreasuryPolicy} from "../treasury/TreasuryPolicy.sol";
-import {IPeriodStartNav} from "../interfaces/ISleeve.sol";
 
 /// The part of the TreasuryFactory the pool reads: only treasuries it made may claim.
 interface ITreasuryRegistry {
     function isTreasury(address account) external view returns (bool);
+    /// The account a PeriodClose was made for (zero if the factory did not make it).
+    function accountOfClose(address close) external view returns (address);
+}
+
+/// The part of a PeriodClose the pool reads: the period-start NAV and how many periods have closed.
+interface IPeriodCloseCap {
+    function periodStartNav() external view returns (uint256);
+    function closeCount() external view returns (uint256);
 }
 
 /// USDG pool that covers a treasury's loss caused by a policy bug (the guard let through something the
@@ -27,8 +34,13 @@ interface ITreasuryRegistry {
 /// check, and three on-chain limits bound what one wrong approval can cost:
 ///   - only treasuries the TreasuryFactory made (`isTreasury`) may file (the factory is bound once by the
 ///     deployer; unbound, every claim is refused), so `board()`, `policy()` and the NAV below are real;
-///   - a claim may not exceed MAX_CLAIM_NAV_BPS of the treasury's NAV basis (the larger of its live NAV and its
-///     last period-start NAV);
+///   - the claims of one treasury filed in one period may not exceed, together, MAX_CLAIM_NAV_BPS of the
+///     period-start NAV of the PeriodClose the factory made for it (review-v2 L-11). Live NAV is not used: the
+///     board can raise it at once (a sleeve of its own via `registerDesk`), and a swapped-in PeriodClose is not
+///     the factory's, so its NAV is refused (cap 0). The period-start NAV comes from a controller-signed close that
+///     matched the live book at commit, at most once per period and paying the close fee on it. The running total
+///     (`claimedInPeriod`) is keyed by the close count, so one loss cannot be split into many capped claims; a
+///     rejected claim gives its amount back to its period. Until the first close the cap is 0;
 ///   - the committee cannot approve before REVIEW_DELAY has passed since filing, so the claim and its evidence
 ///     hash are public for that long first.
 /// Approved claims join a FIFO queue. A payout never exceeds the pool's balance: the head claim is paid as
@@ -99,7 +111,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     uint256 private constant VIRTUAL_SHARES = 1e6;
     /// Deposits need active shares worth at least this share of the entry price (1 raw unit per 1e6 shares).
     uint256 public constant MIN_PRICE_BPS = 5_000;
-    /// Most a claim may ask, in bps of the treasury's NAV basis (max of live NAV and period-start NAV).
+    /// Most the claims of one treasury in one period may ask together, in bps of its period-start NAV.
     uint256 public constant MAX_CLAIM_NAV_BPS = 2_500;
     /// Minimum public review time between filing and committee approval: 3 days, or WITHDRAW_DELAY if shorter.
     uint256 public immutable REVIEW_DELAY;
@@ -118,6 +130,10 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     Claim[] private _claims;
     uint256[] private _queue;
+    /// USD (1e18) filed and not rejected, per treasury, per period (the PeriodClose's close count at filing).
+    mapping(address treasury => mapping(uint256 period => uint256 usd)) public claimedInPeriod;
+    mapping(uint256 id => uint256 period) private _periodOf;
+    mapping(uint256 id => uint256 usd) private _usdOf;
     uint256 public queueHead;
     uint256 public queuedOwed; // unpaid remainder of queued claims
 
@@ -198,7 +214,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     // ---------------------------------------------------------------- claims
 
     /// `lossUsd` is 1e18-scaled USD; it is paid in USDG at 1:1. Only a TreasuryFactory treasury's board, and at
-    /// most MAX_CLAIM_NAV_BPS of the treasury's NAV basis (`claimCapUsd`).
+    /// most what is left of this period's cap (`claimCapUsd`).
     function fileClaim(TreasuryAccount treasury, uint256 lossUsd, bytes32 evidenceHash)
         external
         returns (uint256 id)
@@ -208,11 +224,14 @@ contract ExceptionInsurancePool is ReentrancyGuard {
             revert NotATreasury(address(treasury));
         }
         if (msg.sender != treasury.board()) revert NotBoard();
-        uint256 cap = claimCapUsd(treasury);
-        if (lossUsd > cap) revert ClaimTooLarge(cap);
+        (uint256 capLeft, uint256 period) = _capLeft(treasury);
+        if (lossUsd > capLeft) revert ClaimTooLarge(capLeft);
         uint256 amount = _toRaw(lossUsd);
         if (amount == 0) revert ZeroAmount();
         id = _claims.length;
+        claimedInPeriod[address(treasury)][period] += lossUsd;
+        _periodOf[id] = period;
+        _usdOf[id] = lossUsd;
         _claims.push(
             Claim(address(treasury), msg.sender, amount, 0, evidenceHash, uint64(block.timestamp), false, false, Status.Filed)
         );
@@ -233,7 +252,9 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     function rejectClaim(uint256 id) external {
         if (msg.sender != committee) revert NotCommittee();
-        _filed(id).status = Status.Rejected;
+        Claim storage c = _filed(id);
+        c.status = Status.Rejected;
+        _release(id, c);
         emit ClaimRejected(id, msg.sender);
     }
 
@@ -247,6 +268,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
         emit ClaimAttested(id, msg.sender, policyBug);
         if (!policyBug) {
             c.status = Status.Rejected;
+            _release(id, c);
             emit ClaimRejected(id, msg.sender);
             return;
         }
@@ -354,16 +376,23 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     // ---------------------------------------------------------------- views
 
-    /// Most a claim of `treasury` may ask now (USD 1e18): MAX_CLAIM_NAV_BPS of the larger of its live NAV and its
-    /// PeriodClose's period-start NAV.
-    function claimCapUsd(TreasuryAccount treasury) public view returns (uint256) {
-        (uint256 nav,) = treasury.navUsd();
+    /// What the claims of `treasury` may still ask this period (USD 1e18): MAX_CLAIM_NAV_BPS of the period-start
+    /// NAV of the PeriodClose the factory made for it, less what was already filed (and not rejected) this period.
+    /// 0 if its PeriodClose is not the factory's own, or before its first close.
+    function claimCapUsd(TreasuryAccount treasury) public view returns (uint256 left) {
+        (left,) = _capLeft(treasury);
+    }
+
+    function _capLeft(TreasuryAccount treasury) private view returns (uint256 left, uint256 period) {
         address pc = treasury.periodClose();
-        if (pc != address(0)) {
-            uint256 start = IPeriodStartNav(pc).periodStartNav();
-            if (start > nav) nav = start;
+        address f = treasuryFactory;
+        if (pc == address(0) || f == address(0) || ITreasuryRegistry(f).accountOfClose(pc) != address(treasury)) {
+            return (0, 0);
         }
-        return nav * MAX_CLAIM_NAV_BPS / BPS;
+        period = IPeriodCloseCap(pc).closeCount();
+        uint256 cap = IPeriodCloseCap(pc).periodStartNav() * MAX_CLAIM_NAV_BPS / BPS;
+        uint256 used = claimedInPeriod[address(treasury)][period];
+        left = cap > used ? cap - used : 0;
     }
 
     /// Balance not owed to queued claims.
@@ -422,6 +451,13 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------- internal
+
+    /// A rejected claim gives its amount back to the period it was filed in.
+    function _release(uint256 id, Claim storage c) private {
+        uint256 usd = _usdOf[id];
+        delete _usdOf[id];
+        claimedInPeriod[c.treasury][_periodOf[id]] -= usd;
+    }
 
     function _filed(uint256 id) private view returns (Claim storage c) {
         c = _claims[id];

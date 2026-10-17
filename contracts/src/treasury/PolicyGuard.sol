@@ -367,7 +367,7 @@ contract PolicyGuard {
                 if (!(a.gross * v.equity < v.gross * a.equity)) return R5_LEVERAGE;
             }
             // Rule 5 per position (L-5): when the venue's risk goes up, every position there is within
-            // maxLeverageX10 of its own margin, or the operation lowered that position's ratio.
+            // maxLeverageX10 of its own margin, or it did not grow and its ratio did not rise (_positionsOk).
             if (_riskUp(a, v) && !_positionsOk(a.positions, v.positions, c.p.maxLeverageX10)) return R5_LEVERAGE;
         }
 
@@ -381,18 +381,21 @@ contract PolicyGuard {
     }
 
     /// Each position after the operation: notional x 10 <= margin x maxLeverageX10, or the same position existed
-    /// before with a strictly higher ratio (topping up an over-levered position is allowed).
+    /// before, its notional did not rise and its ratio did not rise. So a drifted over-cap position can always get
+    /// margin (a rescue deposit leaves it unchanged or lowers its ratio: review-v2 L-10) and can always shrink, but
+    /// it can never grow, however much its ratio falls on the way (review-v2 L-9: 5.35x -> 5.29x while the
+    /// notional went $172.5k -> $272.5k against a 3x cap). A position whose size rose must be within the cap.
     function _positionsOk(Pos[] memory a, Pos[] calldata b, uint16 maxLeverageX10) private pure returns (bool) {
         for (uint256 i; i < a.length; ++i) {
             Pos memory p = a[i];
             if (p.notional * 10 <= p.margin * maxLeverageX10) continue;
-            bool lowered;
+            bool kept;
             for (uint256 j; j < b.length; ++j) {
                 if (b[j].underlying != p.underlying) continue;
-                lowered = p.notional * b[j].margin < b[j].notional * p.margin;
+                kept = p.notional <= b[j].notional && p.notional * b[j].margin <= b[j].notional * p.margin;
                 break;
             }
-            if (!lowered) return false;
+            if (!kept) return false;
         }
         return true;
     }

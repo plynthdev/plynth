@@ -31,7 +31,7 @@ contract MockTiers is ITierSource {
 /// withdraw verifiers and proofs from circuits/scripts/treasury-close-fixtures.ts. The fixture's tree is the three
 /// shields below, in this order: AAPL 250 | AAPL 200 | NVDA 300 ($120k at $200 / $100), then a public book of
 /// USDG 600k + AAPL 1,550 + NVDA 200 ($930k). Total $1.05M: cash 57.1%, equity 42.9%.
-contract PrivateSleeveTest is TreasuryFixture {
+abstract contract PrivateSleeveFixture is TreasuryFixture {
     bytes32 constant PRIVATE_DESK = "private";
     uint256 constant PERIOD = 30 days;
     uint256 controllerKey = uint256(keccak256(abi.encodePacked("controller"))); // test-key (forge makeAddr)
@@ -51,7 +51,7 @@ contract PrivateSleeveTest is TreasuryFixture {
         return false;
     }
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         json = vm.readFile(string.concat(vm.projectRoot(), "/test/treasury/fixtures/private_sleeve.json"));
         nvda.setUiMultiplier(1.001e18);
@@ -184,7 +184,9 @@ contract PrivateSleeveTest is TreasuryFixture {
         w.amount = _u(".withdraw.amount");
         w.recipient = address(sleeve);
     }
+}
 
+contract PrivateSleeveTest is PrivateSleeveFixture {
     // ------------------------------------------------------------ fixture == chain
 
     function test_fixtureMatchesChainContext() public {
@@ -572,10 +574,57 @@ contract PrivateSleeveTest is TreasuryFixture {
         vm.prank(stranger);
         assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the proof pays the sleeve, not the account");
         vm.prank(stranger);
-        sleeve.sweep(address(aapl));
+        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
         assertEq(aapl.balanceOf(address(account)) - before, 200e18, "paid to the account");
         assertEq(sleeve.bookUsd(), 80_000e18, "book debited: the note is not counted twice");
         assertEq(guard.snapshot(address(account)).nav, navBefore, "guard NAV unchanged by an unshield");
+
+        // The same proceeds cannot be swept (debited) twice, even with fresh tokens sitting in the sleeve.
+        aapl.mint(address(sleeve), 200e18);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.AlreadyForwarded.selector, _withdrawPub().nullifier));
+        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+    }
+
+    /// review-v2 L-8: `sweep` debits only a proven pool withdraw to this sleeve whose nullifier is spent.
+    function test_sweepNeedsASpentVerifiedWithdrawToTheSleeve() public {
+        _shieldBook();
+        ShieldedPool.PublicWithdraw memory w = _withdrawPub();
+        aapl.mint(address(sleeve), 200e18); // tokens are there, but no withdraw happened
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotSpent.selector, w.nullifier));
+        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+
+        vm.prank(stranger);
+        pool.withdraw(_hex(".withdraw.proofHex"), w);
+
+        w.recipient = stranger;
+        vm.expectRevert(PrivateSleeve.BadRecipient.selector);
+        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+        w = _withdrawPub();
+        w.relayerFee = 1;
+        vm.expectRevert(PrivateSleeve.FeeNotAllowed.selector);
+        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+        w = _withdrawPub();
+        w.amount += 1; // inflated amount: the proof does not open it
+        vm.expectRevert(PrivateSleeve.InvalidProof.selector);
+        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+        w = _withdrawPub();
+        w.root = bytes32(uint256(1));
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.UnknownRoot.selector, w.root));
+        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+
+        uint256 book = sleeve.bookUsd();
+        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        assertEq(sleeve.bookUsd(), book - 40_000e18, "debited by the proven 200 AAPL only");
+        assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the unproven transfer stays");
+    }
+
+    /// An unshield marks its nullifier forwarded: its proof cannot be replayed through `sweep`.
+    function test_unshieldThenSweepRefused() public {
+        _shieldBook();
+        sleeve.unshield(_hex(".withdraw.proofHex"), _withdrawPub());
+        aapl.mint(address(sleeve), 200e18);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.AlreadyForwarded.selector, _withdrawPub().nullifier));
+        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
     }
 
     function test_unshieldOnlyToSleeveWithoutFee() public {
@@ -593,22 +642,25 @@ contract PrivateSleeveTest is TreasuryFixture {
         sleeve.unshield(_hex(".withdraw.proofHex"), w);
     }
 
-    function test_sweepForwardsTransfersAndDebitsTheirValue() public {
+    /// review-v2 L-8: a transfer to the sleeve debits nothing. A non-private asset goes back through
+    /// `forwardOther`; a private asset cannot (it could be unswept proceeds) and stays.
+    function test_transfersToTheSleeveDebitNothing() public {
         _shieldBook();
-        nvda.mint(address(sleeve), 10e18); // a transfer to the sleeve
-        (uint256 usd,) = valuer.value(address(nvda), 10e18);
         uint256 book = sleeve.bookUsd();
-        uint256 before = nvda.balanceOf(address(account));
+        nvda.mint(address(sleeve), 10e18);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.PrivateAssetStays.selector, address(nvda)));
+        sleeve.forwardOther(address(nvda));
+        assertEq(sleeve.bookUsd(), book);
+
+        usdg.mint(address(sleeve), 5e6);
+        uint256 before = usdg.balanceOf(address(account));
         vm.expectEmit(address(sleeve));
-        emit PrivateSleeve.Swept(address(nvda), 10e18, usd);
-        sleeve.sweep(address(nvda));
-        assertEq(nvda.balanceOf(address(account)) - before, 10e18);
-        assertEq(sleeve.bookUsd(), book - usd);
-        sleeve.sweep(address(nvda)); // nothing left: no-op
-        assertEq(sleeve.bookUsd(), book - usd);
-        usdg.mint(address(sleeve), 5e6); // not a private asset: forwarded, counts 0 against the book
-        sleeve.sweep(address(usdg));
-        assertEq(sleeve.bookUsd(), book - usd);
+        emit PrivateSleeve.OtherForwarded(address(usdg), 5e6);
+        vm.prank(stranger);
+        sleeve.forwardOther(address(usdg));
+        assertEq(usdg.balanceOf(address(account)) - before, 5e6);
+        sleeve.forwardOther(address(usdg)); // nothing left: no-op
+        assertEq(sleeve.bookUsd(), book);
     }
 
     function test_refundReturnsPendingShieldToAccount() public {

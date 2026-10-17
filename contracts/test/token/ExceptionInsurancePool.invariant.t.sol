@@ -11,8 +11,18 @@ import {MockUSDG} from "../../src/testnet/MockUSDG.sol";
 
 /// Stands in for the TreasuryFactory's `isTreasury` (every claim comes from the fixture's treasury).
 contract InvariantTreasuryRegistry {
+    address immutable account;
+
+    constructor(address account_) {
+        account = account_;
+    }
+
     function isTreasury(address) external pure returns (bool) {
         return true;
+    }
+
+    function accountOfClose(address) external view returns (address) {
+        return account;
     }
 }
 
@@ -252,7 +262,7 @@ contract ExceptionInsurancePoolInvariantTest is TreasuryFixture {
         pool = new ExceptionInsurancePool(IERC20Metadata(address(usdg)), committee, 14 days);
         handler = new InsuranceHandler(pool, usdg, address(this), account, board, controller, committee);
         pool.bindFeeRouter(address(handler));
-        pool.bindTreasuryFactory(address(new InvariantTreasuryRegistry()));
+        pool.bindTreasuryFactory(address(new InvariantTreasuryRegistry(address(account))));
         periodClose.set(4e33); // a large NAV basis: the per-claim cap never binds the drill claims
         bytes4[] memory sel = new bytes4[](8);
         sel[0] = InsuranceHandler.deposit.selector;

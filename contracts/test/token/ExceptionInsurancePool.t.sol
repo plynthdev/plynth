@@ -34,9 +34,14 @@ contract FakePolicy {
 /// Stands in for the TreasuryFactory's `isTreasury`.
 contract MockTreasuryRegistry {
     mapping(address => bool) public isTreasury;
+    mapping(address close => address) public accountOfClose;
 
     function set(address a, bool on) external {
         isTreasury[a] = on;
+    }
+
+    function setClose(address close, address account) external {
+        accountOfClose[close] = account;
     }
 }
 
@@ -53,6 +58,7 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         pool.bindFeeRouter(address(this)); // this test plays the FeeRouter
         registry_ = new MockTreasuryRegistry();
         registry_.set(address(account), true);
+        registry_.setClose(address(periodClose), address(account)); // the fixture's PeriodClose is "the factory's"
         pool.bindTreasuryFactory(address(registry_));
         periodClose.set(4e33); // a large period-start NAV: the per-claim cap does not bind in the older tests
     }
@@ -130,8 +136,8 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.NotATreasury.selector, address(fake)));
         pool.fileClaim(TreasuryAccount(payable(address(fake))), 100_000e18, EVIDENCE);
 
-        periodClose.set(0); // the fixture treasury's NAV basis is its live $1M
-        assertEq(pool.claimCapUsd(account), 250_000e18, "25% of the $1M NAV");
+        periodClose.set(1_000_000e18); // the period started at $1M
+        assertEq(pool.claimCapUsd(account), 250_000e18, "25% of the $1M period-start NAV");
         vm.prank(board);
         vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.ClaimTooLarge.selector, 250_000e18));
         pool.fileClaim(account, 250_000e18 + 1, EVIDENCE);
@@ -167,10 +173,38 @@ contract ExceptionInsurancePoolTest is TreasuryFixture {
         fresh.bindTreasuryFactory(stranger);
     }
 
-    function test_claimCapUsesTheLargerOfLiveAndPeriodStartNav() public {
+    /// review-v2 L-11: the cap is the period-start NAV only (live NAV is the board's to raise), and 0 before the
+    /// first close.
+    function test_claimCapIsFromPeriodStartNavOnly() public {
         periodClose.set(2_000_000e18); // the period started at $2M; the treasury now holds $1M
         assertEq(pool.claimCapUsd(account), 500_000e18);
-        periodClose.set(10e18);
+        periodClose.set(10e18); // live NAV $1M does not lift it
+        assertEq(pool.claimCapUsd(account), 2.5e18);
+        periodClose.set(0);
+        assertEq(pool.claimCapUsd(account), 0, "no close yet: no claims");
+        vm.prank(board);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.ClaimTooLarge.selector, 0));
+        pool.fileClaim(account, 1e18, EVIDENCE);
+    }
+
+    /// The running total opens again in the next period, and a rejected claim gives its amount back.
+    function test_claimCapRunsPerPeriodAndRejectionsRelease() public {
+        periodClose.close(1_000_000e18);
+        uint256 a = _file(200_000e18);
+        assertEq(pool.claimCapUsd(account), 50_000e18);
+        vm.prank(board);
+        vm.expectRevert(abi.encodeWithSelector(ExceptionInsurancePool.ClaimTooLarge.selector, 50_000e18));
+        pool.fileClaim(account, 50_000e18 + 1, EVIDENCE);
+        vm.prank(committee);
+        pool.rejectClaim(a);
+        assertEq(pool.claimCapUsd(account), 250_000e18, "committee rejection released");
+        uint256 b = _file(250_000e18);
+        vm.prank(controller);
+        pool.attest(b, false); // market move: rejected
+        assertEq(pool.claimCapUsd(account), 250_000e18, "controller rejection released");
+        _file(250_000e18);
+        assertEq(pool.claimCapUsd(account), 0);
+        periodClose.close(1_000_000e18); // next period
         assertEq(pool.claimCapUsd(account), 250_000e18);
     }
 
