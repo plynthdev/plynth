@@ -72,6 +72,17 @@ describe("indexer (fake transport)", () => {
     expect(r!.toBlock).toBe(988n);
   });
 
+  test("a stream whose contract moved (a redeploy) restarts at the new contract's fromBlock", async () => {
+    const chain = new FakeChain({ head: 1_000 });
+    await make(chain, [stream("4663:ping", 0n)]).runOnce();
+    await t.sql`update ev_cursors set contract = '0x000000000000000000000000000000000000beef' where stream = '4663:ping'`;
+    const res = await make(chain, [stream("4663:ping", 400n)]).runOnce();
+    expect(res[0]!.fromBlock).toBe(400n);
+    const cur = (await t.sql`select contract, last_block from ev_cursors where stream = '4663:ping'`)[0]!;
+    expect(cur.contract).toBe(FAKE_ADDRESS.toLowerCase());
+    expect(Number(cur.last_block)).toBe(1_000);
+  });
+
   test("fromBlock: cursor starts at fromBlock - 1, nothing before it is stored", async () => {
     const chain = new FakeChain({ head: 1_000 });
     await make(chain, [stream("31337:late", 500n)]).runOnce();

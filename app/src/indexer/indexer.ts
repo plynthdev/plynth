@@ -60,8 +60,18 @@ export class Indexer {
 
   async cursor(stream: Stream): Promise<Cursor> {
     const [row] = await this.o.db.select().from(evCursors).where(eq(evCursors.stream, stream.name));
-    if (row) return { lastBlock: row.lastBlock, lastBlockHash: row.lastBlockHash };
     const init = { lastBlock: stream.fromBlock - 1n, lastBlockHash: null };
+    if (row && row.contract === stream.address.toLowerCase()) return { lastBlock: row.lastBlock, lastBlockHash: row.lastBlockHash };
+    if (row) {
+      // A redeploy (mainnet v1 -> v2) keeps the stream name but moves the contract: the old cursor sits past the new
+      // contract's deploy block and would skip its first events. Start the new contract from its own fromBlock.
+      this.o.log?.(`indexer: ${stream.name} moved from ${row.contract} to ${stream.address.toLowerCase()}: cursor reset to ${init.lastBlock}`);
+      await this.o.db
+        .update(evCursors)
+        .set({ contract: stream.address.toLowerCase(), lastBlock: init.lastBlock, lastBlockHash: null })
+        .where(eq(evCursors.stream, stream.name));
+      return init;
+    }
     await this.o.db
       .insert(evCursors)
       .values({ stream: stream.name, chainId: this.o.chainId, contract: stream.address.toLowerCase(), lastBlock: init.lastBlock, lastBlockHash: null })

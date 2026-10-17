@@ -10,7 +10,7 @@ import {
   type Check, type Deployment, type Reader,
 } from "./verify-deployment";
 
-const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "deployments", "4663.json"), "utf8")) as Deployment;
+const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "deployments", "4663-v1.json"), "utf8")) as Deployment;
 const hasCode = async () => true;
 const fails = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "FAIL" && what.test(c.what));
 const warns = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "WARN" && what.test(c.what));

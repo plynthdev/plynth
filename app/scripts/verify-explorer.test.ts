@@ -11,7 +11,7 @@ import {
 } from "./verify-explorer";
 import { V2, type Deployment } from "./verify-deployment";
 
-const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "deployments", "4663.json"), "utf8")) as Deployment;
+const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "deployments", "4663-v1.json"), "utf8")) as Deployment;
 const v2 = { ...v1, allowEoaOwner: false, calendarValidUntil: Number(V2.calendarValidUntil) } as Deployment;
 const CONTRACTS = join(import.meta.dir, "..", "..", "contracts");
 const fake = (n: number) => getAddress(`0x${n.toString(16).padStart(40, "0")}`);

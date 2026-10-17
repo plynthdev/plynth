@@ -57,6 +57,8 @@ app/deployments/*
 !app/deployments/46630-treasury.json
 !app/deployments/4663.json
 !app/deployments/4663-treasury.json
+!app/deployments/4663-v1.json
+!app/deployments/4663-v1-treasury.json
 app/data/
 web/node_modules/
 web/.output/

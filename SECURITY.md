@@ -30,9 +30,9 @@ No contract is upgradeable: a fix ships as a redeploy. The live bytecode is prov
 that recorded the deployment (`cd app && bun run verify:explorer`: 45 of 45 runtime codes match, immutables and
 library addresses masked), and the live configuration is asserted by `bun run verify:deployment`. The CI workflow
 runs both on a daily schedule; on the v2 branch its pull-request runs passed at 5cb54bd (run 39010934703) and at
-cf624d6 (run 39023579355), after one failing run at 07943a6 (39006193666). An external AI audit graded the deployed version 3.7/10 with nine Medium findings; they are listed under
-[Known issues](#known-issues-in-the-deployed-version); their fixes are merged in v2 in this tree, which is not deployed
-yet. No human audit has been done.
+cf624d6 (run 39023579355), after one failing run at 07943a6 (39006193666). An external AI audit graded the v1 deployment 3.7/10 with nine Medium findings; they are listed under
+[Audit findings and v2](#audit-findings-and-v2). Their fixes are in v2, deployed on mainnet at block 90,961,180 from
+commit c0478cd (v1, at block 88,470,046, is retired: no service or the web app uses it). No human audit has been done.
 
 ## Roles and holders (mainnet 4663)
 
@@ -54,10 +54,10 @@ broadcasting (`contracts/script/MainnetBeta.s.sol`, `checkConfig` and `checkHand
 
 ## What each role can do
 
-This section describes the **v2 contracts** in this tree: the fixes for the external audit and for the internal v2
-review (see [audit history](security/AUDITS.md)) are merged here, but **v2 is not deployed**. The live mainnet beta
-is still v1 (block 88,470,046), where every owner setter is instant; see
-[Differences in the live v1 deployment](#differences-in-the-live-v1-deployment). Values marked "mainnet" are the
+This section describes the **v2 contracts**, live on mainnet since block 90,961,180 (`app/deployments/4663.json`): the
+fixes for the external audit and for the internal reviews (see [audit history](security/AUDITS.md)). The retired v1
+deployment (block 88,470,046) had every owner setter instant; see
+[Differences in the retired v1 deployment](#differences-in-the-retired-v1-deployment). Values marked "mainnet" are the
 ones `contracts/script/MainnetBeta.s.sol` deploys and asserts in `checkHandoff`.
 
 **Change delay.** Owner setters that could hurt users go through a public 48 h queue (`contracts/src/libs/ChangeDelay.sol`,
@@ -137,7 +137,8 @@ listed in the deploy script and are not delayed; every ChangeDelay contract void
 **Deploy-script rules (mainnet mode).** `MainnetBeta.s.sol` refuses an OWNER that is not a real Safe (the official
 SafeProxy runtime pointing at an official Safe singleton on Robinhood Chain, threshold at least 2, no module, no guard;
 an EOA, an EIP-7702 delegated EOA or a contract that only claims to be a Safe all fail) unless `ALLOW_EOA_OWNER=1` is
-set explicitly, `MAX_STALENESS` above 26 h, `MIN_CROWD` below 3, duplicate role
+set explicitly (the v2 mainnet deploy set it: OWNER is a single key by the owner's choice, recorded as
+`allowEoaOwner: true` and reported as a WARN by `verify:deployment`), `MAX_STALENESS` above 26 h, `MIN_CROWD` below 3, duplicate role
 addresses, and a holiday table covering less than 24 months. It lists every perp market before `openDeposits`, and
 `verifyDeploymentStrict` fails while any ownership hand-over is still pending.
 
@@ -148,14 +149,14 @@ calendar (table valid until 2029-10-01 00:00 UTC); Hidden Vault insert delay 1 h
 cooldown 24 h, minimum hold 30 min, held-market settle after 5 days, retire settlement after 48 h; insurance review
 3 days, withdrawal and fee vesting 14 days; unbonding 7 days.
 
-### Differences in the live v1 deployment
+### Differences in the retired v1 deployment
 
-The beta at block 88,470,046 runs the earlier contracts (verified byte for byte by `bun run verify:explorer`). There:
+The v1 beta at block 88,470,046 (archived in `app/deployments/4663-v1.json`, no longer used) ran the earlier contracts (verified byte for byte by `bun run verify:explorer`). There:
 every owner setter above is instant (feeds, pools, keepers, attester, minimum deposit, perp markets and parameters,
 maker registrar), there is no market-hours calendar, the CrowdBuy fallback has no freshness bound, perp markets have a
 100% open-interest cap and no open spread, minimum hold or position floors, LP deposits are open from the start, and
 the Hidden Vault accepts only the last 100 roots. Those are the audit's open findings (see
-[Known issues](#known-issues-in-the-deployed-version)); they stay open on mainnet until v2 is deployed.
+[Audit findings and v2](#audit-findings-and-v2)); v2 fixes them. Funds left in v1 contracts stay under v1's rules.
 
 ### Emergency levers
 
@@ -174,7 +175,7 @@ Each item is a deliberate trade-off, with the reason. "v2" items apply once v2 i
 
 | Risk | Why accepted | Mitigation |
 | --- | --- | --- |
-| OWNER is a single EOA on the live v1 beta | Closed beta with invited users | v2 makes every setter that can hurt users wait 48 h in public (queued changes are events anyone can watch, expire after 14 days and die with an ownership change), and its deploy script refuses an EOA OWNER unless explicitly allowed. `verify:deployment` reports OWNER on every run |
+| OWNER is a single key (an EOA), by the owner's choice | Closed beta with invited users; the owner chose one offline key over a Safe | Every setter that can hurt users waits 48 h in public (queued changes are events anyone can watch, expire after 14 days and die with an ownership change), so a stolen key cannot change feeds, pools, keepers, the attester or fees without 48 h of public notice; instant levers only pause or reduce risk (deposits, withdrawals stay open). The deploy script refuses an EOA OWNER unless `ALLOW_EOA_OWNER=1`, and `verify:deployment` reports it as a WARN on every run. A Safe can take over later with a two-step ownership transfer |
 | Valuer staleness is 26 h | Chainlink equity feeds stop when the market closes; a shorter bound would hold every weekday gap | v2 holds weekends, NYSE holidays and early closes through the market-hours calendar, and every price-sensitive public path (the CrowdBuy fallback) needs a round at most 15 min old |
 | v2: no L2 sequencer-uptime feed | Chainlink's directory for Robinhood Chain mainnet has no sequencer-uptime feed (checked 2026-10-16); the deploy asserts the Valuer's stays unset | If the sequencer stops and restarts, prices are not held for the 1 h grace after the restart. The 26 h staleness, the calendar and the 15 min fallback freshness still apply. If a feed appears, `setSequencerFeed` (48 h, validated) adds it |
 | v2: early closes hold from 17:00 UTC all year | NYSE half-days close at 13:00 New York, 17:00 UTC in summer and 18:00 UTC in winter | Winter half-days hold an hour early; this only fails closed |
@@ -198,21 +199,21 @@ Each item is a deliberate trade-off, with the reason. "v2" items apply once v2 i
 | v2: the insurance claim cap counts trusted value only | The basis (`claimBasisNow`) is USDG at 1:1, registry-canonical Stock Tokens at Valuer prices and the proven private part at the close, less any later decrease of the account's USDG and canonical stock holdings (review4 R4-TREAS-2, review5 R5-TREAS-1). Anything a board writes or chooses (a sleeve's own value, a cash vault's share price, perp-venue equity, other tokens) could be inflated at will | A treasury holding mostly vault shares or venue margin gets a lower cap, and a fall in trusted holdings from any cause (a loss, a price fall) lowers the cap for the rest of the period; the proven private part is held at its proven value until the next close (a spend of private notes is not visible on-chain); the committee's approval and the 3-day review still apply to every claim |
 | v2: an adapter on the allow-list is trusted for the values it reports | The guard reads value from sleeves, cash vaults (`convertToAssets`) and venues; only reviewed code can be registered now, but a reviewed CashSleeve is configured by its constructor (the vault list lives in storage), so another deployment of the same code with a different vault list has the same codehash | What a desk can move value INTO stays bounded by the policy's `instrumentAllowRoot` (every increased asset, vault shares included) and `venueAllowRoot` (every venue whose risk goes up), both behind the policy TIMELOCK. New adapters wait 48 h after a treasury's setup window (`proposeDesk`, `proposeVenue`), and the allow-list itself only grows after a 48 h public notice. The drawdown base and the insurance basis read no sleeve's own value |
 
-## Known issues in the deployed version
+## Audit findings and v2
 
-The deployed contracts are the version the external AI audit reviewed (see [audit history](security/AUDITS.md)).
-All of its contract findings are open on mainnet until v2 is deployed:
+The external AI audit reviewed v1 (see [audit history](security/AUDITS.md)). Its contract findings are fixed in v2,
+deployed at block 90,961,180:
 
 | Id | Issue | Status |
 | --- | --- | --- |
-| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fixed in code in v2 (merged, not deployed), pending independent re-review: the public fallback needs a round at most 15 min old, runs inside the pool fee + 10 bps, and the market-hours calendar holds weekends, holidays and early closes |
-| M-2 | A held market with one small position can block LP exits | Fixed in code in v2 (merged, not deployed), pending independent re-review: the hold stops blocking exits after 5 days, `settleHeld` and `retire` empty a market, position floors stop dust positions, and a full market admits any open twice its smallest mature position |
-| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | Fixed in code in v2 (merged, not deployed), pending independent re-review: open spread (40 bps), minimum hold for a profit (30 min), a round-trip floor above the feeds' deviation threshold, OI cap 20% |
-| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | Fixed in code in v2 (merged, not deployed), pending independent re-review: a minimum liquidation reward, topped up by the pool at most up to the position's own collateral, and a 100 USDG minimum collateral |
-| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fixed in code in v2 (merged, not deployed), pending independent re-review: every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
+| M-1 | CrowdBuy public fallback can be sandwiched on a stale price | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review: the public fallback needs a round at most 15 min old, runs inside the pool fee + 10 bps, and the market-hours calendar holds weekends, holidays and early closes |
+| M-2 | A held market with one small position can block LP exits | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review: the hold stops blocking exits after 5 days, `settleHeld` and `retire` empty a market, position floors stop dust positions, and a full market admits any open twice its smallest mature position |
+| M-3 | Same-transaction fills at the current oracle price allow front-running oracle updates | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review: open spread (40 bps), minimum hold for a profit (30 min), a round-trip floor above the feeds' deviation threshold, OI cap 20% |
+| M-4 | Underwater positions have no liquidation incentive; bad debt inflates LP shares | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review: a minimum liquidation reward, topped up by the pool at most up to the position's own collateral, and a 100 USDG minimum collateral |
+| M-5 | Strangers can push in-flight Hidden Vault proofs out of the 100-root window | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review: every published root is accepted; solo inserts wait for a batch of 4 or 2 h |
 | M-6 to M-9 | Keeper, statement import, relayer zero-fee and OFX parser denial-of-service issues (services) | Fixed in the services code, pending independent re-review (no contract redeploy needed) |
-| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixed in code in v2 (merged, not deployed), pending independent re-review |
-| L-4 to L-8, L-10 | Treasury and insurance Lows | Fixed in code in v2 (merged, not deployed), pending independent re-review |
+| L-1 to L-3, L-9 | Crowd and Hidden Vault Lows | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review |
+| L-4 to L-8, L-10 | Treasury and insurance Lows | Fixed in code in v2 (deployed in v2 at block 90,961,180), pending independent re-review |
 | L-11 | Holdings-proof nullifier linkage | Accepted risk (above); the SDK adds an unlinking helper |
 | L-12 to L-15 | Service Lows | Fixed in the services code, pending independent re-review |
 

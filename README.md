@@ -79,34 +79,34 @@ No contract is upgradeable. OpenZeppelin v5.7.0 and forge-std v1.17.0 are vendor
 
 <!-- deployments:start -->
 
-**Mainnet (`4663`): closed beta, deployed at block 88,470,046** without the token contracts (PLTH, staking, FeeRouter, insurance pool), against the real USDG, Stock Tokens, Chainlink feeds and Uniswap v4 pools. Every address is in [`app/deployments/4663.json`](app/deployments/4663.json) (and `4663-treasury.json`); explorer: <https://robinhoodchain.blockscout.com>. Roles, timelocks and accepted risks are in [SECURITY.md](SECURITY.md); `bun run verify:deployment` (in `app/`) checks them on chain. This is the version the external AI audit reviewed (security/AUDITS.md); a v2 with its fixes is in progress and not deployed. When it is, the deploy rewrites `app/deployments/4663.json` and this section is regenerated from it (`python3 .github/scripts/readme-deployments.py`).
+**Mainnet (`4663`): closed beta, deployed at block 90,961,180** without the token contracts (PLTH, staking, FeeRouter, insurance pool), against the real USDG, Stock Tokens, Chainlink feeds and Uniswap v4 pools. Every address is in [`app/deployments/4663.json`](app/deployments/4663.json) (and `4663-treasury.json`); explorer: <https://robinhoodchain.blockscout.com>. Roles, timelocks and accepted risks are in [SECURITY.md](SECURITY.md); `bun run verify:deployment` (in `app/`) checks them on chain. This is v2 (`MainnetBeta.s.sol` after the external AI audit and the follow-up reviews, security/AUDITS.md); OWNER is a single key (`allowEoaOwner`), see SECURITY.md. The v1 deployment the audit reviewed is archived in `app/deployments/4663-v1.json` (and `4663-v1-treasury.json`) and no longer used by the services or the web app. This section is generated from the files (`python3 .github/scripts/readme-deployments.py`).
 
 | Contract | Address |
 | --- | --- |
-| `StockTokenRegistry` | `0x9BdfFB31192668b985886F00e486c055AD2903F2` |
-| `Valuer` | `0xcEe421431d22eF6386212A0ffe2D107F4116fC14` |
-| `StockRouter` | `0xD2C9A524F316AE9Db2b73a2cE964F28f415c7942` |
-| `JitterBeacon` | `0x163767bd3ae1462b1f1234e907EeB4D161b60574` |
-| `EligibilityRegistry` | `0x55AF3c30F4efe02Fa94785152b12C35456a2b3A8` |
-| `SavingsVault` | `0xfa1a413e3FE1CC9413B4a5d2D7Bd4a91543C6109` |
-| `CrowdBuy` | `0xd2CD17E79c079f637F6BF2eC1Ad2b887BF8803d0` |
-| `StealthClaims` | `0xEA97eE993DD4C82758e08f15DEAfC9581BD68D7a` |
-| `ShieldedPool` | `0x86F1AE76F7f12b5bE8d6604B1Fc9fdF386e07eB5` |
-| `ShieldedTrade` | `0x9C66134A68a59deccA1d208E8922996764F02B95` |
-| `ThresholdVerifier` | `0x3Ebf93f21D4F513A0fF50b565bA1Fb9aEf15483B` |
-| `ERC4626Park` | `0x999507F6Bf3aA80F5242a80704A1bd230edB8AA8` |
-| `TreasuryFactory` | `0x77394FA1c26a5e5fB640AbbeE269002E008C820d` |
-| `PolicyGuard` | `0x8A80B097A1046c5425AB726F0b1c35331e18Aa98` |
-| `TemplateRegistry` | `0x482f348503b8b58C513E3A1a2df8B7EbD96D58D7` |
-| `Receipts` | `0xA177b1E3F32E4dDBfd3c33eB80d521d01AC3Ca6D` |
-| `CashSleeve` | `0xDA7fC778DCAB2be015cd4197bd6696D70212e028` |
-| `EquitySleeve` | `0xA2BD384C07c0A4f9F50DfcA4Ff8FC852fa6Fc0E8` |
-| `PerpPool` | `0x5275Ef6D15AfaAaDFAB3a39bf02aa4927e3ba3Ce` |
+| `StockTokenRegistry` | `0x652B0B64cA7a5CCDDD5BBd06E96fC750Da98D0e1` |
+| `Valuer` | `0x112005D0AfDf5d42f1968F2907d3328af7Ff7867` |
+| `StockRouter` | `0x3E25FF85f90aaC48E03873E87b3Bac0E4Ed393b3` |
+| `JitterBeacon` | `0x9DaA1B850Db88b4Ca773250B752948e9c3F74D8F` |
+| `EligibilityRegistry` | `0x243Db8519354770701dC589A2a0048d1bE095809` |
+| `SavingsVault` | `0x1831eF2404157A78AF2eba28964328A39A43cCB4` |
+| `CrowdBuy` | `0xb4B81b40754AF8FB21b7246FeEf0863d794A9e23` |
+| `StealthClaims` | `0x19E416Abe0C0d8A3acb407eCE627B71475dBC774` |
+| `ShieldedPool` | `0x1CaA51cD15a5BC78A7663824A6241522A6Dc2147` |
+| `ShieldedTrade` | `0x46e2BFda19b2c632084A660e0e76409e5DF892F4` |
+| `ThresholdVerifier` | `0x492c246b536E1Ce73E6e1f3464100c08d2f5CBf2` |
+| `ERC4626Park` | `0xC6747D6C56c6E2515fC558E8BB1D590926Bd6548` |
+| `TreasuryFactory` | `0x08b15cceD749a3fD2cb599F0d5081e62363d4b63` |
+| `PolicyGuard` | `0x397865EE90FF882Fd046969c0d6B54bfe98AB5eA` |
+| `TemplateRegistry` | `0x6dC880b778d1d86d7Ed1B1b0e0Fbe2a88d6389F9` |
+| `Receipts` | `0x3E2a514e8fF3BedF64329FC9c8ED1d1A400e856a` |
+| `CashSleeve` | `0xFCf0204Af3a372B4d7F11eFb8FdcE4F5dd5C0F09` |
+| `EquitySleeve` | `0x0a2f3168F5b2bf5D90B50946FbC63f06E7D846fe` |
+| `PerpPool` | `0x6977f7403Ff7fAEB251EEDe0484025fC725Ad6de` |
 | USDG (external) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
-| `PerpMarket` AAPL | `0xc672C2A4F93aA917A1135f3aaeE7B58b469B5a0A` |
-| `PerpMarket` NVDA | `0x0E89aCF68Bdd413E88E341c3A9B3759916475891` |
-| `PerpMarket` SPY | `0xD2f0Fb1753aE133deF8150902C210A042F1F769A` |
-| `PerpMarket` TSLA | `0x57952521fE0113245c60BBA618992e73Ec13d612` |
+| `PerpMarket` AAPL | `0x1dfeFAEB4D5aF8E357Ed9137DA5c4ae13Cc52299` |
+| `PerpMarket` NVDA | `0x3B17987FF5305234De8e63dAD9d72F2Ee56d98bA` |
+| `PerpMarket` SPY | `0x5e5731fa8ae3D30F2c23f856D6fC1bc8B2ef8Ac9` |
+| `PerpMarket` TSLA | `0x2923966Eba667AFfCf1E4d8f3A81D7A71CfA0bf0` |
 
 | Role | Address |
 | --- | --- |

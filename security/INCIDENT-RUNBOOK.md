@@ -73,8 +73,8 @@ the SDK snippets for withdraw and claim. The relayer is optional for every exit.
 
 ## Contacts and keys
 
-- OWNER signs every lever above. Keep its key offline. The live v1 OWNER is an EOA; the v2 deploy script expects a
-  contract (a Safe) unless an EOA is explicitly allowed (SECURITY.md).
+- OWNER signs every lever above. Keep its key offline. The live v2 OWNER is an EOA by the owner's choice (deployed with
+  `ALLOW_EOA_OWNER=1`); the deploy script otherwise expects a Safe (SECURITY.md).
 - Bot keys (keeper, attester, relayer, controller, desks) each live only with their own service and can be rotated
   without a redeploy.
 - Security reports arrive through GitHub private vulnerability reporting on the repository.

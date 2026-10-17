@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gatePlan, isPlainName } from "./release-gate";
 
-const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "deployments", "4663.json"), "utf8")) as Record<string, unknown>;
+const v1 = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "deployments", "4663-v1.json"), "utf8")) as Record<string, unknown>;
 const v2 = { ...v1, allowEoaOwner: false, calendarValidUntil: 1_885_507_200 };
 const RPC = "https://rpc.example";
 

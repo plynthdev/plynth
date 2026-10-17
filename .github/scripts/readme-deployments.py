@@ -5,7 +5,7 @@
     python3 .github/scripts/readme-deployments.py --check   # CI: exit 1 if README.md differs from the files
 
 The block sits between `<!-- deployments:start -->` and `<!-- deployments:end -->`. After a redeploy (for example
-a v2 mainnet deploy that rewrites app/deployments/4663.json), run it without --check and commit both files.
+a mainnet redeploy that rewrites app/deployments/4663.json), run it without --check and commit both files.
 """
 import json
 import pathlib
@@ -97,9 +97,11 @@ def render():
             f"Uniswap v4 pools. Every address is in [`app/deployments/4663.json`](app/deployments/4663.json) (and "
             f"`4663-treasury.json`); explorer: <https://robinhoodchain.blockscout.com>. Roles, timelocks and accepted "
             f"risks are in [SECURITY.md](SECURITY.md); `bun run verify:deployment` (in `app/`) checks them on chain. "
-            f"This is the version the external AI audit reviewed (security/AUDITS.md); a v2 with its fixes is in "
-            f"progress and not deployed. When it is, the deploy rewrites `app/deployments/4663.json` and this section "
-            f"is regenerated from it (`python3 .github/scripts/readme-deployments.py`).",
+            f"This is v2 (`MainnetBeta.s.sol` after the external AI audit and the follow-up reviews, "
+            f"security/AUDITS.md); OWNER is a single key (`allowEoaOwner`), see SECURITY.md. The v1 deployment the "
+            f"audit reviewed is archived in `app/deployments/4663-v1.json` (and `4663-v1-treasury.json`) and no "
+            f"longer used by the services or the web app. This section is generated from the files "
+            f"(`python3 .github/scripts/readme-deployments.py`).",
             "",
         ]
         out += table(main, 4663) + [""] + roles(main) + [""]
