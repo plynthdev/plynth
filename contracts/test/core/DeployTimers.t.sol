@@ -291,6 +291,8 @@ contract DeployTimersTest is Test {
     function _redeemAfter(uint256 d) internal {
         MockUSDG usdg = new MockUSDG();
         PerpPool p = new PerpPool(usdg, board, d, 48 hours);
+        vm.prank(board);
+        p.openDeposits();
         uint256 t = block.timestamp;
         usdg.mint(alice, 1000e6);
         vm.startPrank(alice);

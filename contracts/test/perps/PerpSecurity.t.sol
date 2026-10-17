@@ -62,7 +62,7 @@ contract PerpSecurityTest is PerpFixture {
     // ------------------------------------------------------------ S4: funding over an idle interval
 
     function _skewedBookIdle() internal {
-        _params(0, 0, 1000, 0, 1e12, 10_000, 10_000, 5e6);
+        _params(0, 0, 1000, 0, 1e12, 5_000, 10_000, 5e6);
         _open(alice, true, 200_000e6, 20_000e6);
         _open(bob, false, 50_000e6, 5_000e6);
         skip(64 hours); // e.g. a weekend nobody touches the market

@@ -188,17 +188,17 @@ contract PerpAuditTest is PerpFixture {
     function test_M3_minHoldCapsProfitNotLoss() public {
         _productionGuards();
         uint256 spreadFee = 1_000e6 * market.openSpreadBps() / 10_000;
-        _open(alice, true, 1_000e6, 100e6);
-        _open(bob, false, 1_000e6, 100e6);
+        _open(alice, true, 1_000e6, 200e6);
+        _open(bob, false, 1_000e6, 200e6);
         _setPrice(105e8);
-        assertEq(market.exitValueOf(alice), 100e6 - spreadFee, "a young winner is valued without its profit");
-        assertEq(_close(alice), 100e6 - spreadFee, "profit capped at 0");
-        assertEq(_close(bob), 100e6 - spreadFee - 50e6, "the loss is realized in full");
+        assertEq(market.exitValueOf(alice), 200e6 - spreadFee, "a young winner is valued without its profit");
+        assertEq(_close(alice), 200e6 - spreadFee, "profit capped at 0");
+        assertEq(_close(bob), 200e6 - spreadFee - 50e6, "the loss is realized in full");
 
-        _open(alice, true, 1_000e6, 100e6);
+        _open(alice, true, 1_000e6, 200e6);
         skip(market.minHoldSeconds());
         _setPrice(110e8);
-        assertEq(_close(alice), 100e6 - spreadFee + 47_619_047, "past the hold the profit is paid (10/105)");
+        assertEq(_close(alice), 200e6 - spreadFee + 47_619_047, "past the hold the profit is paid (10/105)");
     }
 
     function test_M3_increaseRestartsTheHoldButMarginDoesNot() public {
@@ -220,7 +220,7 @@ contract PerpAuditTest is PerpFixture {
 
     function test_M3_liquidationIgnoresTheHold() public {
         _productionGuards();
-        _open(alice, true, 1_000e6, 100e6);
+        _open(alice, true, 1_000e6, 110e6);
         _setPrice(80e8);
         vm.prank(keeper);
         market.liquidate(alice);
@@ -228,6 +228,7 @@ contract PerpAuditTest is PerpFixture {
     }
 
     function test_M3_guardsBounded() public {
+        _params(25, 25, 1000, 0, 0, 2_000, 10_000, 5e6); // 10 bps spread + 2 x 25 bps fee: above the 50 bps deviation
         vm.startPrank(owner);
         vm.expectRevert(PerpMarket.BadParams.selector);
         market.setGuards(9, 30 minutes, 1e6, 100e6);
@@ -333,12 +334,18 @@ contract PerpAuditTest is PerpFixture {
     function test_M4_minCollateralOnOpen() public {
         _productionGuards();
         assertEq(market.minCollateral(), 100e6);
-        _fund(alice, 100e6);
+        uint256 fee = 1_000e6 * market.openSpreadBps() / 10_000; // taker 0 in the fixture
+        _fund(alice, 100e6 + fee);
         vm.prank(alice);
         vm.expectRevert(PerpMarket.CollateralTooLow.selector);
         market.open(true, 1_000e6, 100e6 - 1, 10_000);
+        // Review v2 M-2: the minimum is what the position keeps, so the fee comes on top.
         vm.prank(alice);
+        vm.expectRevert(PerpMarket.CollateralTooLow.selector);
         market.open(true, 1_000e6, 100e6, 10_000);
+        vm.prank(alice);
+        market.open(true, 1_000e6, 100e6 + fee, 10_000);
+        assertEq(market.position(alice).collateral, 100e6);
     }
 
     /// The per-position valuation needs a bounded set: MAX_OPEN_POSITIONS per market, a slot frees on close.
@@ -435,31 +442,33 @@ contract PerpAuditTest is PerpFixture {
 
     /// A listed market with LPs: raising the borrow fee (or any risk-increasing param) waits the timelock.
     function test_timelock_setParamsOnALiveMarketIsNotInstant() public {
+        _params(30, 30, 1000, 0, 0, 2_000, 10_000, 5e6);
         _open(alice, true, 1_000e6, 100e6);
-        PerpMarket.Params memory p = PerpMarket.Params(0, 0, 1000, 100, 0, 2_000, 10_000, 5e6);
+        PerpMarket.Params memory p = PerpMarket.Params(30, 30, 1000, 100, 0, 2_000, 10_000, 5e6);
         bytes32 id = market.paramsId(p);
         vm.startPrank(owner);
         vm.expectRevert(abi.encodeWithSelector(PerpMarket.TimelockActive.selector, id, 0));
-        market.setParams(0, 0, 1000, 100, 0, 2_000, 10_000, 5e6);
-        market.proposeParams(0, 0, 1000, 100, 0, 2_000, 10_000, 5e6);
+        market.setParams(30, 30, 1000, 100, 0, 2_000, 10_000, 5e6);
+        market.proposeParams(30, 30, 1000, 100, 0, 2_000, 10_000, 5e6);
         vm.stopPrank();
         skip(pool.TIMELOCK());
         _refresh();
         vm.startPrank(owner);
         vm.expectRevert(); // only exactly the proposed values
-        market.setParams(0, 0, 1000, 99, 0, 2_000, 10_000, 5e6);
-        market.setParams(0, 0, 1000, 100, 0, 2_000, 10_000, 5e6);
+        market.setParams(30, 30, 1000, 99, 0, 2_000, 10_000, 5e6);
+        market.setParams(30, 30, 1000, 100, 0, 2_000, 10_000, 5e6);
         vm.stopPrank();
         assertEq(market.borrowBpsPerHour(), 100);
     }
 
     /// Lowering the OI cap only refuses new opens: instant. Raising it is not.
     function test_timelock_lowerOiCapIsInstant() public {
+        _params(30, 30, 1000, 0, 0, 2_000, 10_000, 5e6);
         vm.startPrank(owner);
-        market.setParams(0, 0, 1000, 0, 0, 1_000, 10_000, 5e6);
+        market.setParams(30, 30, 1000, 0, 0, 1_000, 10_000, 5e6);
         assertEq(market.oiCapBps(), 1_000);
         vm.expectRevert();
-        market.setParams(0, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
+        market.setParams(30, 30, 1000, 0, 0, 2_000, 10_000, 5e6);
         vm.stopPrank();
     }
 
@@ -492,16 +501,17 @@ contract PerpAuditTest is PerpFixture {
         PerpPool p2 = new PerpPool(usdg, owner, 24 hours, 48 hours);
         PerpMarket m2 = new PerpMarket(p2, valuer, address(token), owner);
         vm.startPrank(owner);
-        m2.setParams(10, 2, 1000, 1, 0, 2_000, 10_000, 5e6);
+        m2.setParams(10, 6, 1000, 1, 0, 2_000, 10_000, 5e6);
         m2.setGuards(50, 1 hours, 2e6, 50e6);
         p2.addMarket(address(m2));
+        p2.openDeposits();
         p2.setMakerRegistrar(alice);
-        m2.setParams(10, 2, 1000, 1, 0, 3_000, 10_000, 5e6);
+        m2.setParams(10, 6, 1000, 1, 0, 3_000, 10_000, 5e6);
         vm.stopPrank();
         assertEq(m2.oiCapBps(), 3_000);
         vm.prank(alice);
         vm.expectRevert();
-        m2.proposeParams(10, 2, 1000, 1, 0, 3_000, 10_000, 5e6); // owner only
+        m2.proposeParams(10, 6, 1000, 1, 0, 3_000, 10_000, 5e6); // owner only
         vm.prank(alice);
         vm.expectRevert();
         p2.proposeMarket(alice);

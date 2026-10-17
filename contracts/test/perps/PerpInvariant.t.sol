@@ -159,9 +159,10 @@ contract PerpInvariantTest is Test {
             feeds[i] = new MockFeed(8, int256(100e8 * (i + 1)), "mock");
             registry.list(address(t), address(feeds[i]), false);
             markets[i] = new PerpMarket(pool, valuer, address(t), address(this));
-            markets[i].setParams(10, 2, 1000, 2, 1e12, 3_000, 10_000, 5e6);
+            markets[i].setParams(10, 6, 1000, 2, 1e12, 3_000, 10_000, 5e6);
             pool.addMarket(address(markets[i]));
         }
+        pool.openDeposits();
         handler = new PerpHandler(usdg, pool, markets, feeds);
         usdg.transferOwnership(address(handler));
         for (uint256 i; i < 2; i++) {

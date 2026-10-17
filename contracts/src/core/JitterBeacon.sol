@@ -74,6 +74,12 @@ contract JitterBeacon is Ownable, ChangeDelay {
         _cancelChange(id);
     }
 
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
+    }
+
     /// Commits `commitment = keccak256(abi.encode(secret, key))` for a window that has not started yet.
     function commit(bytes32 key, uint64 windowStart, uint64 windowEnd, bytes32 commitment) external onlyKeeper {
         if (_beacons[key].commitment != bytes32(0)) revert AlreadyCommitted(key);

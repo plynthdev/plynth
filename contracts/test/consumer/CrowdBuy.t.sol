@@ -491,11 +491,17 @@ contract CrowdBuyTest is CrowdBuyBase {
 
         vm.warp(fallbackAt);
         _freshFeeds();
-        _setPool(address(tokA), PRICE_A * 10_070 / 10_000); // 0.7% worse: inside 1%, outside the fallback's 0.5%
+        _setPool(address(tokA), PRICE_A * 10_070 / 10_000); // 0.7% worse: inside 1%, outside the fallback's band
         vm.prank(stranger);
         vm.expectPartialRevert(StockRouter.Slippage.selector);
         crowd.execute(address(tokA));
-        _setPool(address(tokA), PRICE_A * 10_030 / 10_000); // 0.3%: inside both
+        // Review v2 L-4: the public band is the pool fee (5 bps) + 10 bps, so 0.3% (inside the old half band) is out too.
+        assertEq(crowd.publicSlippageBps(address(tokA)), 15);
+        _setPool(address(tokA), PRICE_A * 10_030 / 10_000);
+        vm.prank(stranger);
+        vm.expectPartialRevert(StockRouter.Slippage.selector);
+        crowd.execute(address(tokA));
+        _setPool(address(tokA), PRICE_A * 10_005 / 10_000); // 5 bps off + the 5 bps fee: inside
         vm.prank(stranger);
         crowd.execute(address(tokA));
         assertTrue(crowd.book(address(tokA), 0).executed);

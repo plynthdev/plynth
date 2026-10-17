@@ -17,6 +17,8 @@ contract StockTokenRegistry is ChangeDelay {
     address public owner;
     address public pendingOwner;
     mapping(address token => Entry) private _entries;
+    /// When the token was last delisted (0 = never): perp markets measure a delisted token's hold from here.
+    mapping(address token => uint64) public delistedAt;
     address[] private _tokens;
 
     event Listed(address indexed token, address indexed feed, bool multiplierEmbedded);
@@ -52,6 +54,7 @@ contract StockTokenRegistry is ChangeDelay {
 
     function delist(address token) external onlyOwner {
         _entries[token].active = false;
+        delistedAt[token] = uint64(block.timestamp);
         emit Delisted(token);
     }
 
@@ -82,5 +85,6 @@ contract StockTokenRegistry is ChangeDelay {
         emit OwnershipTransferred(owner, msg.sender);
         owner = msg.sender;
         pendingOwner = address(0);
+        _bumpChangeNonce(); // a new owner starts with no queued changes (review v2 L-6)
     }
 }

@@ -99,6 +99,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
     uint256 private constant BPS = 10_000;
     /// The public fallback only runs on a price round published after it opened and at most this old (audit M-1).
     uint64 public constant PUBLIC_FRESHNESS = 15 minutes;
+    /// A public execution's band over the pool fee (review v2 L-4).
+    uint256 public constant PUBLIC_EXTRA_BPS = 10;
 
     SavingsVault public immutable vault;
     StockRouter public immutable router;
@@ -216,6 +218,12 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
         _cancelChange(id);
     }
 
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
+    }
+
     /// Set once: CrowdBuy is deployed first, then StealthClaims(crowd), then this.
     function setStealthClaims(StealthClaims sc) external onlyOwner {
         if (address(stealthClaims) != address(0)) revert AlreadySet();
@@ -301,13 +309,17 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
     /// oracle-based minOut.
     /// Keeper-only because whoever executes picks the block: a stranger could move the pool, execute the whole
     /// book against it up to the slippage band and move it back in one transaction. So that a dead keeper never
-    /// blocks a book, anyone may execute from `windowEnd - beacon.GRACE()` on (the beacon's own fallback time),
-    /// with half the slippage band, and only when (audit M-1):
-    ///   - the oracle round was published after the fallback opened and is at most PUBLIC_FRESHNESS old, so the
-    ///     book is never bought at a stale-but-"fresh" price (Friday's close on a weekend) that a sandwich could
-    ///     push the pool back to; and
-    ///   - the book already had MIN_CROWD accounts before the fallback opened, so a sybil cannot hold a book under
-    ///     the minimum (keeping the keeper out) and complete the crowd in the same transaction as the execution.
+    /// blocks a book, anyone may execute a book the keeper missed: from the first `windowEnd - beacon.GRACE()` (the
+    /// beacon's own fallback time) of a window the book had its crowd for and did not execute in (`missedFrom`), at
+    /// any later time the market is open, once per window (review v2 L-3: one fixed hour a day rarely had a round in
+    /// it). Only when (audit M-1):
+    ///   - the oracle round was published after `missedFrom` and is at most PUBLIC_FRESHNESS old, so the book is
+    ///     never bought at a stale-but-"fresh" price (Friday's close on a weekend) that a sandwich could push the
+    ///     pool back to;
+    ///   - the book already had MIN_CROWD accounts before `missedFrom`, so a sybil cannot hold a book under the
+    ///     minimum (keeping the keeper out) and complete the crowd in the same transaction as the execution; and
+    ///   - within `publicSlippageBps`: the pool's own fee plus PUBLIC_EXTRA_BPS (and never more than half the keeper
+    ///     band), so pushing the pool off the oracle before a public execution cannot pay (review v2 L-4, BAT-1).
     /// A pool too far off, or no fresh round, simply waits (savers can always cancel).
     function execute(address asset) external nonReentrant {
         uint256 bookId = currentBookId[asset];
@@ -317,18 +329,22 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
         (uint64 start, uint64 end) = windowOf(block.timestamp);
         uint16 slip = slippageBps;
         bool fallback_ = msg.sender != keeper;
-        uint64 publicFrom = end - beacon.GRACE();
+        uint64 publicFrom;
         if (fallback_) {
+            if (b.crowdSince == 0) revert CrowdTooLate(0, 0);
+            publicFrom = missedFrom(asset, b.crowdSince);
             if (block.timestamp < publicFrom) revert NotKeeper();
-            if (b.crowdSince == 0 || b.crowdSince >= publicFrom) revert CrowdTooLate(b.crowdSince, publicFrom);
-            slip = slip / 2;
+            slip = publicSlippageBps(asset);
         }
         if (lastExecutedWindow[asset] == start + 1) revert AlreadyExecutedThisWindow(start);
-        uint64 after_ = beacon.executeAfter(beaconKey(asset, start));
-        // A window the keeper never committed (keeper dead from the start) falls back to the same public time as an
-        // unrevealed commitment, so a dead keeper never blocks a book (audit L-1).
-        if (after_ > publicFrom) after_ = publicFrom;
-        if (block.timestamp < after_) revert TooEarly(after_);
+        if (!fallback_) {
+            uint64 after_ = beacon.executeAfter(beaconKey(asset, start));
+            // A window the keeper never committed (keeper dead from the start) falls back to the same public time as
+            // an unrevealed commitment, so a dead keeper never blocks a book (audit L-1).
+            uint64 windowPublic = end - beacon.GRACE();
+            if (after_ > windowPublic) after_ = windowPublic;
+            if (block.timestamp < after_) revert TooEarly(after_);
+        }
         Valuer.Quote memory q = valuer.quote(asset);
         if (q.hold) revert MarketOnHold(asset);
         if (fallback_ && (q.updatedAt < publicFrom || block.timestamp > q.updatedAt + PUBLIC_FRESHNESS)) {
@@ -349,6 +365,25 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
         uint256 rawOut = token.balanceOf(address(this)) - before;
         b.rawOut = rawOut;
         emit Executed(asset, bookId, total, rawOut, accounts, q.roundId);
+    }
+
+    /// When the public fallback opens for a book whose crowd formed at `crowdSince`: the fallback time
+    /// (`windowEnd - beacon.GRACE()`) of the window the crowd formed in, if it formed before that time and no book
+    /// executed in that window; else the next window's. From then on the book counts as missed by the keeper.
+    function missedFrom(address asset, uint64 crowdSince) public view returns (uint64) {
+        uint64 t = crowdSince < GENESIS ? GENESIS : crowdSince;
+        (uint64 start, uint64 end) = windowOf(t);
+        uint64 from = end - beacon.GRACE();
+        if (crowdSince >= from || lastExecutedWindow[asset] == start + 1) from += WINDOW;
+        return from;
+    }
+
+    /// The slippage band of a public execution: the asset's pool fee (rounded up to whole bps) plus
+    /// PUBLIC_EXTRA_BPS, and never more than half the keeper band.
+    function publicSlippageBps(address asset) public view returns (uint16) {
+        uint256 band = (uint256(router.poolOf(asset).fee) + 99) / 100 + PUBLIC_EXTRA_BPS;
+        uint256 half = slippageBps / 2;
+        return uint16(band < half ? band : half);
     }
 
     // ---------------------------------------------------------------- settlement

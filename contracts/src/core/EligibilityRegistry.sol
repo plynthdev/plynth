@@ -5,6 +5,7 @@ import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {IEligibility} from "../interfaces/IEligibility.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 /// @title EligibilityRegistry
 /// @notice On-chain record of the eligibility service's decisions. Stock Tokens are not offered to US, UK,
@@ -17,10 +18,11 @@ import {IEligibility} from "../interfaces/IEligibility.sol";
 ///   E2 issuedAt <= now < expiry, and expiry - issuedAt <= MAX_TTL. Expired => not eligible.
 ///   E3 Replay guard: issuedAt must be strictly newer than the user's last attestation and last revocation,
 ///      so an old signature cannot undo a revoke or shorten a newer record.
-///   E4 The attester can revoke a user at any time; the owner can rotate the attester. Rotation invalidates
-///      unsubmitted signatures from the old attester, not records already on chain (revoke those explicitly).
+///   E4 The attester can revoke a user at any time; the owner can rotate the attester after CHANGE_DELAY (48 h) in
+///      public (review v2 L-21: the attester is the compliance trust root). Rotation invalidates unsubmitted
+///      signatures from the old attester, not records already on chain (revoke those explicitly).
 ///   E5 This registry only gates buying. It holds no funds and nothing here can block an exit.
-contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712 {
+contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay {
     struct Record {
         uint64 issuedAt;
         uint64 expiry;
@@ -57,8 +59,20 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712 {
 
     function setAttester(address attester_) external onlyOwner {
         if (attester_ == address(0)) revert ZeroAddress();
+        if (!_delayed()) return;
         attester = attester_;
         emit AttesterSet(attester_);
+    }
+
+    /// Drops a queued change (see ChangeDelay).
+    function cancelChange(bytes32 id) external onlyOwner {
+        _cancelChange(id);
+    }
+
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
     }
 
     /// Anyone may submit a signed attestation for any user.

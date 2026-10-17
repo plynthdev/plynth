@@ -351,6 +351,7 @@ contract TestnetStack is Script {
             perpPool.addMarket(address(m));
             perpMarkets.push(address(m));
         }
+        perpPool.openDeposits();
         usdg.mint(deployer, LP_SEED);
         IERC20(address(usdg)).approve(address(perpPool), LP_SEED);
         perpPool.deposit(LP_SEED, deployer);

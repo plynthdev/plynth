@@ -82,7 +82,8 @@ beforeAll(async () => {
   a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n, 172_800n]);
   a.market = await kit.deploy("PerpMarket.sol", "PerpMarket", [a.pool, kit.a.valuer, tsla.token, d]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "addMarket", [a.market]);
-  await kit.send(a.market, "PerpMarket.sol", "PerpMarket", "setParams", [10n, 0n, 1000n, 0n, 10n ** 13n, 2000n, 10_000n, 5n * E6]);
+  await kit.send(a.pool, "PerpPool.sol", "PerpPool", "openDeposits", []);
+  await kit.send(a.market, "PerpMarket.sol", "PerpMarket", "setParams", [10n, 6n, 1000n, 0n, 10n ** 13n, 2000n, 10_000n, 5n * E6]);
   await kit.send(kit.a.usdg!, "MockUSDG.sol", "MockUSDG", "mint", [d, 10_000_000n * E6]);
   await kit.send(kit.a.usdg!, "MockUSDG.sol", "MockUSDG", "approve", [a.pool, 2n ** 255n]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "deposit", [10_000_000n * E6, d]);

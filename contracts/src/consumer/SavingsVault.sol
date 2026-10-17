@@ -170,6 +170,12 @@ contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
         _cancelChange(id);
     }
 
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
+    }
+
     /// One-time: CrowdBuy is deployed after the vault. Fixing it stops the owner from pointing sweep elsewhere.
     function setCrowd(address crowd_) external onlyOwner {
         if (crowd != address(0)) revert CrowdAlreadySet();

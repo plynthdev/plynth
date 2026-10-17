@@ -28,6 +28,8 @@ contract TemplateRegistry {
 
     ITierSource public immutable tiers; // zero = every template priority 0
     address public committee;
+    /// Named by the committee; becomes the committee when it accepts (two-step, review v2 L-21).
+    address public pendingCommittee;
     Template[] private _templates; // id = index + 1 (0 = no template)
 
     event TemplateSubmitted(uint256 indexed id, address indexed author, bytes32 indexed policyHash, string metadataURI);
@@ -35,6 +37,7 @@ contract TemplateRegistry {
     event TemplateDelisted(uint256 indexed id);
     event AuthorTransferred(uint256 indexed id, address indexed from, address indexed to);
     event CommitteeSet(address committee);
+    event CommitteeProposed(address committee);
 
     error ZeroAddress();
     error NotCommittee();
@@ -92,10 +95,18 @@ contract TemplateRegistry {
         emit TemplateDelisted(id);
     }
 
+    /// Names the next committee; it takes over when it calls acceptCommittee, so a typo cannot lose the role.
     function setCommittee(address committee_) external onlyCommittee {
         if (committee_ == address(0)) revert ZeroAddress();
-        committee = committee_;
-        emit CommitteeSet(committee_);
+        pendingCommittee = committee_;
+        emit CommitteeProposed(committee_);
+    }
+
+    function acceptCommittee() external {
+        if (msg.sender != pendingCommittee) revert NotCommittee();
+        committee = msg.sender;
+        pendingCommittee = address(0);
+        emit CommitteeSet(msg.sender);
     }
 
     // ---------------------------------------------------------------- views

@@ -55,6 +55,7 @@ beforeAll(async () => {
   a.pool = await kit.deploy("PerpPool.sol", "PerpPool", [kit.a.usdg, d, 86_400n, 172_800n]);
   a.market = await kit.deploy("PerpMarket.sol", "PerpMarket", [a.pool, kit.a.valuer, tsla.token, d]);
   await kit.send(a.pool, "PerpPool.sol", "PerpPool", "addMarket", [a.market]);
+  await kit.send(a.pool, "PerpPool.sol", "PerpPool", "openDeposits", []);
   a.inHouse = await kit.deploy("InHousePerpVenue.sol", "InHousePerpVenue", [a.sleeve, a.pool, [a.market]]);
   a.off = await kit.deploy("MirroredPerpVenue.sol", "MirroredPerpVenue", [a.sleeve, kit.a.usdg, a.mirror, getAddress("0x00000000000000000000000000000000000c0570")]);
   await kit.send(a.sleeve, "PerpSleeve.sol", "PerpSleeve", "addVenue", [a.inHouse]);

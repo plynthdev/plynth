@@ -48,6 +48,8 @@ contract MainnetBetaTest is Test {
     function setUp() public {
         vm.warp(1_800_000_000);
         script = new MainnetBeta();
+        // Mainnet mode wants OWNER to be a contract (a Safe, review v2 L-22): give the test owner code.
+        vm.etch(owner, hex"00");
         deployCodeTo("MockUSDG.sol:MockUSDG", script.USDG());
         MainnetBeta.Stock[] memory s = script.stocks();
         for (uint256 i; i < s.length; ++i) {
@@ -225,10 +227,12 @@ contract MainnetBetaTest is Test {
         script.checkConfig(c, a[7]);
     }
 
-    function testFuzz_stalenessBounds(uint256 s) public {
+    /// Mainnet mode: 1 h .. 26 h (review v2 L-24 pins the mainnet default as the maximum); fork mode: 1 h .. 7 d.
+    function testFuzz_stalenessBounds(uint256 s, bool fork) public {
         MainnetBeta.Config memory c = _cfg();
+        c.fork = fork;
         c.maxStaleness = s;
-        if (s < 1 hours || s > 7 days) {
+        if (s < 1 hours || s > (fork ? 7 days : 26 hours)) {
             vm.expectRevert(abi.encodeWithSelector(MainnetBeta.BadStaleness.selector, s));
         }
         script.checkConfig(c, makeAddr("deployer"));

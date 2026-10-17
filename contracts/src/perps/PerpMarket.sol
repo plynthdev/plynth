@@ -8,6 +8,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Valuer} from "../core/Valuer.sol";
+import {StockTokenRegistry} from "../core/StockTokenRegistry.sol";
 import {PerpPool} from "./PerpPool.sol";
 
 /// One oracle-priced pool perp per Stock Token (GMX-v1 style), isolated margin, USDG collateral, the
@@ -41,9 +42,15 @@ import {PerpPool} from "./PerpPool.sol";
 ///
 /// Bad debt (a gap past zero equity): liquidation always pays at least `minLiquidationReward` (from the pool when
 /// the position has nothing left), so an underwater position is worth closing for anyone and its owner keeps no
-/// free option on a recovery. LP equity values every position on its own, floored at minus its collateral and
-/// capped at its maximum payout, so one trader's bad debt is never netted against another's gain. That needs the
-/// open positions enumerable: at most `MAX_OPEN_POSITIONS` per market, each opened with at least `minCollateral`.
+/// free option on a recovery. That top-up is never more than the position's own collateral (which the LPs keep), so
+/// the LPs never pay a liquidator more than the liquidated position brought in (review v2 M-3). LP equity values
+/// every position on its own, floored at minus its collateral and capped at its maximum payout, so one trader's bad
+/// debt is never netted against another's gain. That needs the open positions enumerable: at most
+/// `MAX_OPEN_POSITIONS` per market, and every position keeps at least `minCollateral` of collateral and of size
+/// after every open, increase and partial decrease (a smaller remainder must close in full), so a slot always
+/// locks real capital that pays borrow on real size (review v2 M-2). The owner can `retire` a market: opens stop at
+/// once and, after `pool.TIMELOCK()` in public, anyone settles the remaining positions at a fresh oracle price, so a
+/// market can always be emptied and removed from the pool whoever holds its slots.
 ///
 /// Funding: rate/s = fundingK x (longOI - shortOI) / poolLiquid, heavier side pays, lighter side receives
 /// pro rata (only while both sides are open). The pool accrues every market before its liquidity changes, so
@@ -65,11 +72,18 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public constant MAX_OPEN_SPREAD_BPS = 300;
     uint256 public constant MIN_HOLD_FLOOR = 5 minutes;
     uint256 public constant MAX_MIN_HOLD = 1 days;
+    /// Chainlink's deviation threshold on the Stock Token feeds (0.5%). The open spread plus the cheaper of the taker
+    /// and maker fees in and out must stay above it, or "open before the update, close after" pays (audit M-3,
+    /// review v2 L-2; makers are treasury desks, which count as adversaries too).
+    uint256 public constant FEED_DEVIATION_BPS = 50;
+    /// Highest open-interest cap per side, of pool liquidity (audit PERP-4: never all of the pool).
+    uint256 public constant MAX_OI_CAP_BPS = 5_000;
     /// Open positions per market (both sides). Every LP share-price read (deposit, redeem, the treasury's NAV)
     /// values each one: ~10k gas each cold (set slot + size, collateral, tokens), ~1.1M for a full market, and
     /// the pool's four mainnet markets stay under ~5M per read (test_M4_totalAssetsGasWithAFullMarket). With
-    /// the 100 USDG minimum collateral, filling one market's slots locks 10,000 USDG at market risk and pays
-    /// fees and borrow on every slot; the owner can raise minCollateral at once if that ever happens.
+    /// the 100 USDG minimum collateral and size kept by every position, filling one market's slots locks 10,000 USDG
+    /// at market risk and pays fees and borrow on at least 10,000 USDG of size; the owner can raise minCollateral at
+    /// once, and `retire` empties a market whatever holds its slots.
     uint256 public constant MAX_OPEN_POSITIONS = 100;
     /// How long a market may sit on hold (measured from its last fresh price) before it stops blocking the pool
     /// and its positions become settleable at the last price: longer than a weekend plus a market holiday, and
@@ -104,7 +118,9 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public immutable UNIT;
 
     uint256 public takerFeeBps = 10;
-    uint256 public makerFeeBps = 2;
+    /// 6 bps: with the 40 bps open spread a maker's round trip is 52 bps, above the feeds' 50 bps deviation (makers
+    /// are treasury desks, which count as adversaries too: review v2 L-2 follow-up).
+    uint256 public makerFeeBps = 6;
     uint256 public offHoursSpreadBps = 1_000;
     uint256 public borrowBpsPerHour = 1;
     uint256 public fundingK = 2.78e11; // ~0.1%/h when skew equals the pool
@@ -116,7 +132,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public minHoldSeconds = 30 minutes;
     /// Paid to a liquidator even when the position's equity is below it (the pool pays the rest). 1 USDG.
     uint256 public minLiquidationReward;
-    /// Least collateral (amount posted, fee included) a new position opens with. 100 USDG.
+    /// Least collateral posted to open, and least collateral (after fees) and size a position keeps after every
+    /// open, increase and partial decrease. 100 USDG.
     uint256 public minCollateral;
 
     Side public longs;
@@ -128,6 +145,12 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public lastPrice;
     /// Feed time (Valuer `updatedAt`) of `lastPrice`: how long a market has been on hold when the Valuer reverts.
     uint256 public lastPriceAt;
+    /// When the Valuer started reverting (a delisted token: its delisting time; otherwise the first state-changing
+    /// call that saw it), 0 while it answers. A delisted market's hold is measured from the later of `lastPriceAt`
+    /// and this, so a market nobody touched for days is not settleable the moment it is delisted (review v2 L-1).
+    uint256 public unpricedSince;
+    /// When settleRetired opens; opens stopped when it was set (0 = not retired). See `retire`.
+    uint256 public retireAt;
     /// Index-level funding totals (asset units x 1e18): conservation check, paid >= received, diff is dust.
     uint256 public fundingPaidTotal;
     uint256 public fundingReceivedTotal;
@@ -147,6 +170,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     event ChangeCancelled(bytes32 indexed id);
     event GuardsSet(uint256 openSpreadBps, uint256 minHoldSeconds, uint256 minLiquidationReward, uint256 minCollateral);
     event HeldSettled(address indexed account, address indexed by, uint256 heldFor);
+    event Retiring(uint256 settleFrom);
+    event RetiredSettled(address indexed account, address indexed by);
     event ParamsSet(uint256 takerFeeBps, uint256 makerFeeBps, uint256 offHoursSpreadBps, uint256 borrowBpsPerHour, uint256 fundingK, uint256 oiCapBps, uint256 maxProfitBps, uint256 liquidationFee);
 
     error NotAuthorized();
@@ -165,6 +190,10 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     error TooManyPositions();
     error TimelockActive(bytes32 id, uint256 eta);
     error NotProposed(bytes32 id);
+    error SizeTooSmall();
+    error RoundTripTooCheap(uint256 openSpreadBps, uint256 feeBps);
+    error Retired();
+    error NotRetired(uint256 settleFrom);
 
     constructor(PerpPool pool_, Valuer valuer_, address underlying_, address owner_) Ownable(owner_) {
         pool = pool_;
@@ -176,8 +205,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         minLiquidationReward = UNIT;
         minCollateral = 100 * UNIT;
         lastAccrual = block.timestamp;
-        (uint256 pr,, uint256 at) = _quote();
-        _record(pr, at);
+        _quoteAndRecord();
     }
 
     // ---------------------------------------------------------------- admin
@@ -218,6 +246,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
             takerFeeBps_, makerFeeBps_, offHoursSpreadBps_, borrowBpsPerHour_, fundingK_, oiCapBps_, maxProfitBps_, liquidationFee_
         );
         _checkParams(p);
+        _checkRoundTrip(openSpreadBps, p.takerFeeBps, p.makerFeeBps);
         if (!_instant() && !_paramsReduceRisk(p)) _consume(paramsId(p));
         _applyParams(p);
     }
@@ -236,6 +265,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
             takerFeeBps_, makerFeeBps_, offHoursSpreadBps_, borrowBpsPerHour_, fundingK_, oiCapBps_, maxProfitBps_, liquidationFee_
         );
         _checkParams(p);
+        _checkRoundTrip(openSpreadBps, p.takerFeeBps, p.makerFeeBps);
         _propose(paramsId(p));
     }
 
@@ -251,6 +281,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     ) external onlyOwner {
         Guards memory g = Guards(openSpreadBps_, minHoldSeconds_, minLiquidationReward_, minCollateral_);
         _checkGuards(g);
+        _checkRoundTrip(g.openSpreadBps, takerFeeBps, makerFeeBps);
         if (!_instant() && !_guardsReduceRisk(g)) _consume(guardsId(g));
         _applyGuards(g);
     }
@@ -263,6 +294,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     ) external onlyOwner {
         Guards memory g = Guards(openSpreadBps_, minHoldSeconds_, minLiquidationReward_, minCollateral_);
         _checkGuards(g);
+        _checkRoundTrip(g.openSpreadBps, takerFeeBps, makerFeeBps);
         _propose(guardsId(g));
     }
 
@@ -270,6 +302,16 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (etaOf[id] == 0) revert NotProposed(id);
         delete etaOf[id];
         emit ChangeCancelled(id);
+    }
+
+    /// Wind the market down: opens and increases stop at once (risk-reducing), and from `pool.TIMELOCK()` later anyone
+    /// may `settleRetired` each remaining position at a fresh oracle price (normal fee and profit cap, no hold
+    /// spread), so open interest can always reach 0 and the pool can drop the market (review v2 M-2). One-way.
+    function retire() external onlyOwner {
+        if (retireAt != 0) revert Retired();
+        uint256 at = block.timestamp + pool.TIMELOCK();
+        retireAt = at;
+        emit Retiring(at);
     }
 
     function paramsId(Params memory p) public pure returns (bytes32) {
@@ -284,9 +326,17 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (
             p.takerFeeBps > 100 || p.makerFeeBps > p.takerFeeBps || p.offHoursSpreadBps < MIN_HOLD_SPREAD_BPS
                 || p.offHoursSpreadBps > MAX_HOLD_SPREAD_BPS || p.borrowBpsPerHour > 100 || p.fundingK > 1e14
-                || p.oiCapBps > BPS || p.maxProfitBps < MAINTENANCE_BPS || p.maxProfitBps > 10 * BPS
+                || p.oiCapBps > MAX_OI_CAP_BPS || p.maxProfitBps < MAINTENANCE_BPS || p.maxProfitBps > 10 * BPS
                 || p.liquidationFee < minLiquidationReward
         ) revert BadParams();
+    }
+
+    /// Open spread plus the cheaper of the two fees in and out above the feeds' deviation threshold: the round trip
+    /// the cheapest front-runner pays, a maker (treasury desk) included (checked against the value the other setter
+    /// keeps).
+    function _checkRoundTrip(uint256 spreadBps, uint256 takerBps, uint256 makerBps) internal pure {
+        uint256 fee = takerBps < makerBps ? takerBps : makerBps;
+        if (spreadBps + 2 * fee <= FEED_DEVIATION_BPS) revert RoundTripTooCheap(spreadBps, fee);
     }
 
     function _applyParams(Params memory p) internal {
@@ -385,18 +435,19 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         Position storage p = _positions[account];
         if (p.size == 0) revert NoPosition();
         _accrue();
-        (uint256 pr,, uint256 at) = _quote();
-        _record(pr, at);
+        (uint256 pr,,) = _quoteAndRecord();
         _fold(p);
         int256 eq = _equity(p, pr);
         if (eq >= int256(p.size * MAINTENANCE_BPS / BPS)) revert NotLiquidatable();
 
         // The fee out of what is left, and never less than the minimum reward: below it (bad debt) the pool pays
-        // the difference, so closing an underwater position is always worth a keeper's transaction.
-        uint256 reward = eq > 0 ? Math.min(liquidationFee, uint256(eq)) : 0;
-        reward = Math.max(reward, minLiquidationReward);
+        // the difference, so closing an underwater position is always worth a keeper's transaction. The top-up is
+        // capped at the position's own collateral (the LPs keep it), so a dust-collateral position can never be
+        // liquidated for more than it brought in (review v2 M-3).
         uint256 size = p.size;
         uint256 coll = p.collateral;
+        uint256 reward = eq > 0 ? Math.min(liquidationFee, uint256(eq)) : 0;
+        reward = Math.max(reward, Math.min(minLiquidationReward, coll));
         _removeFromSide(p, size, p.tokens, coll);
         _forget(account, p.isLong);
         delete _positions[account];
@@ -416,6 +467,17 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         emit HeldSettled(account, msg.sender, held);
     }
 
+    /// Close `account`'s whole position at a fresh oracle price once the market is retired and its notice has passed
+    /// (see `retire`). Anyone may call it. Waits while the price is on hold (settleHeld covers a long hold).
+    function settleRetired(address account) external {
+        uint256 at = retireAt;
+        if (at == 0 || block.timestamp < at) revert NotRetired(at);
+        (, bool hold,) = _quote();
+        if (hold) revert Hold();
+        _decrease(account, _positions[account].size, true);
+        emit RetiredSettled(account, msg.sender);
+    }
+
     /// Accrue funding and borrow to now. The pool calls this on every market before its liquidity changes.
     function accrue() external {
         _accrue();
@@ -425,8 +487,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// measures its hold from a recent price. Anyone may call it.
     function poke() external nonReentrant {
         _accrue();
-        (uint256 pr,, uint256 at) = _quote();
-        _record(pr, at);
+        _quoteAndRecord();
     }
 
     /// Accrue funding and borrow to now; returns the current funding rate (1e18 fraction per second, paid by
@@ -573,6 +634,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (sizeUsd == 0) revert ZeroSize();
         if (collateral < minCollateral) revert CollateralTooLow();
         if (openPositionCount() >= MAX_OPEN_POSITIONS) revert TooManyPositions();
+        if (retireAt != 0) revert Retired();
         _accrue();
         (isLong ? _longAccounts : _shortAccounts).add(account);
         Position storage p = _positions[account];
@@ -603,10 +665,11 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         returns (uint256 pr, uint256 fee)
     {
         bool hold;
-        uint256 at;
-        (pr, hold, at) = _quote();
-        if (sizeUsd > 0 && hold) revert Hold();
-        _record(pr, at);
+        (pr, hold,) = _quoteAndRecord();
+        if (sizeUsd > 0) {
+            if (hold) revert Hold();
+            if (retireAt != 0) revert Retired();
+        }
 
         uint256 tokens;
         (tokens, fee) = _fill(account, p, pr, sizeUsd, maxSlippageBps);
@@ -623,6 +686,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
 
         if (p.collateral == 0 || p.size > p.collateral * MAX_LEVERAGE) revert Leverage();
         if (_equity(p, pr) < int256(p.size * MAINTENANCE_BPS / BPS)) revert Liquidatable();
+        // Every open and increase leaves a position worth its slot (review v2 M-2). Margin only is always allowed.
+        if (sizeUsd > 0) _checkFloors(p);
 
         pool.lockCollateral(account, collateral, kept);
         if (sizeUsd > 0) {
@@ -671,8 +736,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         _accrue();
         _fold(p);
 
-        (uint256 pr, bool hold, uint256 at) = _quote();
-        _record(pr, at);
+        (uint256 pr, bool hold,) = _quoteAndRecord();
         Exit memory x;
         x.exec = pr;
         if (hold && !settle) {
@@ -720,10 +784,19 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         } else {
             if (p.size > p.collateral * MAX_LEVERAGE) revert Leverage();
             if (_equity(p, pr) < int256(p.size * MAINTENANCE_BPS / BPS)) revert Liquidatable();
+            // A partial decrease may not leave dust behind (review v2 M-2): close in full instead.
+            _checkFloors(p);
         }
         _syncReserve();
         pool.settle(account, x.payout, x.collateralOut);
         emit Decreased(account, msg.sender, sizeUsd, x.pnl, x.funding, x.borrow, x.fee, x.payout, x.exec);
+    }
+
+    /// The minimum collateral and the minimum size (also minCollateral) a remaining position keeps.
+    function _checkFloors(Position storage p) internal view {
+        uint256 m = minCollateral;
+        if (p.collateral < m) revert CollateralTooLow();
+        if (p.size < m) revert SizeTooSmall();
     }
 
     /// Net profit of a realization (PnL - funding - borrow), capped at the reserve held for that size, and at 0
@@ -847,17 +920,55 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
 
     /// Valuer price, hold flag and feed time, or the last stored price and its time on hold if the Valuer
     /// reverts (e.g. token delisted).
+    /// `at` is when the hold (if any) is measured from: the feed time, but never later than the calendar's end when
+    /// an expired holiday table is what holds the price (else the hold would restart with every fresh round and the
+    /// pool's LP exits would wait forever); for a reverting Valuer the later of `lastPriceAt` and `unpricedSince`
+    /// (now, if no state-changing call has seen the revert yet).
     function _quote() internal view returns (uint256 pr, bool hold, uint256 at) {
         try valuer.quote(underlying) returns (Valuer.Quote memory q) {
-            return (q.priceUsdPerToken, q.hold, q.updatedAt);
+            return _held(q);
         } catch {
-            return (lastPrice, true, lastPriceAt);
+            return (lastPrice, true, _unpricedAt());
         }
     }
 
-    function _record(uint256 pr, uint256 at) internal {
-        lastPrice = pr;
-        lastPriceAt = at;
+    /// `_quote` for a state-changing call: records the price and its feed time, or the first time the Valuer was
+    /// seen reverting.
+    function _quoteAndRecord() internal returns (uint256 pr, bool hold, uint256 at) {
+        try valuer.quote(underlying) returns (Valuer.Quote memory q) {
+            (lastPrice, lastPriceAt) = (q.priceUsdPerToken, q.updatedAt);
+            if (unpricedSince != 0) unpricedSince = 0;
+            return _held(q);
+        } catch {
+            if (unpricedSince == 0) unpricedSince = _unpricedStart();
+            return (lastPrice, true, _unpricedAt());
+        }
+    }
+
+    function _held(Valuer.Quote memory q) internal view returns (uint256 pr, bool hold, uint256 at) {
+        (pr, hold, at) = (q.priceUsdPerToken, q.hold, q.updatedAt);
+        if (hold && valuer.marketCalendar()) {
+            uint256 until = valuer.calendarValidUntil();
+            if (until != 0 && block.timestamp >= until && until < at) at = until;
+        }
+    }
+
+    /// Hold start for a reverting Valuer: the later of the last recorded price time and when the trouble started.
+    function _unpricedAt() internal view returns (uint256) {
+        uint256 since = _unpricedStart();
+        return since > lastPriceAt ? since : lastPriceAt;
+    }
+
+    /// When the Valuer started reverting, as far as this market can tell: the recorded observation; else, while the
+    /// token is delisted, its delisting time; else now (the clock starts with the first look).
+    function _unpricedStart() internal view returns (uint256) {
+        if (unpricedSince != 0) return unpricedSince;
+        StockTokenRegistry reg = valuer.registry();
+        if (!reg.isCanonical(underlying)) {
+            uint256 d = reg.delistedAt(underlying);
+            if (d != 0 && d <= block.timestamp) return d;
+        }
+        return block.timestamp;
     }
 
     /// On hold for longer than HELD_GRACE since the price's feed time `at`.

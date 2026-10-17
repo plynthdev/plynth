@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ChangeDelay} from "../libs/ChangeDelay.sol";
 
 import {Poseidon2} from "./verifiers/Poseidon2.sol";
 import {HiddenConstants} from "./verifiers/HiddenConstants.sol";
@@ -54,7 +55,7 @@ interface IHonkVerifier {
 /// pays a relayer fee also binds the relayer: its ext_hash is extHashOf(abi.encode(encryptedChange, relayer))
 /// and only that msg.sender can submit it, so a copier who lands the same calldata first cannot take the fee
 /// (external audit L-9). With relayerFee == 0 it stays extHashOf(encryptedChange) and anyone may submit.
-contract ShieldedPool is Ownable2Step, ReentrancyGuard {
+contract ShieldedPool is Ownable2Step, ReentrancyGuard, ChangeDelay {
     using SafeERC20 for IERC20;
 
     struct PublicTransfer {
@@ -234,10 +235,20 @@ contract ShieldedPool is Ownable2Step, ReentrancyGuard {
     }
 
     /// Smallest direct deposit of `asset` (raw units), against filling the tree with dust notes. Deposits only.
+    /// Raising it applies at once; lowering it (0 switches the dust guard off) waits CHANGE_DELAY in public (review
+    /// v2 L-21).
     function setMinDeposit(address asset, uint256 minRaw) external onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
+        if (minRaw < minDeposit[asset] && !_delayed()) return;
         minDeposit[asset] = minRaw;
         emit MinDepositSet(asset, minRaw);
+    }
+
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6). No cancelChange here (contract
+    /// size): a queued lowering applies only if the owner sends the same call again, and expires 14 days after its eta.
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
     }
 
     /// Lowering (or keeping) a cap applies now; raising it applies after CAP_DELAY via `applyCap`.

@@ -67,10 +67,21 @@ contract EligibilityRegistryTest is Test {
         reg.attest(makeAddr("other"), T0, T0 + 1 days, FLAGS, sig);
     }
 
+    /// Queues and applies an attester rotation (48 h ChangeDelay), then returns to the original time so the
+    /// T0-dated attestations stay inside their windows.
+    function _rotate(address to) internal {
+        uint256 t = block.timestamp;
+        vm.prank(owner);
+        reg.setAttester(to);
+        vm.warp(t + 48 hours);
+        vm.prank(owner);
+        reg.setAttester(to);
+        vm.warp(t);
+    }
+
     function test_E1_erc1271Attester() public {
         Wallet1271 w = new Wallet1271();
-        vm.prank(owner);
-        reg.setAttester(address(w));
+        _rotate(address(w));
         w.allow(reg.attestationDigest(user, T0, T0 + 1 days, 1));
         reg.attest(user, T0, T0 + 1 days, 1, "");
         assertTrue(reg.isEligible(user));
@@ -153,8 +164,15 @@ contract EligibilityRegistryTest is Test {
         vm.prank(att);
         reg.setAttester(newAtt);
 
+        // Review v2 L-21: the first call only queues the rotation; it applies CHANGE_DELAY later.
         vm.prank(owner);
         reg.setAttester(newAtt);
+        assertEq(reg.attester(), att);
+        uint256 t = block.timestamp;
+        vm.warp(t + 48 hours);
+        vm.prank(owner);
+        reg.setAttester(newAtt);
+        vm.warp(t);
         assertEq(reg.attester(), newAtt);
 
         // the old attester's unsubmitted signature is dead, the new one works

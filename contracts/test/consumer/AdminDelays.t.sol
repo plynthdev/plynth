@@ -73,7 +73,7 @@ contract AdminDelaysTest is CrowdBuyBase {
         address k2 = makeAddr("k2");
         vm.prank(owner);
         crowd.setKeeper(k2);
-        bytes32 id = keccak256(abi.encodeCall(crowd.setKeeper, (k2)));
+        bytes32 id = crowd.changeId(abi.encodeCall(crowd.setKeeper, (k2)));
         assertGt(crowd.changeEta(id), 0);
         vm.prank(makeAddr("stranger"));
         vm.expectRevert();
@@ -86,8 +86,10 @@ contract AdminDelaysTest is CrowdBuyBase {
         crowd.setKeeper(k2); // queues again, does not apply
         assertEq(crowd.keeper(), keeper);
         registry.list(address(tokA), address(feedB), true);
+        bytes32 rid = registry.changeId(abi.encodeCall(registry.list, (address(tokA), address(feedB), true)));
+        assertGt(registry.changeEta(rid), 0);
         vm.expectRevert(abi.encodeWithSelector(StockTokenRegistry.NotOwner.selector));
         vm.prank(owner);
-        registry.cancelChange(keccak256(abi.encodeCall(registry.list, (address(tokA), address(feedB), true))));
+        registry.cancelChange(rid);
     }
 }

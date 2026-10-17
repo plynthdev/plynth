@@ -54,6 +54,7 @@ contract TestnetPerpKit is Script {
             d.markets[i] = new PerpMarket(d.pool, valuer, tokens[i], deployer);
             d.pool.addMarket(address(d.markets[i]));
         }
+        d.pool.openDeposits();
         usdg.mint(deployer, LP_SEED);
         usdg.approve(address(d.pool), LP_SEED);
         d.pool.deposit(LP_SEED, deployer);

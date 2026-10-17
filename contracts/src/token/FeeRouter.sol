@@ -185,6 +185,12 @@ contract FeeRouter is Ownable, ReentrancyGuard, IUnlockCallback, ChangeDelay {
         _cancelChange(id);
     }
 
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
+    }
+
     // ---------------------------------------------------------------- template authors
 
     /// Called by a PeriodClose right after it paid `amount` USDG here for `account`. Sets the author share aside

@@ -45,6 +45,8 @@ contract ValuerCalendarTest is Test {
     function test_weekendHoldsAFreshRoundOnlyWithTheCalendarOn() public {
         assertFalse(_holdAt(FRI + 1 days)); // Saturday, calendar off (default): the old behaviour
         valuer.enableMarketCalendar();
+        assertTrue(_holdAt(FRI + 19 hours)); // on but no holiday table yet: every price holds (fails closed)
+        valuer.setCalendarValidUntil(FRI + 365 days);
         assertFalse(_holdAt(FRI + 20 hours - 1)); // Friday 19:59:59 UTC
         assertTrue(_holdAt(FRI + 20 hours)); // Friday 20:00 UTC: closed
         assertTrue(_holdAt(FRI + 1 days + 12 hours)); // Saturday
@@ -65,6 +67,7 @@ contract ValuerCalendarTest is Test {
 
     function test_holidayClosesAtOnceAndReopensOnlyWithNotice() public {
         valuer.enableMarketCalendar();
+        valuer.setCalendarValidUntil(FRI + 365 days);
         uint256 tue = (FRI + 4 days) / 1 days;
         uint256[] memory d = new uint256[](1);
         d[0] = tue;
@@ -90,10 +93,13 @@ contract ValuerCalendarTest is Test {
     function test_sequencerDownOrJustRestartedHolds() public {
         vm.warp(FRI + 9 hours);
         MockFeed seq = new MockFeed(0, 0, "seq");
+        // Review v2 L-5: queued first, applied after CHANGE_DELAY.
+        valuer.setSequencerFeed(AggregatorV3Interface(address(seq)));
+        assertEq(address(valuer.sequencerFeed()), address(0));
+        vm.warp(block.timestamp + 48 hours); // Sunday 09:00 UTC; quotes below run with the calendar off
         seq.setUpdatedAt(block.timestamp - 2 hours); // up for 2 h
         valuer.setSequencerFeed(AggregatorV3Interface(address(seq)));
-        vm.expectRevert(Valuer.AlreadySet.selector);
-        valuer.setSequencerFeed(AggregatorV3Interface(address(seq)));
+        assertEq(address(valuer.sequencerFeed()), address(seq));
         feed.set(250e8);
         assertFalse(valuer.quote(address(tok)).hold);
         seq.set(1); // down
@@ -105,8 +111,16 @@ contract ValuerCalendarTest is Test {
         assertFalse(valuer.quote(address(tok)).hold);
     }
 
+    /// A feed that cannot be read is refused when set (review v2 L-5); one that stops answering later holds.
     function test_unreadableSequencerFeedHolds() public {
-        valuer.setSequencerFeed(AggregatorV3Interface(address(new RevertingFeed())));
+        address bad = address(new RevertingFeed());
+        vm.expectRevert(abi.encodeWithSelector(Valuer.BadSequencerFeed.selector, bad));
+        valuer.setSequencerFeed(AggregatorV3Interface(bad));
+        MockFeed seq = new MockFeed(0, 0, "seq");
+        valuer.setSequencerFeed(AggregatorV3Interface(address(seq)));
+        vm.warp(block.timestamp + 48 hours);
+        valuer.setSequencerFeed(AggregatorV3Interface(address(seq)));
+        vm.etch(address(seq), bad.code);
         assertTrue(valuer.quote(address(tok)).hold);
     }
 }

@@ -87,6 +87,12 @@ contract StockRouter is Ownable, IUnlockCallback, ChangeDelay {
         _cancelChange(id);
     }
 
+    /// A new owner starts with no queued changes (ChangeDelay nonce, review v2 L-6).
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        _bumpChangeNonce();
+    }
+
     function poolOf(address stockToken) external view returns (PoolKey memory) {
         return _pools[stockToken];
     }

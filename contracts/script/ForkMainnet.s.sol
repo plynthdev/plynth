@@ -340,6 +340,7 @@ contract ForkMainnet is Script {
             perpMarkets.push(address(m));
             perpSymbols.push(s[pick[i]].sym);
         }
+        perpPool.openDeposits();
         IERC20(USDG).approve(address(perpPool), LP_SEED);
         perpPool.deposit(LP_SEED, deployer);
     }

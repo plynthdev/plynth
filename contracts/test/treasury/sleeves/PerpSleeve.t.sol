@@ -47,9 +47,11 @@ contract PerpSleeveTest is TreasuryFixture {
         // Guards off (open spread, minimum hold): these tests check treasury math against exact fee numbers;
         // the guards are tested in test/perps (and with the treasury in test_productionGuards_*).
         market = new PerpMarketHarness(pool, valuer, address(aapl), address(this));
-        PerpMarketHarness(address(market)).guardsOff();
         pool.addMarket(address(market));
-        market.setParams(10, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
+        pool.openDeposits();
+        // Exact reference fees (maker 0): below the production round-trip floor, so set through the harness.
+        PerpMarketHarness(address(market)).paramsUnchecked(PerpMarket.Params(10, 0, 1000, 0, 0, 2_000, 10_000, 5e6));
+        PerpMarketHarness(address(market)).guardsOff();
         usdg.mint(lp, 10_000_000e6);
         vm.startPrank(lp);
         usdg.approve(address(pool), type(uint256).max);

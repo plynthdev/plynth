@@ -176,6 +176,14 @@ contract MarketplaceTest is TreasuryFixture {
         reg.setCommittee(next);
         vm.prank(committee);
         reg.setCommittee(next);
+        // Two-step (review v2 L-21): nothing changes until the named committee accepts; nobody else can accept.
+        assertEq(reg.committee(), committee);
+        vm.prank(author);
+        vm.expectRevert(TemplateRegistry.NotCommittee.selector);
+        reg.acceptCommittee();
+        vm.prank(next);
+        reg.acceptCommittee();
+        assertEq(reg.pendingCommittee(), address(0));
         vm.prank(committee);
         vm.expectRevert(TemplateRegistry.NotCommittee.selector);
         reg.list(1);

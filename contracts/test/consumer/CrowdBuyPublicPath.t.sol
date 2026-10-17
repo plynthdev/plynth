@@ -60,7 +60,9 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
             assertEq(open.accounts, 0);
             revert("public fallback executed a sybil-completed book on a stale round");
         } catch (bytes memory err) {
-            assertEq(bytes4(err), CrowdBuy.CrowdTooLate.selector);
+            // The crowd completed at the fallback time itself, so for this book the public path opens only at the
+            // next window's fallback time (review v2 L-3: missedFrom).
+            assertEq(bytes4(err), CrowdBuy.NotKeeper.selector);
         }
         assertFalse(crowd.book(address(tokA), 0).executed);
     }
@@ -79,8 +81,17 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
         feedA.set(int256(PRICE_A / 1e10));
         vm.warp(from + 1 minutes);
         _setPool(address(tokA), PRICE_A);
+        // The crowd formed in window 0, so the book counts as missed from window 0's fallback time (review v2 L-3);
+        // the round must still be newer than that and at most 15 minutes old.
+        uint64 missed = crowd.missedFrom(address(tokA), crowd.book(address(tokA), 0).crowdSince);
+        assertLt(missed, from);
+        vm.warp(missed - 1);
         vm.prank(makeAddr("attacker"));
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.StalePrice.selector, uint256(from - 3 hours), from));
+        vm.expectRevert(CrowdBuy.NotKeeper.selector);
+        crowd.execute(address(tokA));
+        vm.warp(from + 1 minutes);
+        vm.prank(makeAddr("attacker"));
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.StalePrice.selector, uint256(from - 3 hours), missed));
         crowd.execute(address(tokA));
 
         // A round after the fallback opened but older than 15 minutes: still refused.
@@ -88,7 +99,7 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
         uint256 roundAt = block.timestamp;
         vm.warp(roundAt + 15 minutes + 1);
         vm.prank(makeAddr("attacker"));
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.StalePrice.selector, roundAt, from));
+        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.StalePrice.selector, roundAt, missed));
         crowd.execute(address(tokA));
     }
 
@@ -123,8 +134,10 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
         vm.warp(from + 1 minutes);
         _joinA(_user(3), 1 * U);
         feedA.set(int256(PRICE_A / 1e10));
+        // Re-completed after the fallback time: this book's public path opens a window later (missedFrom).
+        assertEq(crowd.missedFrom(address(tokA), uint64(from + 1 minutes)), from + 1 days);
         vm.prank(makeAddr("anyone"));
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.CrowdTooLate.selector, uint64(from + 1 minutes), from));
+        vm.expectRevert(CrowdBuy.NotKeeper.selector);
         crowd.execute(address(tokA));
         // The keeper is unaffected: it picks its own (secret) time inside the window.
         _executeAsKeeper(address(tokA));
@@ -134,6 +147,7 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
     /// keeper and the public path alike.
     function test_M1_marketClosedHoldsEvenAFreshRound() public {
         valuer.enableMarketCalendar();
+        valuer.setCalendarValidUntil(block.timestamp + 365 days);
         _joinA(_user(0), 500 * U);
         _joinA(_user(1), 500 * U);
         _joinA(_user(2), 1 * U);

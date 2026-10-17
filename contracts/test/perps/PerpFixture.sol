@@ -46,8 +46,10 @@ abstract contract PerpFixture is Test {
         harness = new PerpMarketHarness(pool, valuer, address(token), owner);
         harness.guardsOff();
         market = harness;
-        vm.prank(owner);
+        vm.startPrank(owner);
         pool.addMarket(address(market));
+        pool.openDeposits();
+        vm.stopPrank();
         _params(0, 0, 1000, 0, 0, 2_000, 10_000, 5e6);
 
         _fund(lp, LP_SEED);

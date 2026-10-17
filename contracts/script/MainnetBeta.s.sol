@@ -100,9 +100,18 @@ interface IPendingOwned {
 /// Token (PLTH, staking, FeeRouter, insurance pool, PLTH/USDG pool) only with DEPLOY_TOKEN=true (default false).
 /// With it off, platform close fees go to OWNER and there is no tier gating (weekly closes allowed for everyone).
 ///
+/// Market calendar (review v2 M-1): every NYSE full-day closure and early close (13:00 New York) from Thanksgiving
+/// 2026 to Labor Day 2029 is marked in the Valuer, and the table is valid until 2029-10-01 00:00 UTC: after that
+/// every price holds (fails closed) until OWNER extends it (48 h delay). Early closes hold from 17:00 UTC, an hour
+/// early in winter (accepted: it only fails closed). The ops alert fires when less than 90 days of table remain.
+/// Unscheduled closures (a national day of mourning) are marked by OWNER at once with `Valuer.closeDays`.
+///
+/// Mainnet mode pins (review v2 L-22, L-24): MAX_STALENESS at most 26 h, MIN_CROWD at least 3, and OWNER must be a
+/// contract (a Safe) unless ALLOW_EOA_OWNER=1 is set explicitly. Fork mode keeps the dry-run defaults.
+///
 /// Env: OWNER, KEEPER, ATTESTER, RELAYER, CONTROLLER, CASH_DESK, EQUITY_DESK (required); DEPLOY_TOKEN, BETA_FORK,
-/// MIN_CROWD (default 3), MAX_STALENESS (default 26 h; fork mode: FORK_MAX_STALENESS, default 7 d), BETA_OUT
-/// (output file name inside app/deployments; default 4663-beta.json, fork mode fork.json).
+/// MIN_CROWD (default 3), MAX_STALENESS (default 26 h; fork mode: FORK_MAX_STALENESS, default 7 d), ALLOW_EOA_OWNER
+/// (default 0), BETA_OUT (output file name inside app/deployments; default 4663-beta.json, fork mode fork.json).
 contract MainnetBeta is Script {
     // ---- real Robinhood Chain mainnet contracts (chain facts, verified 2026-10-04)
     address public constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
@@ -128,11 +137,21 @@ contract MainnetBeta is Script {
     uint64 public constant CROWD_DAY_OFFSET = 19 hours + 30 minutes;
 
     // ---- oracle staleness: Chainlink's heartbeat is 24 h on these feeds and weekday gaps up to ~22 h were seen
-    // (chain facts); 26 h keeps weekdays live and puts weekends / holidays on hold (risk-reducing actions only).
+    // (chain facts); 26 h keeps weekdays live. Weekends and holidays are held by the market calendar, not by the
+    // age check (26 h alone would keep a Friday close or a pre-holiday close "fresh" for a day).
     uint256 public constant DEFAULT_MAX_STALENESS = 26 hours;
     uint256 public constant MIN_STALENESS = 1 hours;
     uint256 public constant MAX_STALENESS_LIMIT = 7 days;
     uint256 public constant FORK_DEFAULT_STALENESS = 7 days;
+
+    // ---- market calendar (review v2 M-1)
+    /// The holiday table below covers up to here; the Valuer holds every price from then on.
+    uint256 public constant CALENDAR_VALID_UNTIL = 1885507200; // 2029-10-01 00:00 UTC
+    /// A deploy needs at least this much table ahead of it.
+    uint256 public constant MIN_CALENDAR_AHEAD = 730 days;
+    /// Robinhood Chain has no Chainlink L2 sequencer-uptime feed (Chainlink directory, robinhood-mainnet, checked
+    /// 2026-10-16): the Valuer runs without one (accepted risk, SECURITY.md) and the check asserts it stays unset.
+    address public constant SEQUENCER_FEED = address(0);
 
     // ---- caps: none (Kal 2026-10-08)
     uint256 public constant UNLIMITED = type(uint256).max;
@@ -140,6 +159,10 @@ contract MainnetBeta is Script {
     uint256 public constant PERP_OI_CAP_BPS = 2_000;
     /// Audit M-3: an open spread above the feeds' 0.5% deviation threshold round trip, and a minimum hold.
     uint256 public constant PERP_OPEN_SPREAD_BPS = 40;
+    /// Fees: taker 10, maker (treasury desks) 6 bps, so even a maker's round trip (40 + 2 x 6 = 52 bps) is above
+    /// the 50 bps deviation threshold (review v2 L-2 follow-up: desks count as adversaries, PRIV-4).
+    uint256 public constant PERP_TAKER_FEE_BPS = 10;
+    uint256 public constant PERP_MAKER_FEE_BPS = 6;
     uint256 public constant PERP_MIN_HOLD = 30 minutes;
     /// Audit M-4: a liquidator is always paid (from the pool when equity is gone); positions need real collateral.
     uint256 public constant PERP_MIN_LIQ_REWARD = 1e6;
@@ -178,6 +201,8 @@ contract MainnetBeta is Script {
         uint32 minCrowd;
         uint256 maxStaleness;
         string out;
+        /// Mainnet mode only: accept an EOA as OWNER (ALLOW_EOA_OWNER=1). Default: OWNER must be a contract.
+        bool allowEoaOwner;
     }
 
     error WrongChain(uint256 chainId, uint256 required);
@@ -188,6 +213,8 @@ contract MainnetBeta is Script {
     error BadMinCrowd(uint256 value);
     error NotEnoughUsdg(uint256 have, uint256 need);
     error HandoffIncomplete(address target, string what);
+    error OwnerNotContract(address owner);
+    error BadCalendar(uint256 validUntil, uint256 nowTs);
 
     // Outputs (script storage: keeps every function's stack small).
     Config cfg;
@@ -220,6 +247,8 @@ contract MainnetBeta is Script {
     bytes32 plthPoolId;
     uint64 genesis;
     uint256 startBlock;
+    /// verifyDeploymentStrict: every two-step hand-over must be accepted (no pending owner anywhere).
+    bool strict;
     address[] perpMarkets;
     string[] perpSymbols;
 
@@ -242,6 +271,79 @@ contract MainnetBeta is Script {
         s[13] = Stock("USO", 0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344, 0x75a9c76Ef439e2C7c2E5a34Ab105EcFe3766431c, 1200, 15);
     }
 
+    /// NYSE full-day closures (UTC day numbers), Thanksgiving 2026 to Labor Day 2029 (NYSE holiday rules: a Saturday
+    /// holiday closes the Friday before, except New Year's Day; a Sunday holiday closes the Monday after).
+    function nyseClosedDays() public pure returns (uint256[] memory d) {
+        uint256[29] memory a = [
+            uint256(20783), // 2026-11-26 Thanksgiving
+            20812, // 2026-12-25 Christmas
+            20819, // 2027-01-01 New Year's Day
+            20836, // 2027-01-18 Martin Luther King Jr. Day
+            20864, // 2027-02-15 Washington's Birthday
+            20903, // 2027-03-26 Good Friday
+            20969, // 2027-05-31 Memorial Day
+            20987, // 2027-06-18 Juneteenth (observed)
+            21004, // 2027-07-05 Independence Day (observed)
+            21067, // 2027-09-06 Labor Day
+            21147, // 2027-11-25 Thanksgiving
+            21176, // 2027-12-24 Christmas (observed); New Year's Day 2028 is a Saturday: no closure
+            21200, // 2028-01-17 Martin Luther King Jr. Day
+            21235, // 2028-02-21 Washington's Birthday
+            21288, // 2028-04-14 Good Friday
+            21333, // 2028-05-29 Memorial Day
+            21354, // 2028-06-19 Juneteenth
+            21369, // 2028-07-04 Independence Day
+            21431, // 2028-09-04 Labor Day
+            21511, // 2028-11-23 Thanksgiving
+            21543, // 2028-12-25 Christmas
+            21550, // 2029-01-01 New Year's Day
+            21564, // 2029-01-15 Martin Luther King Jr. Day
+            21599, // 2029-02-19 Washington's Birthday
+            21638, // 2029-03-30 Good Friday
+            21697, // 2029-05-28 Memorial Day
+            21719, // 2029-06-19 Juneteenth
+            21734, // 2029-07-04 Independence Day
+            21795 // 2029-09-03 Labor Day
+        ];
+        d = new uint256[](a.length);
+        for (uint256 i; i < a.length; ++i) {
+            d[i] = a[i];
+        }
+    }
+
+    /// NYSE early closes (13:00 New York) in the same period.
+    function nyseEarlyCloses() public pure returns (uint256[] memory d) {
+        uint256[6] memory a = [
+            uint256(20784), // 2026-11-27 day after Thanksgiving
+            20811, // 2026-12-24 Christmas Eve
+            21148, // 2027-11-26 day after Thanksgiving
+            21368, // 2028-07-03 day before Independence Day
+            21512, // 2028-11-24 day after Thanksgiving
+            21733 // 2029-07-03 day before Independence Day
+        ];
+        d = new uint256[](a.length);
+        for (uint256 i; i < a.length; ++i) {
+            d[i] = a[i];
+        }
+    }
+
+    /// The table is sorted, weekdays only, inside its validity, and covers at least MIN_CALENDAR_AHEAD from `nowTs`
+    /// (and no more than the Valuer accepts).
+    function checkCalendar(uint256 nowTs) public pure {
+        uint256 until = CALENDAR_VALID_UNTIL;
+        if (until < nowTs + MIN_CALENDAR_AHEAD || until > nowTs + 1461 days) revert BadCalendar(until, nowTs); // Valuer.MAX_CALENDAR_HORIZON
+        uint256[][2] memory lists = [nyseClosedDays(), nyseEarlyCloses()];
+        for (uint256 l; l < 2; ++l) {
+            uint256[] memory d = lists[l];
+            for (uint256 i; i < d.length; ++i) {
+                uint256 w = (d[i] + 4) % 7;
+                if (w == 0 || w == 6 || d[i] * 1 days >= until || (i > 0 && d[i] <= d[i - 1])) {
+                    revert BadCalendar(until, d[i]);
+                }
+            }
+        }
+    }
+
     /// The hookless default pool of a Stock Token (chain facts): currencies sorted by address.
     function poolKeyOf(Stock memory s) public pure returns (PoolKey memory) {
         (address c0, address c1) = USDG < s.token ? (USDG, s.token) : (s.token, USDG);
@@ -256,8 +358,10 @@ contract MainnetBeta is Script {
         if (chainId != need) revert WrongChain(chainId, need);
     }
 
-    /// Every role set, all distinct from each other and from the deployer; staleness and crowd size in range.
-    function checkConfig(Config memory c, address deployer_) public pure {
+    /// Every role set, all distinct from each other and from the deployer; staleness and crowd size in range; in
+    /// mainnet mode staleness at most 26 h, MIN_CROWD at least 3 and OWNER a contract (unless allowEoaOwner); the
+    /// holiday table long enough.
+    function checkConfig(Config memory c, address deployer_) public view {
         address[8] memory a =
             [c.owner, c.keeper, c.attester, c.relayer, c.controller, c.cashDesk, c.equityDesk, deployer_];
         string[8] memory n =
@@ -270,6 +374,12 @@ contract MainnetBeta is Script {
         }
         if (c.maxStaleness < MIN_STALENESS || c.maxStaleness > MAX_STALENESS_LIMIT) revert BadStaleness(c.maxStaleness);
         if (c.minCrowd == 0) revert BadMinCrowd(c.minCrowd);
+        if (!c.fork) {
+            if (c.maxStaleness > DEFAULT_MAX_STALENESS) revert BadStaleness(c.maxStaleness);
+            if (c.minCrowd < DEFAULT_MIN_CROWD) revert BadMinCrowd(c.minCrowd);
+            if (c.owner.code.length == 0 && !c.allowEoaOwner) revert OwnerNotContract(c.owner);
+        }
+        checkCalendar(block.timestamp);
     }
 
     /// Reads the configuration from the environment. Roles have no defaults.
@@ -290,6 +400,7 @@ contract MainnetBeta is Script {
             ? vm.envOr("FORK_MAX_STALENESS", FORK_DEFAULT_STALENESS)
             : vm.envOr("MAX_STALENESS", DEFAULT_MAX_STALENESS);
         c.out = vm.envOr("BETA_OUT", c.fork ? string("fork.json") : string("4663-beta.json"));
+        c.allowEoaOwner = vm.envOr("ALLOW_EOA_OWNER", uint256(0)) == 1;
         checkOutName(c.out);
     }
 
@@ -352,6 +463,9 @@ contract MainnetBeta is Script {
         registry = new StockTokenRegistry(deployer);
         valuer = new Valuer(registry, cfg.maxStaleness);
         valuer.enableMarketCalendar(); // weekend / holiday hold (audit M-1); one-way
+        valuer.closeDays(nyseClosedDays()); // review v2 M-1
+        valuer.earlyCloseDays(nyseEarlyCloses());
+        valuer.setCalendarValidUntil(CALENDAR_VALID_UNTIL);
         router = new StockRouter(IPoolManager(POOL_MANAGER), registry, valuer, IERC20Metadata(USDG), deployer);
         Stock[] memory s = stocks();
         for (uint256 i; i < s.length; ++i) {
@@ -508,8 +622,8 @@ contract MainnetBeta is Script {
         for (uint256 i; i < pick.length; ++i) {
             PerpMarket m = new PerpMarket(perpPool, valuer, s[pick[i]].token, deployer);
             m.setParams(
-                m.takerFeeBps(),
-                m.makerFeeBps(),
+                PERP_TAKER_FEE_BPS,
+                PERP_MAKER_FEE_BPS,
                 m.offHoursSpreadBps(),
                 m.borrowBpsPerHour(),
                 m.fundingK(),
@@ -522,6 +636,8 @@ contract MainnetBeta is Script {
             perpMarkets.push(address(m));
             perpSymbols.push(s[pick[i]].sym);
         }
+        // Only now, with every market listed while the pool provably has no LP (review v2 L-7).
+        perpPool.openDeposits();
     }
 
     /// Hands every admin role to OWNER. One-step contracts are OWNER's now; two-step ones wait for OWNER's accept.
@@ -566,6 +682,7 @@ contract MainnetBeta is Script {
     /// and nothing left with the deployer. `verifyDeployment` runs the same check later against a deployment file.
     function checkHandoff() public view {
         address o = cfg.owner;
+        if (!cfg.fork && !cfg.allowEoaOwner) _is(o.code.length != 0, o, "OWNER is a contract");
         _owned(address(registry), "registry");
         _owned(address(valuer), "valuer");
         _is(IOwned(address(router)).owner() == o, address(router), "router owner");
@@ -581,7 +698,7 @@ contract MainnetBeta is Script {
         _is(eligibility.attester() == cfg.attester, address(eligibility), "attester");
         _is(IOwned(address(beacon)).owner() == o, address(beacon), "beacon owner");
         _is(beacon.keeper() == cfg.keeper && beacon.GRACE() == BEACON_GRACE, address(beacon), "beacon keeper/GRACE");
-        _is(templates.committee() == o, address(templates), "template committee");
+        _is(templates.committee() == o && templates.pendingCommittee() == address(0), address(templates), "template committee");
         _checkCore();
         _checkConsumer();
         _checkPerps();
@@ -601,6 +718,14 @@ contract MainnetBeta is Script {
     /// role from it and runs checkHandoff against the chain, failing on any mismatch. Run after the broadcast, again
     /// after OWNER's acceptOwnership calls, and in the release gate:
     ///   forge script script/MainnetBeta.s.sol --sig "verifyDeployment(string)" 4663-beta.json --rpc-url rhc
+    /// verifyDeployment after OWNER's acceptOwnership calls (and in the release gate): also fails while any
+    /// hand-over is still pending, i.e. while the deployer key still owns anything (review v2 L-20).
+    ///   forge script script/MainnetBeta.s.sol --sig "verifyDeploymentStrict(string)" 4663-beta.json --rpc-url rhc
+    function verifyDeploymentStrict(string memory file) public {
+        strict = true;
+        verifyDeployment(file);
+    }
+
     function verifyDeployment(string memory file) public {
         checkOutName(file);
         string memory j = vm.readFile(string.concat(vm.projectRoot(), "/../app/deployments/", file));
@@ -616,6 +741,7 @@ contract MainnetBeta is Script {
         cfg.equityDesk = vm.parseJsonAddress(j, ".equityDesk");
         cfg.minCrowd = uint32(vm.parseJsonUint(j, ".minCrowd"));
         cfg.maxStaleness = vm.parseJsonUint(j, ".maxStaleness");
+        cfg.allowEoaOwner = vm.parseJsonBool(j, ".allowEoaOwner");
         deployer = vm.parseJsonAddress(j, ".deployer");
         genesis = uint64(vm.parseJsonUint(j, ".genesis"));
         registry = StockTokenRegistry(vm.parseJsonAddress(j, ".stockTokenRegistry"));
@@ -647,11 +773,12 @@ contract MainnetBeta is Script {
         checkHandoff();
     }
 
-    /// OWNER owns it, or (between the deploy and acceptOwnership) the deployer owns it with OWNER pending.
+    /// OWNER owns it, or (between the deploy and acceptOwnership, never in strict mode) the deployer owns it with
+    /// OWNER pending.
     function _owned(address c, string memory what) private view {
         address cur = IOwned(c).owner();
         address pend = IPendingOwned(c).pendingOwner();
-        bool ok = (cur == cfg.owner && pend == address(0)) || (cur == deployer && pend == cfg.owner);
+        bool ok = (cur == cfg.owner && pend == address(0)) || (!strict && cur == deployer && pend == cfg.owner);
         _is(ok, c, string.concat(what, " owner / pendingOwner"));
     }
 
@@ -659,6 +786,16 @@ contract MainnetBeta is Script {
     function _checkCore() private view {
         _is(valuer.registry() == registry && valuer.maxStaleness() == cfg.maxStaleness, address(valuer), "valuer wiring");
         _is(valuer.marketCalendar(), address(valuer), "market calendar on");
+        _is(valuer.calendarValidUntil() == CALENDAR_VALID_UNTIL, address(valuer), "calendar valid until");
+        uint256[] memory closed = nyseClosedDays();
+        for (uint256 i; i < closed.length; ++i) {
+            _is(valuer.closedDay(closed[i]), address(valuer), "NYSE closed day");
+        }
+        uint256[] memory early = nyseEarlyCloses();
+        for (uint256 i; i < early.length; ++i) {
+            _is(valuer.earlyCloseDay(early[i]), address(valuer), "NYSE early close");
+        }
+        _is(address(valuer.sequencerFeed()) == SEQUENCER_FEED, address(valuer), "sequencer feed");
         _is(router.registry() == registry && router.valuer() == valuer, address(router), "router wiring");
         _is(address(router.usdg()) == USDG && address(router.poolManager()) == POOL_MANAGER, address(router), "router usdg/pm");
         Stock[] memory s = stocks();
@@ -696,11 +833,18 @@ contract MainnetBeta is Script {
     function _checkPerps() private view {
         _is(perpPool.REDEEM_COOLDOWN() == PERP_COOLDOWN && perpPool.TIMELOCK() == TIMELOCK, address(perpPool), "pool timers");
         _is(perpPool.asset() == USDG && perpPool.markets().length == perpMarkets.length, address(perpPool), "pool markets");
+        _is(perpPool.depositsOpen(), address(perpPool), "pool deposits open");
         for (uint256 i; i < perpMarkets.length; ++i) {
             PerpMarket m = PerpMarket(perpMarkets[i]);
             _is(perpPool.isMarket(address(m)) && m.pool() == perpPool && m.valuer() == valuer, address(m), "market wiring");
-            _is(m.oiCapBps() == PERP_OI_CAP_BPS, address(m), "oiCapBps");
+            _is(m.oiCapBps() == PERP_OI_CAP_BPS && m.retireAt() == 0, address(m), "oiCapBps / not retired");
             _is(m.openSpreadBps() == PERP_OPEN_SPREAD_BPS && m.minHoldSeconds() == PERP_MIN_HOLD, address(m), "M-3 guards");
+            _is(
+                m.takerFeeBps() == PERP_TAKER_FEE_BPS && m.makerFeeBps() == PERP_MAKER_FEE_BPS
+                    && PERP_OPEN_SPREAD_BPS + 2 * PERP_MAKER_FEE_BPS > m.FEED_DEVIATION_BPS(),
+                address(m),
+                "perp fees / maker round trip"
+            );
             _is(
                 m.minLiquidationReward() == PERP_MIN_LIQ_REWARD && m.minCollateral() == PERP_MIN_COLLATERAL,
                 address(m),
@@ -760,6 +904,8 @@ contract MainnetBeta is Script {
         vm.serializeAddress(r, "acceptOwnership", pendingAccepts());
         vm.serializeUint(r, "maxStaleness", cfg.maxStaleness);
         vm.serializeUint(r, "minCrowd", cfg.minCrowd);
+        vm.serializeBool(r, "allowEoaOwner", cfg.allowEoaOwner);
+        vm.serializeUint(r, "calendarValidUntil", CALENDAR_VALID_UNTIL);
         vm.serializeAddress(r, "usdg", USDG);
         vm.serializeAddress(r, "poolManager", POOL_MANAGER);
         vm.serializeAddress(r, "permit2", PERMIT2);

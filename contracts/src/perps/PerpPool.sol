@@ -41,6 +41,10 @@ interface IPerpMarketValuation {
 /// withdrawals; deposits stay closed until it reprices or its positions are settled (`settleHeld`), since a
 /// deposit at that conservative price would dilute the LPs already in. The owner removes a market with no open
 /// interest (`removeMarket`), so a dead market stops costing gas in every share-price read.
+///
+/// Deposits stay closed until the owner calls `openDeposits` (one-way), so the deploy lists every market while the
+/// pool provably has no LP: a stranger's 1-unit deposit right after the pool is created can no longer make the
+/// deploy's instant `addMarket` wait for a timelock and orphan it half-way (review v2 L-7).
 contract PerpPool is ERC4626, Ownable2Step {
     using SafeERC20 for IERC20;
 
@@ -55,6 +59,8 @@ contract PerpPool is ERC4626, Ownable2Step {
     uint256 public traderCollateral;
     uint256 public totalReserved;
     address public makerRegistrar;
+    /// False until the owner opens LP deposits (see the contract notes).
+    bool public depositsOpen;
 
     address[] private _markets;
     mapping(address market => bool) public isMarket;
@@ -72,6 +78,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     event MakerRegistrarSet(address indexed registrar);
     event MakerSet(address indexed account, bool maker);
     event OperatorSet(address indexed account, address indexed operator, bool allowed);
+    event DepositsOpened();
     event ReserveUpdated(address indexed market, uint256 reserve, uint256 totalReserved);
 
     error NotMarket();
@@ -89,6 +96,8 @@ contract PerpPool is ERC4626, Ownable2Step {
     error TimelockTooShort();
     error TimelockActive(bytes32 id, uint256 eta);
     error NotProposed(bytes32 id);
+    error DepositsClosed();
+    error AlreadyOpen();
 
     modifier onlyMarket() {
         if (!isMarket[msg.sender]) revert NotMarket();
@@ -138,12 +147,19 @@ contract PerpPool is ERC4626, Ownable2Step {
     }
 
     /// The treasury factory (todo 14) becomes the registrar: it registers each TreasuryAccount it deploys, and a
-    /// maker pays 2 bps instead of 10 (LP income). Instant while the pool has no LP shares or when clearing it
+    /// maker pays the maker fee (6 bps by default) instead of 10 (LP income). Instant while the pool has no LP shares or when clearing it
     /// (address(0) only stops new registrations); otherwise TIMELOCK after `proposeMakerRegistrar(registrar)`.
     function setMakerRegistrar(address registrar) external onlyOwner {
         if (totalSupply() != 0 && registrar != address(0)) _consume(registrarId(registrar));
         makerRegistrar = registrar;
         emit MakerRegistrarSet(registrar);
+    }
+
+    /// Opens LP deposits, for good. The deploy calls it once every market is listed.
+    function openDeposits() external onlyOwner {
+        if (depositsOpen) revert AlreadyOpen();
+        depositsOpen = true;
+        emit DepositsOpened();
     }
 
     function proposeMarket(address market) external onlyOwner {
@@ -252,12 +268,12 @@ contract PerpPool is ERC4626, Ownable2Step {
     }
 
     function maxDeposit(address receiver) public view override returns (uint256) {
-        if (heldMarketForDeposits() != address(0)) return 0;
+        if (!depositsOpen || heldMarketForDeposits() != address(0)) return 0;
         return super.maxDeposit(receiver);
     }
 
     function maxMint(address receiver) public view override returns (uint256) {
-        if (heldMarketForDeposits() != address(0)) return 0;
+        if (!depositsOpen || heldMarketForDeposits() != address(0)) return 0;
         return super.maxMint(receiver);
     }
 
@@ -280,6 +296,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (assets == 0) revert ZeroAmount();
+        if (!depositsOpen) revert DepositsClosed();
         _notHeldForDeposits();
         return super.deposit(assets, receiver);
     }
@@ -287,6 +304,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     function mint(uint256 shares, address receiver) public override returns (uint256) {
         if (receiver != msg.sender) revert ReceiverNotSender();
         if (shares == 0) revert ZeroAmount();
+        if (!depositsOpen) revert DepositsClosed();
         _notHeldForDeposits();
         return super.mint(shares, receiver);
     }
