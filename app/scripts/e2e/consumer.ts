@@ -205,9 +205,10 @@ async function main(c: Checks) {
   c.ok("then nothing is sent again (no double credit)", dq3.includes("deliver-quiet: ok actions=0"), dq3.slice(-400));
   const dh = keeper("deliver-hidden");
   c.ok("keeper queued one shielded note for the Hidden user", dh.includes("deliver-hidden: ok actions=1"), dh.slice(-400));
-  await warpTo((await now()) + 3601n);
+  // A lone deposit (under MIN_INSERT_BATCH) is inserted once it waited MIN_PENDING_DELAY + SOLO_INSERT_DELAY (M-5).
+  await warpTo((await now()) + 2n * 3600n + 1n);
   const ins = keeper("deliver-hidden");
-  c.ok("keeper batch-inserted the pending note after the 1h delay", ins.includes("deliver-hidden: ok actions=1"), ins.slice(-400));
+  c.ok("keeper inserted the lone pending note after the 1h + 1h solo delay", ins.includes("deliver-hidden: ok actions=1"), ins.slice(-400));
   for (const i of [1, 2]) c.eq(`${MODES[i]} allocation settled on-chain`, await read(dep.crowdBuy, crowdAbi, "settled", [tsla, bookId, users[i]!]), true);
 
   // Quiet: scan with the viewing key, claim through the running relayer to a fresh address
