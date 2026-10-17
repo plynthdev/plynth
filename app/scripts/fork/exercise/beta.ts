@@ -1,5 +1,5 @@
 // Closed-beta checks (MainnetBeta.s.sol deployed in fork mode, FORK_STACK=beta): every admin role sits with
-// OWNER and the deployer keeps none, no caps (Hidden Vault caps at uint256 max, perp open-interest cap at 100%),
+// OWNER and the deployer keeps none, no caps (Hidden Vault caps at uint256 max; perp open interest is capped at 20% per side, audit PERP-4),
 // large deposits go through, and OWNER's emergency levers still work: pause/unpause Hidden deposits, lower a cap
 // at once, raise it back only through the 48h timelock. Runs last: it moves chain time by 48h.
 import { initVault, approveTx, depositTx, deriveVaultKeys, destroyProver, VAULT_KEY_MESSAGE } from "@plynth/sdk/vault";
@@ -80,14 +80,15 @@ export async function beta(x: Ctx) {
     }
     return `${assets.length} assets uncapped`;
   });
-  await r.check("every perp market's open-interest cap is 100% of pool liquidity", async () => {
+  // v2 (audit PERP-4): open interest per side is a conservative 20% of pool liquidity (MainnetBeta.PERP_OI_CAP_BPS).
+  await r.check("every perp market's open-interest cap is 20% of pool liquidity per side", async () => {
     const out: string[] = [];
     for (const [sym, m] of Object.entries((dep.perpMarkets ?? {}) as Record<string, string>)) {
       const b = await r.read<bigint>(getAddress(m), abiOf("PerpMarket"), "oiCapBps", []);
-      expect(b === 10_000n, `${sym} oiCapBps ${b}`);
+      expect(b === 2_000n, `${sym} oiCapBps ${b}`);
       out.push(sym);
     }
-    return `oiCapBps = 10000 for ${out.join(", ")}`;
+    return `oiCapBps = 2000 for ${out.join(", ")}`;
   });
 
   // ---- large deposits succeed

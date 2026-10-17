@@ -233,17 +233,6 @@ export async function treasury(x: Ctx) {
     expect(posted.length > 0 && out.every((o) => o.status === "posted"), JSON.stringify(out, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
     return { tx: posted[0]!.txHash, assertion: `${posted.length} hour root(s) posted: ${posted.map((o) => `hour ${o.hour} (${o.leafCount} actions)`).join(", ")}` };
   });
-  const action = (await db().sql`select id, tx_hash from desk_actions where lower(account) = ${t.account!.toLowerCase()} and status = 'sent' order by id limit 1`) as unknown as { id: number }[];
-  if (action[0]) {
-    await r.check("API proof of a desk action verifies against the posted root (Receipts.verify)", async () => {
-      const p = await api(`/v1/treasury/${t.account}/actions/${action[0]!.id}/proof`);
-      expect(p.status === 200, `HTTP ${p.status} ${j(p.body)}`);
-      const ok = await r.read<boolean>(rec, abiOf("Receipts"), "verify", [t.account, BigInt(p.body.hour), p.body.leaf, p.body.proof]);
-      expect(ok, `Receipts.verify false for ${j(p.body).slice(0, 200)}`);
-      return `hour ${p.body.hour}, leaf ${String(p.body.leaf).slice(0, 10)}…, ${p.body.proof.length}-node proof verifies on-chain`;
-    });
-  }
-
   // ---- MCP: the board issues a token through the API; an agent reads the treasury over MCP HTTP
   const issuedAt = Math.floor(Date.now() / 1000);
   const mreq = { label: "fork agent", issuedAt, expiresAt: issuedAt + 7 * 86400 };
@@ -255,6 +244,18 @@ export async function treasury(x: Ctx) {
     token = res.body.token;
     return `token issued (jti ${res.body.id ?? res.body.jti})`;
   }, "board");
+  const action = (await db().sql`select id, tx_hash from desk_actions where lower(account) = ${t.account!.toLowerCase()} and status = 'sent' order by id limit 1`) as unknown as { id: number }[];
+  // A decision's receipt proof carries the decision row: read with the treasury's MCP token (audit L-14).
+  if (action[0] && token) {
+    await r.check("API proof of a desk action verifies against the posted root (Receipts.verify)", async () => {
+      const p = await api(`/v1/treasury/${t.account}/actions/${action[0]!.id}/proof`, { headers: { authorization: `Bearer ${token}` } });
+      expect(p.status === 200, `HTTP ${p.status} ${j(p.body)}`);
+      const ok = await r.read<boolean>(rec, abiOf("Receipts"), "verify", [t.account, BigInt(p.body.hour), p.body.leaf, p.body.proof]);
+      expect(ok, `Receipts.verify false for ${j(p.body).slice(0, 200)}`);
+      return `hour ${p.body.hour}, leaf ${String(p.body.leaf).slice(0, 10)}…, ${p.body.proof.length}-node proof verifies on-chain`;
+    });
+  }
+
   if (token) {
     await r.check("MCP tools over HTTP: nav, positions, policy, close_latest, exceptions_request", async () => {
       const c = new Client({ name: "plynth-fork", version: "1.0.0" });

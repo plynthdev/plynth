@@ -94,7 +94,22 @@ export async function spends(x: Ctx) {
 
   // The running indexer sees the transfers out of linked wallets; the running keeper accrues each once.
   for (const s of sent) {
-    await r.external(`keeper accrues ${r.who(A[s.user])}'s round-up of ${Number(s.spend) / 1e6} USDG${s.want === 0n && s.user === "saver" ? " (clipped to 0 by the weekly cap)" : ""}`, "keeper", async () => {
+    if (s.want === 0n) {
+      // Audit M-7: a spend the vault would credit 0 for (weekly cap reached) is skipped by the keeper, not accrued:
+      // no transaction, no gas. The row says why; no Accrued event exists for it.
+      await r.external(`keeper skips ${r.who(A[s.user])}'s round-up of ${Number(s.spend) / 1e6} USDG (weekly cap reached: the vault would add 0)`, "keeper", async () => {
+        const row = await r.until(`keeper_roundups row for ${s.tx}`, async () => {
+          const rows = (await db().sql`select status, reason from keeper_roundups where chain_id = ${FORK_CHAIN_ID} and tx_hash = ${s.tx.toLowerCase()} and status = 'skipped'`) as { status: string; reason: string | null }[];
+          return rows[0];
+        }, 120_000);
+        expect(/weekly cap/.test(row.reason ?? ""), `skip reason ${row.reason}`);
+        const accrued = (await events(x, vault, "SavingsVault", "Accrued", from, { user: A[s.user].address })).some((e) => e.args.sourceTx === s.tx);
+        expect(!accrued, "no Accrued event for the capped spend");
+        return { tx: s.tx, assertion: `skipped (${row.reason}); no Accrued event` };
+      });
+      continue;
+    }
+    await r.external(`keeper accrues ${r.who(A[s.user])}'s round-up of ${Number(s.spend) / 1e6} USDG`, "keeper", async () => {
       const ev = await r.until(`Accrued for ${s.tx}`, async () => {
         const e = (await events(x, vault, "SavingsVault", "Accrued", from, { user: A[s.user].address })).find((e) => e.args.sourceTx === s.tx);
         return e;
@@ -320,6 +335,10 @@ export async function crowd(x: Ctx) {
       });
     }
     const held = await balanceOf(x, MSFT, whale.address);
+    if (pushed > 0n && (await r.read<bigint>(MSFT, erc20Abi, "allowance", [whale.address, router])) < held) {
+      // The setup approves the router of the default stack only; a beta deploy has its own router.
+      await r.send("whale approves the router for its MSFT", whale, { address: MSFT, abi: erc20Abi, functionName: "approve", args: [router, maxUint256] });
+    }
     if (pushed > 0n) await r.send("whale sells the MSFT back (pool returns toward the oracle)", whale, { address: router, abi: routerAbi, functionName: "sell", args: [MSFT, held, 500, whale.address] });
   };
 
