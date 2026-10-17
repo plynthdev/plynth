@@ -35,6 +35,8 @@ abstract contract TreasuryFixture is Test {
 
     MockUSDG usdg;
     MockStockToken aapl;
+    /// The guard's maxOpLossBps (a test may lower it before setUp, e.g. to the v2 mainnet 50).
+    uint16 guardLossBps = 200;
     MockStockToken nvda;
     MockStockToken del;
     MockStockToken bad;
@@ -95,7 +97,7 @@ abstract contract TreasuryFixture is Test {
         _buildTree();
 
         policy = new TreasuryPolicy(board, _policy(), 48 hours);
-        guard = new PolicyGuard(registry, valuer, 200);
+        guard = new PolicyGuard(registry, valuer, guardLossBps);
         approvals = new BoardApprovals(board, address(guard));
         account = new TreasuryAccount(board, policy, guard, address(approvals));
         periodClose = new MockPeriodClose();

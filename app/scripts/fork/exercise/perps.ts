@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { devAccount, FORK_CHAIN_ID, PATHS, ROLE } from "../lib";
 import { abiOf, expect, j } from "./core";
-import { E18, erc20Abi, HOUR, toMarketOpen, U, usdgOf, type Ctx } from "./context";
+import { closedMarketReason, E18, erc20Abi, HOUR, toMarketOpen, U, usdgOf, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
 import { packProofs } from "@/treasury/desks/runner";
 
@@ -36,6 +36,16 @@ export async function perpsSetup(x: Ctx) {
 }
 
 export async function perps(x: Ctx) {
+  // On a fork taken during a market closure, steps that need a priced market are SKIPs with the reason (see core.ts).
+  x.r.closedMarket = () => closedMarketReason(x, [x.token("TSLA"), x.token("AAPL")]);
+  try {
+    await perpsArea(x);
+  } finally {
+    x.r.closedMarket = undefined;
+  }
+}
+
+async function perpsArea(x: Ctx) {
   const { r, A } = x;
   const pool = x.addr("perpPool");
   const PP = abiOf("PerpPool");

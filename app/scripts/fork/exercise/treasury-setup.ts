@@ -95,7 +95,8 @@ export async function treasurySetup(x: Ctx) {
   const mirrorVenue = perp && mirror && (await r.deploy("MirroredPerpVenue (an off-chain venue seen through the mirror)", board, "MirroredPerpVenue", [perp, usdg, mirror, A.trader2.address]));
   if (!basis || !basisVenue || !perp || !hedgeVenue || !mirror || !mirrorVenue) throw new Error("T2 contracts missing");
   // v2 MainnetBeta: OWNER is the pool's maker registrar and registers each treasury's in-house venue as a maker, so
-  // a hedge open pays open spread + maker fee (40 + 6 = 46 bps), inside the guard's 50 bps per operation.
+  // a hedge open loses fee in + spread + fee out = 6 + 40 + 6 = 52 bps of size instead of 60 (still above the
+  // guard's 50 bps per operation: see test/review-v2/HedgeMakerFee.t.sol).
   const PP = abiOf("PerpPool");
   const registrar = getAddress(await r.read<Address>(pool, PP, "makerRegistrar", []));
   const registrarActor = Object.values(A).find((a) => (a as { address?: Address }).address && getAddress((a as { address: Address }).address) === registrar) as typeof board | undefined;

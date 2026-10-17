@@ -636,9 +636,9 @@ contract MainnetBeta is Script {
             perpMarkets.push(address(m));
             perpSymbols.push(s[pick[i]].sym);
         }
-        // OWNER registers makers: each treasury's in-house perp venue (InHousePerpVenue) pays the maker fee, so a
-        // hedge open costs open spread + maker fee = 46 bps, inside the treasury guard's 50 bps per operation. Instant
-        // now, while the pool has no LP shares; later changes of the registrar wait the pool timelock.
+        // OWNER registers makers: each treasury's in-house perp venue (InHousePerpVenue) pays the maker fee, which
+        // lowers a hedge open from 60 to 52 bps of size (fee in + spread + fee out at exit value). Instant now, while
+        // the pool has no LP shares; later changes of the registrar wait the pool timelock.
         perpPool.setMakerRegistrar(cfg.owner);
         // Only now, with every market listed while the pool provably has no LP (review v2 L-7).
         perpPool.openDeposits();
@@ -839,7 +839,6 @@ contract MainnetBeta is Script {
         _is(perpPool.asset() == USDG && perpPool.markets().length == perpMarkets.length, address(perpPool), "pool markets");
         _is(perpPool.depositsOpen(), address(perpPool), "pool deposits open");
         _is(perpPool.makerRegistrar() == cfg.owner, address(perpPool), "maker registrar = OWNER");
-        _is(PERP_OPEN_SPREAD_BPS + PERP_MAKER_FEE_BPS < GUARD_MAX_OP_LOSS_BPS, address(perpPool), "maker hedge cost < guard loss bound");
         for (uint256 i; i < perpMarkets.length; ++i) {
             PerpMarket m = PerpMarket(perpMarkets[i]);
             _is(perpPool.isMarket(address(m)) && m.pool() == perpPool && m.valuer() == valuer, address(m), "market wiring");

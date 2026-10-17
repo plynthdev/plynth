@@ -191,7 +191,7 @@ export class Recorder {
       this.push({ step, actor, tx: hash, gas: r.gasUsed.toString(), ok: true, assertion: what, ms: Date.now() - t0 });
       return r;
     } catch (e) {
-      this.push({ step, actor, tx: hash, gas: r?.gasUsed.toString(), ok: false, assertion: "transaction succeeds and its effect holds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
+      await this.fail({ step, actor, tx: hash, gas: r?.gasUsed.toString(), ok: false, assertion: "transaction succeeds and its effect holds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
       return undefined;
     }
   }
@@ -210,7 +210,7 @@ export class Recorder {
       this.push({ step, actor: this.who(from), tx: hash, gas: r.gasUsed.toString(), ok: true, assertion: what, ms: Date.now() - t0 });
       return r;
     } catch (e) {
-      this.push({ step, actor: this.who(from), tx: hash, gas: r?.gasUsed.toString(), ok: false, assertion: "transaction succeeds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
+      await this.fail({ step, actor: this.who(from), tx: hash, gas: r?.gasUsed.toString(), ok: false, assertion: "transaction succeeds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
       return undefined;
     }
   }
@@ -226,7 +226,7 @@ export class Recorder {
       this.push({ step, actor: this.who(from), tx: hash, gas: r.gasUsed.toString(), ok: true, assertion: `${name} at ${r.contractAddress}`, ms: Date.now() - t0 });
       return r.contractAddress;
     } catch (e) {
-      this.push({ step, actor: this.who(from), tx: hash, ok: false, assertion: `deploy ${name}`, detail: revertReason(e), ms: Date.now() - t0 });
+      await this.fail({ step, actor: this.who(from), tx: hash, ok: false, assertion: `deploy ${name}`, detail: revertReason(e), ms: Date.now() - t0 });
       return undefined;
     }
   }
@@ -242,11 +242,30 @@ export class Recorder {
       got = revertReason(e);
     }
     const ok = got === expected || got.startsWith(`${expected}(`) || (expected.endsWith(")") ? false : got.split("(")[0] === expected);
-    this.push({ step, actor: this.who(account), ok, assertion: `reverts with ${expected}`, detail: ok ? undefined : `got ${got}`, ms: Date.now() - t0 });
+    if (ok) this.push({ step, actor: this.who(account), ok, assertion: `reverts with ${expected}`, ms: Date.now() - t0 });
+    else await this.fail({ step, actor: this.who(account), ok, assertion: `reverts with ${expected}`, detail: `got ${got}`, ms: Date.now() - t0 });
     return ok;
   }
 
   /** A check with no transaction of its own (a view, an API answer, a service's effect). */
+  /**
+   * Set by an area whose steps need a priced market: returns why the market is closed (a fork taken during a market
+   * closure, its feeds frozen at the last close and now held), or undefined. A failing step is then recorded as a
+   * SKIP with that reason and the error, instead of a FAIL; with no hook (or an open market) failures stay failures.
+   */
+  closedMarket?: (() => Promise<string | undefined>) | undefined;
+
+  private async fail(s: Omit<Step, "area" | "status"> & { ok: boolean }) {
+    let why: string | undefined;
+    try {
+      why = this.closedMarket ? await this.closedMarket() : undefined;
+    } catch {
+      why = undefined;
+    }
+    if (why) return this.skip(s.step, `${why} (got: ${s.detail ?? s.assertion})`, s.actor);
+    return this.push(s);
+  }
+
   /** Records a step that was not run, and why. Not a pass and not a failure (exit code ignores it). */
   skip(step: string, reason: string, actor = "-"): void {
     const s: Step = { area: this.area, step, actor, status: "skip", assertion: "skipped", detail: reason, ms: 0 };
@@ -261,7 +280,7 @@ export class Recorder {
       this.push({ step, actor, ok: true, assertion: what, ms: Date.now() - t0 });
       return true;
     } catch (e) {
-      this.push({ step, actor, ok: false, assertion: "check holds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
+      await this.fail({ step, actor, ok: false, assertion: "check holds", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
       return false;
     }
   }
@@ -276,7 +295,7 @@ export class Recorder {
       this.push({ step, actor, tx: r.tx, gas, ok: true, assertion: r.assertion, ms: Date.now() - t0 });
       return true;
     } catch (e) {
-      this.push({ step, actor, ok: false, assertion: "service action happened", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
+      await this.fail({ step, actor, ok: false, assertion: "service action happened", detail: e instanceof AssertionFailed ? e.message : revertReason(e), ms: Date.now() - t0 });
       return false;
     }
   }

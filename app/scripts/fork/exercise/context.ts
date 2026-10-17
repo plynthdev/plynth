@@ -2,7 +2,8 @@
 // hands to the next (treasury addresses, notes, books).
 import { getAddress, parseAbi, type Abi, type Address, type Hex } from "viem";
 import type { HDAccount } from "viem/accounts";
-import { devAccount, PORTS, ROLE, type ForkDeployment } from "../lib";
+import { readFileSync } from "node:fs";
+import { devAccount, PATHS, PORTS, ROLE, type ForkDeployment } from "../lib";
 import { abiOf, expect, Recorder } from "./core";
 
 /** Exercise actors: anvil's ten defaults by role, then savers, their spending wallets, LPs and traders. */
@@ -156,4 +157,27 @@ export async function toMarketOpen(x: Ctx): Promise<void> {
     expect(!(await x.r.read<boolean>(v, V, "marketClosed", [])), "still closed");
     return `chain time ${t + 60n}`;
   });
+}
+
+/**
+ * Why `tokens` cannot be priced now because the fork was taken during a market closure: the fork block lies inside the
+ * Valuer's closed span (its feeds are frozen at the last close) and one of the tokens is on hold at the current chain
+ * time (market closed again, or the frozen feeds are past their staleness). undefined when the market is usable, or
+ * when the fork was taken while the market was open (a hold then is a real finding).
+ */
+export async function closedMarketReason(x: Ctx, tokens: Address[]): Promise<string | undefined> {
+  const v = x.addr("valuer");
+  const V = abiOf("Valuer");
+  const forkTs = (await x.r.pub.getBlock({ blockNumber: BigInt(readFileSync(PATHS.forkBlock, "utf8").trim()) })).timestamp;
+  if (!(await x.r.read<boolean>(v, V, "isClosedAt", [forkTs]))) return undefined;
+  for (const t of tokens) {
+    let hold = true;
+    try {
+      hold = (await x.r.read<{ hold: boolean }>(v, V, "quote", [t])).hold;
+    } catch {
+      hold = true;
+    }
+    if (hold) return `weekend fork: the fork block (${new Date(Number(forkTs) * 1000).toISOString()}) is inside a market closure and ${x.r.who(t)} is on hold at chain time ${await x.r.now()} (closed again, or its frozen feed is past the staleness bound)`;
+  }
+  return undefined;
 }
