@@ -15,15 +15,25 @@
 // binds this relayer's sending address (GET /health `relayer`; SDK proveWithdraw({ relayer })): only it can
 // land the proof, so nobody copying the request from the mempool takes the fee (audit L-9). A proof bound to
 // another address fails the simulation (InvalidProof) and is refused before anything is sent.
+//
+// Review v2: every relayed withdraw and swap must pay for its own gas at the price it is sent at, and nothing is sent
+// above the gas cap (V2-L17, economics.ts). ShieldedTrade.settle has no fee field, so /swap returns a single-use
+// settle ticket and /settle needs one: a relayer relays at most one settle per swap it was paid for. Private unparks
+// are relayed (the park share is in the fee table, V2-L19). There is no relayed private transfer: PublicTransfer has
+// no fee field, so a relayed transfer would be free; a transfer is sent from the user's own wallet, which links that
+// wallet to the transfer's nullifier (not to the notes' owner keys). That is a documented limit (SECURITY.md,
+// "Accepted risks") until a transfer circuit with a relayer fee ships.
 import { claimDomain, claimTypes, type ClaimMessage } from "@plynth/sdk/stealth";
 import type { PublicSwap, PublicWithdraw } from "@plynth/sdk/vault";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { getAddress, isAddress, isHex, recoverTypedDataAddress, size, type Address, type Hex } from "viem";
+import { SETTLE_GAS, type Economics, type SettleTickets } from "./economics";
 import { ipKey, RateLimiter } from "./ratelimit";
 
 export type ClaimArgs = { token: Address; stealth: Address; to: Address; raw: bigint; deadline: bigint; sig: Hex };
-export type SimOutcome = { ok: true } | { ok: false; error: string };
+/** `gas`: the transaction's gas estimate when the simulation could make one (the economics check needs it). */
+export type SimOutcome = { ok: true; gas?: bigint | undefined } | { ok: false; error: string };
 
 export type WithdrawArgs = { proof: Hex; pub: PublicWithdraw };
 
@@ -82,6 +92,12 @@ export type RelayerDeps = {
   claimMin?: ((token: Address) => bigint | undefined) | undefined;
   /** Exact browser origins allowed to call the relayer (the web app). Absent = no CORS headers (server-to-server only). */
   corsOrigins?: string[] | undefined;
+  /** Fee vs gas at the current price, and the gas-price cap (review v2 V2-L17). Absent = not checked (local). */
+  economics?: Economics | undefined;
+  /** Settle tickets: a relayed swap prepays one settle (V2-L17). Absent = /settle needs no ticket (local). */
+  tickets?: SettleTickets | undefined;
+  /** The relayer account's latest and pending nonces, for /health (V2-L18: pending > latest = a stuck transaction). */
+  nonceStatus?: (() => Promise<{ latest: number; pending: number }>) | undefined;
 };
 
 const UINT256_MAX = (1n << 256n) - 1n;
@@ -213,7 +229,27 @@ export function relayerApp(d: RelayerDeps) {
     });
     app.use("*", cors({ origin: (o) => (allowed.has(o) ? o : null), allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type"], maxAge: 600 }));
   }
-  app.get("/health", (c) => c.json({ ok: true, chainId: d.chainId, stealthClaims: d.stealthClaims, relayer: d.relayer }));
+  app.get("/health", async (c) => {
+    // V2-L18: transactions the node holds but has not mined. A count that stays above 0 is a stuck nonce: alert on it.
+    let pendingTxs: number | null = null;
+    if (d.nonceStatus) {
+      try {
+        const n = await d.nonceStatus();
+        pendingTxs = n.pending - n.latest;
+        if (pendingTxs > 0) log(`health: ${pendingTxs} relayer transaction(s) pending (nonce ${n.latest}..${n.pending - 1})`);
+      } catch {
+        pendingTxs = null;
+      }
+    }
+    return c.json({ ok: true, chainId: d.chainId, stealthClaims: d.stealthClaims, relayer: d.relayer, ...(d.nonceStatus ? { pendingTxs } : {}) });
+  });
+  /** Refuses a request whose fee does not pay for its gas (and its prepaid settle), or while gas is above the cap. */
+  async function priced(c: Context, asset: Address, fee: bigint, gas: bigint | undefined, extraGas = 0n): Promise<Response | undefined> {
+    if (!d.economics) return undefined;
+    if (gas === undefined) return c.json({ error: "could not estimate gas for this transaction; try again later" }, 503);
+    const v = await d.economics.check(asset, fee, gas, extraGas);
+    return v.ok ? undefined : c.json({ error: v.error }, v.status);
+  }
 
   app.post("/claim", async (c) => {
     if (!ipLimiter.take(ipOf(c))) return c.json({ error: "rate limited (ip)" }, 429);
@@ -293,6 +329,8 @@ export function relayerApp(d: RelayerDeps) {
         const hint = sim.error === "InvalidProof" && a.pub.relayerFee !== 0n ? ` (a fee-paying proof must bind this relayer: ${d.relayer})` : "";
         return c.json({ error: `simulation reverted: ${sim.error}${hint}` }, 400);
       }
+      const refused = await priced(c, a.pub.asset, a.pub.relayerFee, sim.gas);
+      if (refused) return refused;
       const txHash = await w.send(a);
       log(`withdraw sent ${txHash}`);
       return c.json({ txHash });
@@ -327,6 +365,15 @@ export function relayerApp(d: RelayerDeps) {
     }
     const key = nullifier.toLowerCase();
     if (spending.has(key)) return c.json({ error: "a transaction for this note is already being sent" }, 409);
+    // V2-L17: ShieldedTrade.settle has no fee, so a settle is relayed only against a ticket its relayed swap paid for.
+    const ticket = kind === "settle" && d.tickets ? (body as { ticket?: unknown }).ticket : undefined;
+    let redeemed = false;
+    if (kind === "settle" && d.tickets) {
+      const bad = d.tickets.redeem(ticket);
+      if (bad) return c.json({ error: bad }, 402);
+      redeemed = true;
+    }
+    let sent = false;
     spending.add(key);
     try {
       if (await t.nullifierSpent(nullifier)) return c.json({ error: "note already spent" }, 409);
@@ -337,14 +384,25 @@ export function relayerApp(d: RelayerDeps) {
         const hint = sim.error === "InvalidProof" && paid ? ` (a fee-paying proof must bind this relayer: ${d.relayer})` : "";
         return c.json({ error: `simulation reverted: ${sim.error}${hint}` }, 400);
       }
+      if ("pub" in a) {
+        // the swap's fee pays for the swap and for the settle its ticket prepays
+        const refused = await priced(c, a.pub.assetIn, a.pub.relayerFee, sim.gas, d.tickets ? SETTLE_GAS : 0n);
+        if (refused) return refused;
+      } else if (d.economics) {
+        const g = await d.economics.gasOk();
+        if (!g.ok) return c.json({ error: g.error }, g.status);
+      }
+      sent = true;
       const txHash = "pub" in a ? await t.sendSwap(a) : await t.sendSettle(a);
       log(`${kind} sent ${txHash}`);
-      return c.json({ txHash });
+      return c.json({ txHash, ...(kind === "swap" && d.tickets ? { settleTicket: d.tickets.issue() } : {}) });
     } catch (err) {
       log(`${kind} failed: ${String((err as Error)?.message ?? err).split("\n")[0]}`);
       return c.json({ error: "could not send" }, 502);
     } finally {
       spending.delete(key);
+      // a settle refused before anything was sent keeps its ticket
+      if (redeemed && !sent) d.tickets?.release(ticket as string);
     }
   }
   app.post("/swap", (c) => relayTrade(c, "swap"));

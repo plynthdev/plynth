@@ -11,18 +11,21 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Its own Unix user and only its own settings (audit: one user and one env file for every service).
-User=plynth-treasury
-Group=plynth-treasury
-SupplementaryGroups=plynth
-StateDirectory=plynth-treasury
-WorkingDirectory=/var/lib/plynth-treasury
-Environment=HOME=/var/lib/plynth-treasury
+# Its own Unix user and only its own settings (audit: one user and one env file for every service). Review v2
+# (V2-L23): it signs nothing, so it no longer runs as plynth-treasury (which can read the
+# controller and desk keystores): its own user, not in group plynth, the keys directory hidden, and treasury-ro.env
+# (the treasury settings without any signing material).
+User=plynth-marks
+Group=plynth-marks
+StateDirectory=plynth-marks
+WorkingDirectory=/var/lib/plynth-marks
+Environment=HOME=/var/lib/plynth-marks
 EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
-EnvironmentFile=/etc/plynth/env/treasury.env
+EnvironmentFile=/etc/plynth/env/treasury-ro.env
 EnvironmentFile=-/etc/plynth/treasury-marks.env
-ReadWritePaths=/var/lib/plynth-treasury
+ReadWritePaths=/var/lib/plynth-marks
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/treasury-marks.ts
 Restart=always
 RestartSec=10

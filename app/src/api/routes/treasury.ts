@@ -22,6 +22,7 @@ import {
 } from "@/treasury/policy-compiler";
 import { CfoPackRefused, loadStatement, toCsv, toHtml, toJson } from "@/treasury/cfo-pack";
 import { CloseStore } from "@/treasury/close/store";
+import { deskIndexFor, type DeskIndex } from "../desk-index";
 import { receiptProof, receiptRoot, ReceiptNotFound } from "@/treasury/receipts/proof";
 import { ReceiptStore } from "@/treasury/receipts/store";
 import { and, count, desc, eq, gte, lt, lte } from "drizzle-orm";
@@ -234,12 +235,6 @@ function needClose(w: Wiring): Address {
 /** First block to scan for an account's logs: the factory's deploy block if known, else the deployment's. */
 const scanFrom = (d: Deps) => d.dep.treasuryFactoryBlock ?? d.dep.deployBlock ?? 0n;
 
-async function logsChunked<T>(pub: PublicClient, from: bigint, get: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>, chunk = 50_000n): Promise<T[]> {
-  const head = await pub.getBlockNumber();
-  const out: T[] = [];
-  for (let s = from; s <= head; s += chunk) out.push(...(await get(s, s + chunk - 1n < head ? s + chunk - 1n : head)));
-  return out;
-}
 
 // ------------------------------------------------------------------ treasury.create
 
@@ -369,12 +364,12 @@ export async function policyPropose(d: Deps, account: Address, i: TemplateInput)
 
 const deskName = (id: Hex) => hexToString(id).replace(/\0+$/, "");
 
-export async function deskList(d: Deps, account: Address) {
+export async function deskList(d: Deps & { deskIndex?: DeskIndex | undefined }, account: Address) {
   await wiring(d, account);
-  const regs = await logsChunked(d.pub, scanFrom(d), (fromBlock, toBlock) =>
-    d.pub.getContractEvents({ address: account, abi: tAccountAbi, eventName: "DeskRegistered", fromBlock, toBlock, strict: true }),
+  // Review v2 (V2-L16): an incremental, cached scan instead of the whole history on every request.
+  const ids = await (d.deskIndex ?? deskIndexFor(d.pub)).ids(d.pub, account, scanFrom(d), async (a, fromBlock, toBlock) =>
+    (await d.pub.getContractEvents({ address: a, abi: tAccountAbi, eventName: "DeskRegistered", fromBlock, toBlock, strict: true })).map((l) => (l.args as { deskId: Hex }).deskId),
   );
-  const ids = [...new Set(regs.map((l) => (l.args as { deskId: Hex }).deskId))];
   const out = [];
   for (const id of ids) {
     const desk = await d.pub.readContract({ address: account, abi: tAccountAbi, functionName: "desk", args: [id] });

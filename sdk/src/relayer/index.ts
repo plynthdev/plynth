@@ -26,8 +26,11 @@ export type RelayedSwap = {
   encryptedChange: Hex;
   encryptedOut: Hex;
 };
-/** A ShieldedTrade settle: `proveSettle(...)` output. */
-export type RelayedSettle = { proof: Hex; root: Hex; nullifier: Hex; outCommitment: Hex; encryptedOut: Hex };
+/**
+ * A ShieldedTrade settle: `proveSettle(...)` output. settle carries no fee, so a relayer relays it only with the
+ * single-use `ticket` its relayed swap returned (`submitSwapWithTicket`); without one, settle from your own wallet.
+ */
+export type RelayedSettle = { proof: Hex; root: Hex; nullifier: Hex; outCommitment: Hex; encryptedOut: Hex; ticket?: string | undefined };
 
 /** A StealthClaims claim signed by the stealth key (`signClaim` in `@plynth/sdk/stealth`). */
 export type RelayedClaim = { message: { token: Address; stealth: Address; to: Address; raw: bigint; deadline: bigint }; sig: Hex };
@@ -64,7 +67,7 @@ export function swapRequest(s: RelayedSwap, maxSlippageBps = 100) {
 
 /** JSON body for POST /settle. */
 export function settleRequest(s: RelayedSettle) {
-  return { proof: s.proof, root: s.root, nullifier: s.nullifier, outCommitment: s.outCommitment, encryptedOut: s.encryptedOut };
+  return { proof: s.proof, root: s.root, nullifier: s.nullifier, outCommitment: s.outCommitment, encryptedOut: s.encryptedOut, ...(s.ticket ? { ticket: s.ticket } : {}) };
 }
 
 /** JSON body for POST /claim. The nonce is not sent: the relayer checks the signature against the current one. */
@@ -73,16 +76,20 @@ export function claimRequest(c: RelayedClaim) {
   return { token: m.token, stealth: m.stealth, to: m.to, raw: m.raw.toString(), deadline: m.deadline.toString(), sig: c.sig };
 }
 
-async function post(url: string, path: string, body: unknown, fetchImpl: typeof fetch): Promise<Hex> {
+async function postFull(url: string, path: string, body: unknown, fetchImpl: typeof fetch): Promise<{ txHash: Hex; settleTicket?: string }> {
   const res = await fetchImpl(`${base(url)}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  let parsed: { txHash?: Hex; error?: string } = {};
+  let parsed: { txHash?: Hex; settleTicket?: string; error?: string } = {};
   try {
     parsed = (await res.json()) as typeof parsed;
   } catch {
     // non-JSON error page
   }
   if (!res.ok || typeof parsed.txHash !== "string") throw new RelayerError(res.status, parsed.error ?? `HTTP ${res.status}`);
-  return parsed.txHash;
+  return { txHash: parsed.txHash, ...(typeof parsed.settleTicket === "string" ? { settleTicket: parsed.settleTicket } : {}) };
+}
+
+async function post(url: string, path: string, body: unknown, fetchImpl: typeof fetch): Promise<Hex> {
+  return (await postFull(url, path, body, fetchImpl)).txHash;
 }
 
 /** Sends a withdraw through a relayer (it pays gas and keeps pub.relayerFee). Returns the tx hash. */
@@ -98,7 +105,12 @@ export function submitSwap(relayerUrl: string, s: RelayedSwap, maxSlippageBps = 
   return post(relayerUrl, "/swap", swapRequest(s, maxSlippageBps), fetchImpl);
 }
 
-/** Sends a settle (swap output -> v1 note) through a relayer. Returns the tx hash. */
+/** As submitSwap, plus the single-use ticket that lets the same relayer relay this swap's settle (pass it as `ticket`). */
+export function submitSwapWithTicket(relayerUrl: string, s: RelayedSwap, maxSlippageBps = 100, fetchImpl: typeof fetch = fetch): Promise<{ txHash: Hex; settleTicket?: string }> {
+  return postFull(relayerUrl, "/swap", swapRequest(s, maxSlippageBps), fetchImpl);
+}
+
+/** Sends a settle (swap output -> v1 note) through a relayer, with the ticket from its relayed swap. Returns the tx hash. */
 export function submitSettle(relayerUrl: string, s: RelayedSettle, fetchImpl: typeof fetch = fetch): Promise<Hex> {
   return post(relayerUrl, "/settle", settleRequest(s), fetchImpl);
 }
@@ -123,6 +135,7 @@ export function relayerClient(url: string, fetchImpl: typeof fetch = fetch) {
     claim: (c: RelayedClaim) => submitClaim(url, c, fetchImpl),
     withdraw: (w: RelayedWithdraw) => submitWithdraw(url, w, fetchImpl),
     swap: (sw: RelayedSwap, maxSlippageBps = 100) => submitSwap(url, sw, maxSlippageBps, fetchImpl),
+    swapWithTicket: (sw: RelayedSwap, maxSlippageBps = 100) => submitSwapWithTicket(url, sw, maxSlippageBps, fetchImpl),
     settle: (st: RelayedSettle) => submitSettle(url, st, fetchImpl),
   };
 }

@@ -6,7 +6,7 @@ import { vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx } from "@/keeper/context";
 
 export type AccrueOutcome =
-  | { status: "done"; added?: bigint | undefined; tx?: Hex | undefined; reason?: string | undefined }
+  | { status: "done"; added?: bigint | undefined; tx?: Hex | undefined; gasUsed?: bigint | undefined; reason?: string | undefined }
   | { status: "failed"; reason: string };
 
 /** `beforeSend` runs after a clean simulation, right before broadcasting (e.g. to record "pending"). */
@@ -19,7 +19,7 @@ export async function accrueSpend(ctx: Ctx, user: Address, sourceTx: Hex, logInd
   }
   await beforeSend?.();
   const r = await ctx.sender.sendCall(ctx.dep.vault, vaultAbi, "accrue", args, "accrue");
-  return { status: "done", added: addedFromReceipt(r, ctx.dep.vault), tx: r.transactionHash };
+  return { status: "done", added: addedFromReceipt(r, ctx.dep.vault), tx: r.transactionHash, gasUsed: r.gasUsed };
 }
 
 /** The `added` amount from the vault's Accrued event in a receipt. */
@@ -47,15 +47,28 @@ export function addedFromReceipt(r: TransactionReceipt, vault: string): bigint |
 //     with that reason, exactly what accrue would have done, minus the gas;
 //   - at most `perUserWeek` keeper accrue transactions per user in any 7 days, and `perPass` per job per keeper pass;
 //   - while one is sent, the gate tracks available and the week's room as the vault will see them.
+//
+// Review v2 (V2-M5): sybils with 1 USDG each still bought keeper transactions: roundTo 1 and rows of $x.99 make every
+// row a real 1-cent accrual, so 20 sybils (20 USDG, not lost) filled every pass with 200 sequential sends. So also:
+//   - a minimum round-up per accrue (`minAccrueCents`, default $0.25, for imported statement / Plaid rows; on-chain
+//     spends cost their sender a transaction each and keep 0): each keeper transaction then moves at least $0.25 of
+//     the user's own money into savings, except at most one clip at the weekly cap and one at the balance;
+//   - at most `perUserPass` accruals per user per pass, so one user's rows cannot take the whole pass;
+//   - a wall-clock budget (`passMs`) and a gas budget (`passGas`) per pass: once spent, the rest waits for the next
+//     pass, so the core jobs of the next pass (liquidate, fee-push, execute, delivery...) always start on time.
 
 export const DEFAULT_MAX_ACCRUALS_PER_PASS = 200;
 export const DEFAULT_MAX_ACCRUALS_PER_USER_WEEK = 100;
+export const DEFAULT_MAX_ACCRUALS_PER_USER_PASS = 10;
+export const DEFAULT_MIN_ACCRUE_CENTS = 25;
+export const DEFAULT_ACCRUE_PASS_MS = 10_000;
+export const DEFAULT_ACCRUE_PASS_GAS = 5_000_000n;
 const WEEK_S = 604_800n;
 
-export type AccrueLimits = { perPass: number; perUserWeek: number };
+export type AccrueLimits = { perPass: number; perUserWeek: number; perUserPass: number; minAccrueCents: number; passMs: number; passGas: bigint };
 export type GateDecision = { ok: true } | { ok: false; skip: true; reason: string } | { ok: false; skip: false; reason: string };
 
-type Budget = { roundTo: number; multiplier: number; available: bigint; room: bigint; sentThisWeek: number };
+type Budget = { roundTo: number; multiplier: number; available: bigint; room: bigint; sentThisWeek: number; sentThisPass: number };
 
 /** SavingsVault.roundUp: (roundTo * unit - spend % (roundTo * unit)) * multiplier, 0 for an exact amount. */
 export function roundUpOf(spend: bigint, roundTo: number, multiplier: number, unit: bigint): bigint {
@@ -67,6 +80,9 @@ export function roundUpOf(spend: bigint, roundTo: number, multiplier: number, un
 
 export class AccrueGate {
   private sent = 0;
+  private gas = 0n;
+  private readonly started: number;
+  private readonly now: () => number;
   private unit?: bigint;
   private week?: bigint;
   private readonly users = new Map<string, Budget>();
@@ -74,9 +90,19 @@ export class AccrueGate {
 
   constructor(
     private readonly ctx: Ctx,
-    limits: Partial<AccrueLimits> = {},
+    limits: Partial<AccrueLimits> & { now?: () => number } = {},
   ) {
-    this.limits = { perPass: limits.perPass ?? ctx.accrueLimits?.perPass ?? DEFAULT_MAX_ACCRUALS_PER_PASS, perUserWeek: limits.perUserWeek ?? ctx.accrueLimits?.perUserWeek ?? DEFAULT_MAX_ACCRUALS_PER_USER_WEEK };
+    const c = ctx.accrueLimits;
+    this.limits = {
+      perPass: limits.perPass ?? c?.perPass ?? DEFAULT_MAX_ACCRUALS_PER_PASS,
+      perUserWeek: limits.perUserWeek ?? c?.perUserWeek ?? DEFAULT_MAX_ACCRUALS_PER_USER_WEEK,
+      perUserPass: limits.perUserPass ?? c?.perUserPass ?? DEFAULT_MAX_ACCRUALS_PER_USER_PASS,
+      minAccrueCents: limits.minAccrueCents ?? c?.minAccrueCents ?? DEFAULT_MIN_ACCRUE_CENTS,
+      passMs: limits.passMs ?? c?.passMs ?? DEFAULT_ACCRUE_PASS_MS,
+      passGas: limits.passGas ?? c?.passGas ?? DEFAULT_ACCRUE_PASS_GAS,
+    };
+    this.now = limits.now ?? Date.now;
+    this.started = this.now();
   }
 
   /** Accrue transactions sent through this gate so far in the pass. */
@@ -84,8 +110,21 @@ export class AccrueGate {
     return this.sent;
   }
 
+  /** Gas used by this pass's accrue transactions (from their receipts). */
+  get gasThisPass(): bigint {
+    return this.gas;
+  }
+
+  /** Why the pass budget is spent, or undefined while there is room. */
+  passSpent(): string | undefined {
+    if (this.sent >= this.limits.perPass) return `keeper pass budget of ${this.limits.perPass} accruals used; next pass`;
+    if (this.gas >= this.limits.passGas) return `keeper pass gas budget of ${this.limits.passGas} used; next pass`;
+    if (this.now() - this.started >= this.limits.passMs) return `keeper pass time budget of ${this.limits.passMs} ms used; next pass`;
+    return undefined;
+  }
+
   passFull(): boolean {
-    return this.sent >= this.limits.perPass;
+    return this.passSpent() !== undefined;
   }
 
   private async chainWeek(): Promise<bigint> {
@@ -114,26 +153,35 @@ export class AccrueGate {
     const [r] = (await this.ctx.db.execute(sql`
       select (select count(*) from roundup_events where chain_id = ${this.ctx.chainId} and user_address = ${k} and accrue_tx is not null and updated_at >= now() - interval '7 days')
            + (select count(*) from keeper_roundups where chain_id = ${this.ctx.chainId} and user_address = ${k} and accrue_tx is not null and updated_at >= now() - interval '7 days') as n`)) as unknown as { n: string | number }[];
-    const b: Budget = { roundTo: Number(s.roundTo), multiplier: Number(s.multiplier), available: BigInt(a.available), room: cap > accrued ? cap - accrued : 0n, sentThisWeek: Number(r?.n ?? 0) };
+    const b: Budget = { roundTo: Number(s.roundTo), multiplier: Number(s.multiplier), available: BigInt(a.available), room: cap > accrued ? cap - accrued : 0n, sentThisWeek: Number(r?.n ?? 0), sentThisPass: 0 };
     this.users.set(k, b);
     return b;
   }
 
   /** May the keeper send vault.accrue(user, ..., units) now? */
   async check(user: Address, units: bigint): Promise<GateDecision> {
-    if (this.passFull()) return { ok: false, skip: false, reason: `keeper pass budget of ${this.limits.perPass} accruals used; next pass` };
+    const spent = this.passSpent();
+    if (spent) return { ok: false, skip: false, reason: spent };
     const b = await this.budget(user);
     if (b.roundTo === 0) return { ok: false, skip: true, reason: "no savings settings: the vault would add 0" };
     if (b.available === 0n) return { ok: false, skip: true, reason: "no available balance: the vault would add 0" };
     if (b.room === 0n) return { ok: false, skip: true, reason: "weekly cap reached: the vault would add 0" };
-    if (roundUpOf(units, b.roundTo, b.multiplier, this.unit!) === 0n) return { ok: false, skip: true, reason: "no round-up (whole amount): the vault would add 0" };
+    const r = roundUpOf(units, b.roundTo, b.multiplier, this.unit!);
+    if (r === 0n) return { ok: false, skip: true, reason: "no round-up (whole amount): the vault would add 0" };
+    // On the round-up itself, not on the amount clipped by room or balance: a clip uses that resource up, so it can
+    // happen at most twice per user per week, and an honest saver's last accrual under the cap still goes through.
+    const min = (BigInt(this.limits.minAccrueCents) * this.unit!) / 100n;
+    if (r < min) return { ok: false, skip: true, reason: `round-up below the keeper minimum of ${this.limits.minAccrueCents} cents per accrual` };
     if (b.sentThisWeek >= this.limits.perUserWeek) return { ok: false, skip: true, reason: `weekly limit of ${this.limits.perUserWeek} accruals for this user reached` };
+    // Not a skip: this user's remaining rows wait for the next pass, other users go on.
+    if (b.sentThisPass >= this.limits.perUserPass) return { ok: false, skip: false, reason: `pass limit of ${this.limits.perUserPass} accruals for this user reached; next pass` };
     return { ok: true };
   }
 
   /** After a sent accrue: what the vault moved (from the receipt), or the round-up clipped like the vault does. */
-  record(user: Address, units: bigint, added: bigint | undefined) {
+  record(user: Address, units: bigint, added: bigint | undefined, gasUsed?: bigint) {
     this.sent++;
+    this.gas += gasUsed ?? 0n;
     const b = this.users.get(user.toLowerCase());
     if (!b) return;
     const r = roundUpOf(units, b.roundTo, b.multiplier, this.unit ?? 0n);
@@ -141,5 +189,6 @@ export class AccrueGate {
     b.available = b.available > moved ? b.available - moved : 0n;
     b.room = b.room > moved ? b.room - moved : 0n;
     b.sentThisWeek++;
+    b.sentThisPass++;
   }
 }

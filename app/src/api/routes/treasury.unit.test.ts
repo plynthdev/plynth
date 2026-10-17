@@ -105,8 +105,9 @@ describe("routing without a chain", () => {
   test("account reads on an unreadable address are 404, bad input is 400", async () => {
     expect((await app.request(`/v1/treasury/${A(7)}/nav`)).status).toBe(404);
     expect((await app.request(`/v1/treasury/not-an-address/nav`)).status).toBe(400);
-    expect((await app.request(`/v1/treasury/${A(7)}/actions?limit=0`)).status).toBe(400);
-    expect((await app.request(`/v1/treasury/${A(7)}/cfo-pack/1?format=pdf`)).status).toBe(400);
+    // private treasury records: no token is 401 before anything else is looked at (default-deny, review v2 V2-L15)
+    expect((await app.request(`/v1/treasury/${A(7)}/actions?limit=0`)).status).toBe(401);
+    expect((await app.request(`/v1/treasury/${A(7)}/cfo-pack/1?format=pdf`)).status).toBe(401);
     const both = await app.request(`/v1/treasury/${A(7)}/policy/diff`, { method: "POST", body: JSON.stringify({ templateName: "balanced", template: tpl, controller: A(9) }), headers: { "content-type": "application/json" } });
     expect(both.status).toBe(400);
   });

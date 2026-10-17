@@ -221,7 +221,7 @@ main() {
       # The shell builtin, not /usr/bin/test: coreutils test -r gives a false "no" for group-granted files under runuser on Ubuntu 26.04.
       runuser -u "$u" -- sh -c 'test -r "$1"' _ "$path" \
         || die "$v ($(basename "$f")) names $path, which $u cannot read: copy it into /etc/plynth/keys and re-run (provision.sh --units-only sets the owner)"
-      for other in plynth-indexer plynth-mcp plynth-keeper plynth-relayer plynth-api plynth-treasury; do
+      for other in plynth-indexer plynth-mcp plynth-keeper plynth-relayer plynth-api plynth-treasury plynth-webhooks plynth-marks; do
         [[ "$other" == "$u" || ( "$u" == plynth-eligibility && "$other" == plynth-api ) || ( "$u" == plynth-api && "$v" == ELIGIBILITY_* ) ]] && continue
         ! runuser -u "$other" -- sh -c 'test -r "$1"' _ "$path" 2>/dev/null || die "$path ($v) is readable by $other too: each key must be readable only by the service that signs with it"
       done

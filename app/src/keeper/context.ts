@@ -157,8 +157,11 @@ export type Ctx = {
   confirmations?: number;
   /** Plaid client (PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV); absent = Plaid sources are not synced. */
   plaid?: PlaidLike | undefined;
-  /** Statement / Plaid / on-chain accrual limits (KEEPER_MAX_ACCRUALS_PER_PASS / _PER_USER_WEEK; audit M-7). */
-  accrueLimits?: { perPass: number; perUserWeek: number } | undefined;
+  /**
+   * Statement / Plaid / on-chain accrual limits (KEEPER_MAX_ACCRUALS_PER_PASS / _PER_USER_WEEK, audit M-7;
+   * KEEPER_MAX_ACCRUALS_PER_USER_PASS, KEEPER_MIN_ACCRUE_CENTS, KEEPER_ACCRUE_PASS_MS / _GAS, review v2 V2-M5).
+   */
+  accrueLimits?: { perPass: number; perUserWeek: number; perUserPass?: number; minAccrueCents?: number; passMs?: number; passGas?: bigint } | undefined;
   /** perp-poke: a market's stored price older than this many seconds is refreshed (KEEPER_PERP_POKE_AGE_S, default 3600). */
   perpPokeAgeS?: number;
   /** refresh-mock-feeds settings and its mainnet feed reader; absent = the job does nothing. */

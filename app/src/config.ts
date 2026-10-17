@@ -91,6 +91,10 @@ const schema = z.object({
   KEEPER_MAX_ACCRUALS_PER_PASS: int(200, 1),
   KEEPER_MAX_ACCRUALS_PER_USER_WEEK: int(100, 1),
   KEEPER_PERP_POKE_AGE_S: int(3600, 60),
+  KEEPER_MAX_ACCRUALS_PER_USER_PASS: int(10, 1),
+  KEEPER_MIN_ACCRUE_CENTS: int(25, 0),
+  KEEPER_ACCRUE_PASS_MS: int(10_000, 100),
+  KEEPER_ACCRUE_PASS_GAS: int(5_000_000, 100_000),
   SPLIT_PARTS: int(2, 1, 3),
   // keeper job refresh-mock-feeds (testnet kit deployments only)
   KEEPER_MOCK_FEED_INTERVAL_S: int(600, 1),
@@ -110,6 +114,11 @@ const schema = z.object({
   RELAYER_STEALTH_LIMIT: int(3, 1),
   RELAYER_WITHDRAW_MIN_FEES: opt,
   RELAYER_CLAIM_MIN_RAW: opt,
+  // Review v2 (V2-L17): the most the relayer bids per gas (wei; blank = 0.1 gwei on testnet/mainnet, no cap and no fee
+  // check on local), the ETH price it values gas at (USD), and the margin a fee must clear (bps).
+  RELAYER_MAX_FEE_PER_GAS_WEI: blockNumber,
+  RELAYER_ETH_USD: int(5_000, 1),
+  RELAYER_FEE_MARGIN_BPS: int(1_000, 0, 100_000),
 
   // api (+ the optional eligibility and round-up routes it mounts)
   API_CHAIN: chain,

@@ -14,10 +14,11 @@ import { compileTemplate, loadTemplate, policyAbiParam } from "@/treasury/policy
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPublicClient, decodeEventLog, defineChain, encodeAbiParameters, encodeFunctionData, getAddress, http, keccak256, parseAbi, stringToHex, type Address, type PublicClient } from "viem";
+import { createPublicClient, decodeEventLog, defineChain, encodeAbiParameters, encodeFunctionData, getAddress, http, keccak256, parseAbi, stringToHex, type Address, type Hex, type PublicClient } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { periodCloseAbi } from "@/abi/treasury-close";
 import { accountAbi, beaconAbi, guardAbi } from "@/abi/treasury-desks";
-import { beaconKey, dayStart, DAY } from "@/treasury/desks/beacon";
+import { beaconKey, dayStart, DAY, offsetOf, secretFor } from "@/treasury/desks/beacon";
 import { artifact, KEYS, Kit } from "@/testing/treasury-kit";
 import { Checks, clearDevAccountCode, e2eDb, onCleanup, ROOT, run, runCleanup, startFork } from "./lib";
 
@@ -96,7 +97,7 @@ async function main(c: Checks) {
   c.eq("compiled policy keeps the balanced bands (cash 40-70%, equity 30-60%)", [compiled.policy.cash, compiled.policy.equity], [{ minBps: 4000, maxBps: 7000 }, { minBps: 3000, maxBps: 6000 }]);
   a.guard = await kit.deploy("PolicyGuard.sol", "PolicyGuard", [a.registry, a.valuer, 200]);
   const none = { cash: { minBps: 0, maxBps: 0 }, equity: { minBps: 0, maxBps: 0 }, basis: { minBps: 0, maxBps: 0 }, netDeltaMinBps: 0, netDeltaMaxBps: 0, maxLeverageX10: 0, perOrderCapUsd: 0n, perDayCapUsd: 0n, perNameFloatCapBps: 0, perVenueCapBps: 0, noNewRiskOffHours: false, pauseNewRiskAtDrawdownBps: 0, deriskAtDrawdownBps: 0, approvalAboveUsd: 0n, periodSeconds: 0, instrumentAllowRoot: `0x${"0".repeat(64)}`, venueAllowRoot: `0x${"0".repeat(64)}`, controller: ZERO };
-  a.policyImpl = await kit.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [ZERO, none]);
+  a.policyImpl = await kit.deploy("TreasuryPolicy.sol", "TreasuryPolicy", [ZERO, none, 48n * 3600n]); // the policy timelock is a constructor argument since f8bf965
   a.accountImpl = await kit.deploy("TreasuryAccount.sol", "TreasuryAccount", [ZERO, ZERO, ZERO, ZERO]);
   a.closeImpl = await kit.deploy("PeriodClose.sol", "PeriodClose", [ZERO, ZERO, ZERO, ZERO]);
   a.approvalsImpl = await kit.deploy("BoardApprovals.sol", "BoardApprovals", [ZERO, ZERO]);
@@ -117,7 +118,7 @@ async function main(c: Checks) {
   c.must("factory emitted TreasuryCreated", Boolean(a.account && a.periodClose));
   a.cashSleeve = await kit.deploy("CashSleeve.sol", "CashSleeve", [a.valuer, USDG, [STEAK_USDG]]);
   a.equitySleeve = await kit.deploy("EquitySleeve.sol", "EquitySleeve", [a.router, NAMES.map((n) => n.token)]);
-  a.beacon = await kit.deploy("JitterBeacon.sol", "JitterBeacon", [kit.equityKey.address, d]);
+  a.beacon = await kit.deploy("JitterBeacon.sol", "JitterBeacon", [kit.equityKey.address, d, 3600n]); // reveal window, as in treasury-kit
   await kit.send(a.account!, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("cash", { size: 32 }), kit.cashKey.address, [a.cashSleeve]]);
   await kit.send(a.account!, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("equity", { size: 32 }), kit.equityKey.address, [a.equitySleeve]]);
 
@@ -141,6 +142,14 @@ async function main(c: Checks) {
     return { cash: Number((s.cashUsd * 10_000n) / s.nav), equity: Number((s.equityUsd * 10_000n) / s.nav), nav: s.nav, hold: s.equityHold };
   };
 
+  /** The desk's reveal time for its day-`d` beacon (same derivation as the desk and desks.anvil.test.ts). */
+  const revealAt = async (d: bigint) => {
+    const acct = privateKeyToAccount(KEYS.equity as Hex);
+    const key = beaconKey(a.account!, d);
+    const secret = await secretFor((k) => acct.signMessage({ message: { raw: k } }), key);
+    return d + offsetOf(secret, key, d, d + DAY, 3600n);
+  };
+
   // ---- a simulated week ----
   c.step("desks: day 0 commits the first beacon");
   desks();
@@ -149,10 +158,15 @@ async function main(c: Checks) {
   for (let i = 1; i <= PERIOD_DAYS; i++) {
     day += DAY;
     await kit.warpTo(day + 60n);
-    desks(); // reveal today's beacon, commit ahead
+    desks(); // commit ahead; today's beacon stays unrevealed until its time (e4f97e9: revealing early would publish it)
+    // The desk reveals only at windowStart + offsetOf(secret): warp there (the secret is re-derived from the equity
+    // key, as the desk does). This script used to read executeAt right away, which stays 0 until the reveal, so
+    // since e4f97e9 the desk never revealed or rebalanced here.
+    const at = await revealAt(day);
+    if (at > (await kit.now())) await kit.warpTo(at);
+    desks(); // reveal, rebalance at the jittered time, then the cash desk sweeps/redeems
     const b = await kit.pub.readContract({ address: a.beacon!, abi: beaconAbi, functionName: "beacon", args: [beaconKey(a.account!, day)] });
-    if (b.executeAt > (await kit.now())) await kit.warpTo(b.executeAt);
-    desks(); // rebalance at the jittered time, then the cash desk sweeps/redeems
+    c.ok(`day ${i}: beacon revealed at its time`, b.executeAt !== 0n && b.executeAt <= (await kit.now()), `${b.executeAt}`);
     const w = await weights();
     const r = await rows();
     c.step(`day ${i}: NAV $${(Number(w.nav / 10n ** 12n) / 1e6).toFixed(2)}, cash ${w.cash} bps, equity ${w.equity} bps, ${r.filter((x) => x.status === "sent").length} desk txs so far`);

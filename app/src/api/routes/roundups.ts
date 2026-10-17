@@ -9,7 +9,8 @@ import type { Db } from "@/db";
 import {
   insertEvents,
   MAX_STATEMENT_BYTES,
-  parseStatement,
+  ParseBusyError,
+  parseStatementOffThread,
   plaidAad,
   plaidFromEnv,
   sha256Hex,
@@ -58,6 +59,8 @@ export type RoundupDeps = {
   now?: () => number;
   /** New statement rows per user per rolling 7 days (ROUNDUPS_MAX_ROWS_PER_WEEK). */
   maxRowsPerWeek?: number | undefined;
+  /** Wall-clock limit for parsing one statement in its worker (default 2 s). */
+  parseTimeoutMs?: number | undefined;
   /** The client address of a request (the API passes its proxy-aware reader). Absent = one shared key. */
   ipOf?: ((c: Context) => string) | undefined;
   /** Imports per hour per client address / per wallet (ROUNDUPS_IMPORT_IP_LIMIT / ROUNDUPS_IMPORT_USER_LIMIT). */
@@ -127,6 +130,7 @@ export function roundupRoutes(d: RoundupDeps): Hono {
     } catch (e) {
       if (e instanceof HttpError) return c.json({ error: { message: e.message } }, e.status);
       if (e instanceof StatementError) return c.json({ error: { message: e.message } }, 400);
+      if (e instanceof ParseBusyError) return c.json({ error: { message: e.message } }, 503);
       return c.json({ error: { message: "internal error" } }, 500);
     }
   };
@@ -151,7 +155,12 @@ export function roundupRoutes(d: RoundupDeps): Hono {
       const debitSign = str(b, "debitSign", false);
       if (format && format !== "csv" && format !== "ofx") throw new HttpError(400, "format must be csv or ofx");
       if (debitSign && debitSign !== "negative" && debitSign !== "positive") throw new HttpError(400, "debitSign must be negative or positive");
-      const parsed = parseStatement(content, { format: format as "csv" | "ofx" | undefined, debitSign: debitSign as "negative" | "positive" | undefined, layout: str(b, "layout", false) });
+      // Off the event loop, with a timeout and a concurrency cap (review v2, V2-M4): one upload cannot stall the API.
+      const parsed = await parseStatementOffThread(
+        content,
+        { format: format as "csv" | "ofx" | undefined, debitSign: debitSign as "negative" | "positive" | undefined, layout: str(b, "layout", false) },
+        { timeoutMs: d.parseTimeoutMs },
+      );
       // Audit M-7: rows per user per week are capped, so one wallet cannot fill the table (the keeper's own accrual
       // limits keep these rows from costing gas).
       const cap = d.maxRowsPerWeek ?? DEFAULT_MAX_IMPORT_ROWS_PER_WEEK;

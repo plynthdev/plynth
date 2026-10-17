@@ -4,3 +4,4 @@ export * from "./plaid";
 export * from "./statement";
 export * from "./store";
 export * from "./types";
+export * from "./statement-offthread";

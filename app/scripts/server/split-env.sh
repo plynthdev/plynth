@@ -12,7 +12,7 @@
 # RELAYER_WITHDRAW_MIN_FEES or RELAYER_CLAIM_MIN_RAW (the relayer refuses to start on mainnet without them) takes
 # env.example's value. Each change is printed (key and file, never the value).
 #
-# Writes <dest-dir>/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury}.env (mode 0600; provision.sh runs it
+# Writes <dest-dir>/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury,treasury-ro}.env (mode 0600; provision.sh runs it
 # as root and leaves them root-owned: systemd reads them as root). A line is routed by its key:
 #   common       RHC_*_RPC_URL, LOCAL_RPC_URL, LOG_LEVEL (no secrets)
 #   indexer      INDEXER_*
@@ -22,7 +22,12 @@
 #   eligibility  ELIGIBILITY_*
 #   relayer      RELAYER_*, CORS_ORIGINS
 #   mcp          MCP_*, PLINTH_MCP_TOKEN, RPC_URL, DEPLOYMENT_JSON, TREASURY_RPC_URL
-#   treasury     TREASURY_*, RISK_*, OLLAMA_HOST, ORDERLY_SECRET, WEBHOOK_ALLOW_PRIVATE (all plynth-treasury-* units)
+#   treasury     TREASURY_*, RISK_*, OLLAMA_HOST, ORDERLY_SECRET, WEBHOOK_ALLOW_PRIVATE (the plynth-treasury-* units
+#                that sign or judge: desks, close, risk, receipts, reconciler)
+#   treasury-ro  TREASURY_* except signing material (*_KEY, *_KEYSTORE, *_KEYSTORE_PASSWORD, *_KEYSTORE_PASSWORD_FILE),
+#                WEBHOOK_ALLOW_PRIVATE: plynth-treasury-webhooks and -marks, which sign nothing and run as their own
+#                users (review v2 V2-L23: the webhook dispatcher fetches customer URLs; it must not hold any key).
+#                --add-missing writes it from treasury.env on a server split before it existed.
 # DATABASE_URL never goes into these files (it stays in db.env). A key no rule knows goes to common.env with a
 # warning on stderr. Comments and blank lines are kept in common.env only.
 set -euo pipefail
@@ -38,7 +43,7 @@ DEST="$2"
 [[ -r "$SRC" ]] || { echo "split-env: cannot read $SRC" >&2; exit 1; }
 mkdir -p "$DEST"
 
-FILES=(common indexer keeper api eligibility relayer mcp treasury)
+FILES=(common indexer keeper api eligibility relayer mcp treasury treasury-ro)
 
 routes() {
   local k="$1"
@@ -55,8 +60,10 @@ routes() {
     RELAYER_*) echo relayer ;;
     MCP_TOKEN_SECRET) echo mcp api ;;
     MCP_* | PLINTH_MCP_TOKEN | RPC_URL | DEPLOYMENT_JSON) echo mcp ;;
-    TREASURY_RPC_URL) echo treasury mcp ;;
-    TREASURY_* | RISK_* | OLLAMA_HOST | ORDERLY_SECRET | WEBHOOK_ALLOW_PRIVATE) echo treasury ;;
+    TREASURY_RPC_URL) echo treasury treasury-ro mcp ;;
+    TREASURY_*_KEY | TREASURY_*_KEYSTORE | TREASURY_*_KEYSTORE_PASSWORD | TREASURY_*_KEYSTORE_PASSWORD_FILE) echo treasury ;;
+    TREASURY_* | WEBHOOK_ALLOW_PRIVATE) echo treasury treasury-ro ;;
+    RISK_* | OLLAMA_HOST | ORDERLY_SECRET) echo treasury ;;
     *)
       echo "split-env: no rule for $k: put in common.env" >&2
       echo common
@@ -66,6 +73,19 @@ routes() {
 
 umask 077
 if [[ "$ADD_MISSING" == 1 ]]; then
+  # A server split before treasury-ro existed: derive it from treasury.env (its values, minus the signing material).
+  if [[ -f "$DEST/treasury.env" && ! -f "$DEST/treasury-ro.env" ]]; then
+    {
+      printf '# treasury-ro.env: written by split-env.sh from treasury.env (no signing material). Read by systemd for plynth-treasury-webhooks and -marks.\n'
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
+        [[ " $(routes "${BASH_REMATCH[1]}" 2>/dev/null) " == *" treasury-ro "* ]] && printf '%s\n' "$line"
+      done <"$DEST/treasury.env"
+    } >"$DEST/treasury-ro.env.tmp"
+    chmod 0600 "$DEST/treasury-ro.env.tmp"
+    mv -f "$DEST/treasury-ro.env.tmp" "$DEST/treasury-ro.env"
+    echo "split-env: wrote treasury-ro.env from treasury.env (new in this release)"
+  fi
   FILL_BLANK="RELAYER_WITHDRAW_MIN_FEES RELAYER_CLAIM_MIN_RAW"
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue

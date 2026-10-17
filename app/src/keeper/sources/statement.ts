@@ -260,6 +260,19 @@ function ofxField(block: string, tag: string): string | undefined {
   return v ? v.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">") : undefined;
 }
 
+/**
+ * The CURSYM of a transaction's <CURRENCY> aggregate: the first <CURSYM> (followed by a 3-letter code) after the first
+ * <CURRENCY>. Two forward scans, so linear in the block. The regex this replaces, /<CURRENCY>[\s\S]*?<CURSYM>/, was
+ * quadratic: a block of repeated <CURRENCY> with no <CURSYM> took 145 s at 2 MB (review v2, V2-M4).
+ */
+export function currencyOf(block: string): string | undefined {
+  const open = /<CURRENCY>/i.exec(block);
+  if (!open) return undefined;
+  const sym = /<CURSYM>\s*([A-Za-z]{3})/gi;
+  sym.lastIndex = open.index + open[0].length;
+  return sym.exec(block)?.[1];
+}
+
 export function looksLikeOfx(text: string): boolean {
   return /OFXHEADER|<OFX>/i.test(text.slice(0, 4096));
 }
@@ -270,14 +283,21 @@ export function parseOfxStatement(text: string): ParsedStatement {
   const out: ParsedRow[] = [];
   // Line numbers are counted incrementally: re-splitting the text up to every row made a 20,000-row file take ~50 s
   // of API CPU (quadratic; audit M-9). Every match below advances monotonically, so this stays linear.
+  // nextNl caches the first newline at or after seenTo (-1: none left), so a file with no newlines is not rescanned
+  // to EOF once per row (review v2, V2-M4).
   let seenTo = 0;
   let seenLines = 1;
+  let nextNl = text.indexOf("\n");
   const lineAt = (i: number) => {
     if (i < seenTo) {
       seenTo = 0;
       seenLines = 1;
+      nextNl = text.indexOf("\n");
     }
-    for (let k = text.indexOf("\n", seenTo); k !== -1 && k < i; k = text.indexOf("\n", k + 1)) seenLines++;
+    while (nextNl !== -1 && nextNl < i) {
+      seenLines++;
+      nextNl = text.indexOf("\n", nextNl + 1);
+    }
     seenTo = i;
     return seenLines;
   };
@@ -306,7 +326,7 @@ export function parseOfxStatement(text: string): ParsedStatement {
         continue;
       }
       // <CURRENCY><CURSYM>: TRNAMT is in that currency. <ORIGCURRENCY>: TRNAMT was already converted to CURDEF.
-      const cur = (b.match(/<CURRENCY>[\s\S]*?<CURSYM>\s*([A-Za-z]{3})/i)?.[1] ?? curdef).toUpperCase();
+      const cur = (currencyOf(b) ?? curdef).toUpperCase();
       if (cur !== "USD") {
         row.skip = `currency ${cur} is not USD`;
         continue;

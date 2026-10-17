@@ -9,7 +9,7 @@
 #                                     units and the backup script (deploy.sh runs this on every deploy)
 #
 # What it does: a `plynth` system user that owns the code and runs migrations, and one system user per service
-# (plynth-indexer, -keeper, -api, -eligibility, -relayer, -mcp, -treasury); apt upgrade; git, build tools, jq; Postgres (the distro's current major)
+# (plynth-indexer, -keeper, -api, -eligibility, -relayer, -mcp, -treasury, -webhooks, -marks); apt upgrade; git, build tools, jq; Postgres (the distro's current major)
 # with a `plynth` role and database whose random password goes to /etc/plynth/db.env (0600); ufw allowing only
 # 22, 80 and 443; fail2ban for SSH; unattended security upgrades; a swap file when there is none; Bun and cast
 # (Foundry) at pinned versions; Caddy as the HTTPS reverse proxy for the API and the relayer; the systemd units; the
@@ -77,8 +77,13 @@ install_units() {
 #   plynth-main-keeper, keeper.password          plynth-keeper
 #   plynth-main-relayer, relayer.password        plynth-relayer
 #   plynth-main-attester, attester.password      plynth-screening (plynth-eligibility and plynth-api)
-#   plynth-main-controller, controller.password  plynth-treasury (also any other file: treasury desk keystores)
-SERVICE_USERS=(plynth-indexer plynth-keeper plynth-api plynth-eligibility plynth-relayer plynth-mcp plynth-treasury)
+#   plynth-main-controller, controller.password  plynth-treasury
+#   plynth-desk-<name>, desk-<name>.password      plynth-treasury (treasury desk keystores)
+# Any other file is refused (root-only, 0400, with a warning): an unknown key is readable by no service until it is
+# named for the one that signs with it (review v2 V2-L23: the catch-all used to hand every unknown file to treasury).
+# plynth-webhooks and plynth-marks (treasury-webhooks / -marks) sign nothing: they are not in group plynth and the
+# keys directory is hidden from them.
+SERVICE_USERS=(plynth-indexer plynth-keeper plynth-api plynth-eligibility plynth-relayer plynth-mcp plynth-treasury plynth-webhooks plynth-marks)
 ensure_accounts() {
   id plynth >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/plynth --create-home --shell /usr/sbin/nologin plynth
   getent group plynth-screening >/dev/null || groupadd --system plynth-screening
@@ -104,7 +109,13 @@ fix_key_permissions() {
       plynth-main-keeper | keeper.password) g=plynth-keeper ;;
       plynth-main-relayer | relayer.password) g=plynth-relayer ;;
       plynth-main-attester | attester.password) g=plynth-screening ;;
-      *) g=plynth-treasury ;;
+      plynth-main-controller | controller.password | plynth-desk-* | desk-*.password) g=plynth-treasury ;;
+      *)
+        warn "$(basename "$f") in /etc/plynth/keys has no known owner: left readable by root only (name it for its service)"
+        chown root:root "$f"
+        chmod 0400 "$f"
+        continue
+        ;;
     esac
     chown root:"$g" "$f"
     chmod 0440 "$f"
@@ -141,7 +152,7 @@ ensure_env_files() {
   mv /etc/plynth/plynth.env /etc/plynth/plynth.env.pre-split
   chmod 0600 /etc/plynth/plynth.env.pre-split
   umask 022
-  log "split the settings into /etc/plynth/env/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury}.env (the old file is /etc/plynth/plynth.env.pre-split)"
+  log "split the settings into /etc/plynth/env/{common,indexer,keeper,api,eligibility,relayer,mcp,treasury,treasury-ro}.env (the old file is /etc/plynth/plynth.env.pre-split)"
 }
 
 # Settings a newer release added (and the relayer's mainnet fee tables when blank) come from env.example.

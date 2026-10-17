@@ -202,8 +202,9 @@ describe("round-up sources on anvil", () => {
     const total = ev.filter((r) => r.status === "done").reduce((s, r) => s + BigInt(r.added ?? 0), 0n) + onchain.reduce((s, r) => s + BigInt(r.added), 0n);
     expect(total).toBe(3n * U);
     expect(ev.filter((r) => r.status === "done")).toHaveLength(4); // 3 statement + 1 Plaid (the refund was never stored)
-    // the last Plaid spend would add 0 (cap used): skipped without a keeper transaction (audit M-7)
-    expect(ev.filter((r) => r.reason === "weekly cap reached: the vault would add 0")).toHaveLength(1);
+    // the 0.20 Plaid spend is skipped without a keeper transaction: the cap is used (audit M-7), or, if it comes
+    // first, it is under the keeper's 25-cent minimum (review v2 V2-M5)
+    expect(ev.filter((r) => r.reason === "weekly cap reached: the vault would add 0" || /^round-up below the keeper minimum/.test(String(r.reason)))).toHaveLength(1);
     expect(ev.find((r) => Number(r.amount_cents) === 1)).toMatchObject({ status: "skipped", reason: "older than 30 days before the source was linked" });
     expect(onchain.map((r) => BigInt(r.added))).toEqual([600_000n]);
 

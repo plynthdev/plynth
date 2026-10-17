@@ -3,7 +3,8 @@
 import { describe, expect, test } from "bun:test";
 import { getAddress, type Address, type Hex } from "viem";
 import { relayerApp, type ClaimArgs, type SettleArgs, type SwapArgs, type WithdrawArgs } from "../../app/src/relayer/app";
-import { RelayerError, claimRequest, relayerClient, relayerHealth, submitClaim, submitSettle, submitSwap, submitWithdraw, withdrawRequest, type RelayedSwap, type RelayedWithdraw } from "../src/relayer";
+import { SettleTickets } from "../../app/src/relayer/economics";
+import { RelayerError, claimRequest, relayerClient, relayerHealth, submitClaim, submitSettle, submitSwap, submitSwapWithTicket, submitWithdraw, withdrawRequest, type RelayedSwap, type RelayedWithdraw } from "../src/relayer";
 import { signClaim } from "../src/stealth";
 import { submitWithdraw as vaultSubmitWithdraw, withdrawRequest as vaultWithdrawRequest } from "../src/vault";
 
@@ -15,7 +16,7 @@ const STEALTH_KEY = "0x000000000000000000000000000000000000000000000000000000000
 const NOW = 1_800_000_000;
 const word = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex;
 
-function server() {
+function server(o: { tickets?: SettleTickets } = {}) {
   const claims: ClaimArgs[] = [];
   const withdraws: WithdrawArgs[] = [];
   const swaps: SwapArgs[] = [];
@@ -30,6 +31,7 @@ function server() {
     simulate: async () => ({ ok: true }),
     send: async (a) => (claims.push(a), `0x${"ab".repeat(32)}` as Hex),
     now: () => NOW,
+    tickets: o.tickets,
     withdraw: {
       pool: POOL,
       minFee: () => 5n,
@@ -139,6 +141,21 @@ describe("relayer client", () => {
     }
     expect(s.swaps).toHaveLength(1);
     await expect(submitSettle("http://relayer.test", { ...st, outCommitment: word(0) }, s.fetchImpl)).rejects.toThrow(/outCommitment/);
+  });
+
+  // Review v2 (V2-L17): settle has no fee, so a relayer with tickets relays it only with the ticket its swap returned.
+  test("settle tickets: submitSwapWithTicket returns one, settle with it is relayed once, without it is a 402", async () => {
+    const s = server({ tickets: new SettleTickets() });
+    const st = { proof: "0x1234" as Hex, root: word(1), nullifier: word(8), outCommitment: word(9), encryptedOut: "0xabcd" as Hex };
+    const noTicket = await submitSettle("http://relayer.test", st, s.fetchImpl).catch((e) => e);
+    expect(noTicket).toBeInstanceOf(RelayerError);
+    expect(noTicket.status).toBe(402);
+    const r = await submitSwapWithTicket("http://relayer.test", swap(), 100, s.fetchImpl);
+    expect(r.txHash).toBe(`0x${"5a".repeat(32)}`);
+    expect(typeof r.settleTicket).toBe("string");
+    expect(await relayerClient("http://relayer.test", s.fetchImpl).settle({ ...st, ticket: r.settleTicket })).toBe(`0x${"5e".repeat(32)}`);
+    expect((await submitSettle("http://relayer.test", { ...st, ticket: r.settleTicket }, s.fetchImpl).catch((e) => e)).status).toBe(402);
+    expect(s.settles).toHaveLength(1);
   });
 
   test("the vault module re-exports the same withdraw client (one implementation)", () => {

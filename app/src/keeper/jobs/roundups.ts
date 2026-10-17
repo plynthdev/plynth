@@ -36,7 +36,9 @@ async function put(ctx: Ctx, s: SpendLog, patch: Partial<Row> & { status: string
     });
 }
 
-export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<JobResult> {
+// On-chain spends keep minAccrueCents 0: each one is a transaction its sender paid for (and the vault's own R1 math
+// covers sub-cent round-ups). The pass, per-user and time/gas budgets still apply.
+export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx, { minAccrueCents: 0 })): Promise<JobResult> {
   const res: JobResult = { job: "roundups", ok: true, actions: 0, notes: [] };
   for (const { spend: s, decision: d } of await new OnchainSource(ctx).scan()) {
     if (d.kind === "skip") {
@@ -66,7 +68,7 @@ export async function runRoundups(ctx: Ctx, gate = new AccrueGate(ctx)): Promise
     }
     await put(ctx, s, { status: "done", userAddress: lu, reason: o.reason ?? null, accrueTx: o.tx?.toLowerCase() ?? null, added: o.added?.toString() ?? null });
     if (o.tx) {
-      gate.record(user, s.value, o.added);
+      gate.record(user, s.value, o.added, o.gasUsed);
       res.actions++;
     }
   }

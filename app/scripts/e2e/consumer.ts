@@ -14,6 +14,7 @@ import { bytesToHex, createPublicClient, createWalletClient, defineChain, http, 
 import { privateKeyToAccount } from "viem/accounts";
 import { beaconAbi, crowdAbi, vaultAbi as keeperVaultAbi } from "@/abi/keeper";
 import { beaconKey } from "@/keeper/jobs/beacon";
+import { DEFAULT_WITHDRAW_FEE } from "@/relayer/chain";
 import { Checks, clearDevAccountCode, DEV_KEYS, e2eDb, fixed6, freePort, onCleanup, ROOT, run, runCleanup, startFork, startService } from "./lib";
 
 const U = 1_000_000n;
@@ -45,7 +46,8 @@ const scAbi = parseAbi(["function nonces(address stealth) view returns (uint256)
 async function main(c: Checks) {
   const forkUrl = process.env.RHC_TESTNET_RPC_URL || "https://rpc.testnet.chain.robinhood.com";
   c.step(`forking testnet (${forkUrl})`);
-  const anvil = await startFork(forkUrl);
+  // RHC's own base fee (0.01 gwei): the relayer prices fees against it (review v2 V2-L17); anvil's default is 1 gwei.
+  const anvil = await startFork(forkUrl, ["--base-fee", "10000000"]);
   c.must("fork is Robinhood Chain testnet (46630)", anvil.chainId === 46630, `chainId ${anvil.chainId}`);
   await clearDevAccountCode(anvil.rpc);
   const chain = defineChain({ id: 46630, name: "rhc-testnet-fork", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [anvil.rpc] } } });
@@ -189,8 +191,18 @@ async function main(c: Checks) {
   c.step("delivery: Open claims, keeper delivers Quiet and Hidden");
   await tx(users[0]!, dep.crowdBuy, crowdAbi, "claimOpen", [tsla, bookId]);
   c.eq("Open user holds the allocation in her wallet", await read(tsla, tokenAbi, "balanceOf", [users[0]!]), alloc[0]!);
-  const dq = cycle("deliver-quiet");
-  c.ok("keeper delivered the Quiet user (deliver + 1 part)", dq.includes("deliver-quiet: ok actions=2"), dq.slice(-400));
+  // The keeper runs with KEEPER_CONFIRMATIONS 2 (testnet / mainnet default): a Quiet deliver is proven, and a part
+  // counted done, only 2 blocks below the head. This fork mines only when a transaction arrives, so blocks are mined
+  // between passes the way the live chain makes them (it used to expect deliver + part in one pass, which a keeper
+  // with confirmations can never do: the e2e failed on main a2e36ac for that reason, not because of the keeper).
+  const dq1 = cycle("deliver-quiet");
+  c.ok("keeper sent the Quiet deliver and waits for 2 confirmations before releasing a part", dq1.includes("deliver-quiet: ok actions=1") && dq1.includes("proven once confirmed"), dq1.slice(-400));
+  await rpc("anvil_mine", ["0x2"]);
+  const dq2 = cycle("deliver-quiet");
+  c.ok("next pass: the deliver is proven and the 1 part is released", dq2.includes("deliver-quiet: ok actions=1") && dq2.includes("part 0 of"), dq2.slice(-400));
+  await rpc("anvil_mine", ["0x2"]);
+  const dq3 = cycle("deliver-quiet");
+  c.ok("then nothing is sent again (no double credit)", dq3.includes("deliver-quiet: ok actions=0"), dq3.slice(-400));
   const dh = keeper("deliver-hidden");
   c.ok("keeper queued one shielded note for the Hidden user", dh.includes("deliver-hidden: ok actions=1"), dh.slice(-400));
   await warpTo((await now()) + 3601n);
@@ -224,7 +236,9 @@ async function main(c: Checks) {
   const notes = myNotes(state, vaultKeys!);
   c.eq("Hidden user's only note is her allocation", notes.map((n) => n.raw), [alloc[2]!]);
   const hiddenTo = privateKeyToAccount(bytesToHex(crypto.getRandomValues(new Uint8Array(32)))).address;
-  const fee = alloc[2]! / 100n;
+  // 10% of the allocation: above the relayer's 0.001 Stock Token minimum (audit M-8), and worth more than the
+  // withdraw's ~3.9M gas at 0.01 gwei (review v2 V2-L17). 1% was below both.
+  const fee = alloc[2]! / 10n > DEFAULT_WITHDRAW_FEE.stock ? alloc[2]! / 10n : DEFAULT_WITHDRAW_FEE.stock;
   const w = await proveWithdraw({ keys: vaultKeys!, tree: state.tree, note: notes[0]!, amount: alloc[2]!, recipient: hiddenTo, relayerFee: fee, relayer });
   {
     const r = await fetch(`http://127.0.0.1:${relayerPort}/withdraw`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withdrawRequest(w)) });

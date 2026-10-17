@@ -21,7 +21,7 @@ the one machine: Postgres, the Bun services under systemd, and Caddy in front fo
 | `/opt/plynth/releases/<time>-<commit>` | One folder per deploy (the last 5 are kept) |
 | `/opt/plynth/current` | Link to the live release; every unit runs from here |
 | `/etc/plynth/env/common.env` | Shared, non-secret settings (RPC URLs, log level) (root, 0600) |
-| `/etc/plynth/env/<service>.env` | One per service: `indexer`, `keeper`, `api`, `eligibility`, `relayer`, `mcp`, `treasury` (all `plynth-treasury-*` units). Each unit gets only `common.env`, its own file and, if it uses the database, `db.env` (root, 0600) |
+| `/etc/plynth/env/<service>.env` | One per service: `indexer`, `keeper`, `api`, `eligibility`, `relayer`, `mcp`, `treasury` (the `plynth-treasury-*` units that sign: desks, close, risk, receipts, reconciler), `treasury-ro` (the same treasury settings without any key, keystore or password: `plynth-treasury-webhooks` and `-marks`). Each unit gets only `common.env`, its own file and, if it uses the database, `db.env` (root, 0600) |
 | `/etc/plynth/db.env` | `DATABASE_URL` with the random database password (root, 0600) |
 | `/etc/plynth/<unit>.env` | Optional, overrides values for one unit (for example `keeper.env`, `treasury-desks.env`) |
 | `/etc/plynth/keys/` | The keystores and their password files, copied in by the owner; each readable only by the service that signs with it |
@@ -68,7 +68,7 @@ Services and ports (only 22, 80 and 443 are open to the internet):
 
    ```
 
-   `deploy.sh` (through `provision.sh --units-only`) then gives each file to the one service that signs with it: the keeper's to `plynth-keeper`, the relayer's to `plynth-relayer`, the attester's to `plynth-screening` (the eligibility service and the API), the controller's and any desk keystore to `plynth-treasury`, all `root:<group>` 0440, and it refuses to deploy if a key is readable by any other service user.
+   `deploy.sh` (through `provision.sh --units-only`) then gives each file to the one service that signs with it: the keeper's to `plynth-keeper`, the relayer's to `plynth-relayer`, the attester's to `plynth-screening` (the eligibility service and the API), the controller's and the desk keystores (named `plynth-desk-<name>` and `desk-<name>.password`) to `plynth-treasury`, all `root:<group>` 0440, and it refuses to deploy if a key is readable by any other service user. A file with any other name is left readable by root only, with a warning: rename it for the service that signs with it.
 
    Keystores and passwords are never committed, never put in the env files as raw keys, and never sent by `deploy.sh`. The owner wallet is not one of them: it never goes on a server.
 
@@ -98,7 +98,7 @@ systemctl list-timers 'plynth-*'            # backup and IP database timers
 
 **Keeper.** One keeper per database and deployment. The unit is a single instance and the keeper also holds a Postgres lock; a second keeper anywhere exits with status 75 and systemd retries it every 30 s. Never start one by hand next to the service.
 
-**Per-treasury services.** Fill the per-treasury block of `/etc/plynth/env/treasury.env` (or `/etc/plynth/treasury-desks.env` and so on), copy any desk keystores into `/etc/plynth/keys` the same way, then `systemctl enable --now plynth-treasury-desks` (and `-close`, `-risk`, `-receipts`, `-reconciler`). Enabled units join `plynth.target` and `deploy.sh` checks them too.
+**Per-treasury services.** Fill the per-treasury block of `/etc/plynth/env/treasury.env` (or `/etc/plynth/treasury-desks.env` and so on), copy any desk keystores into `/etc/plynth/keys` the same way (as `plynth-desk-<name>` and `desk-<name>.password`; point `TREASURY_*_DESK_KEYSTORE` / `_PASSWORD_FILE` at them), then `systemctl enable --now plynth-treasury-desks` (and `-close`, `-risk`, `-receipts`, `-reconciler`). Enabled units join `plynth.target` and `deploy.sh` checks them too.
 
 ## Backups
 
@@ -120,7 +120,7 @@ The API (its rate limits and eligibility routes) and the relayer take the client
 
 ## What provision.sh sets up
 
-- One system user per service (`plynth-indexer`, `-keeper`, `-api`, `-eligibility`, `-relayer`, `-mcp`, `-treasury`; no login shell), each with a read-only view of the system (`ProtectSystem=strict`), write access only to its own `/var/lib/plynth-<service>` (and `/var/lib/plynth/data` for screening), only its own settings, and only its own keys (`/etc/plynth/keys` is hidden from the services that sign nothing). The `plynth` user owns the code and runs the migrations.
+- One system user per service (`plynth-indexer`, `-keeper`, `-api`, `-eligibility`, `-relayer`, `-mcp`, `-treasury`, and `-webhooks` / `-marks` for the two treasury services that sign nothing; no login shell), each with a read-only view of the system (`ProtectSystem=strict`), write access only to its own `/var/lib/plynth-<service>` (and `/var/lib/plynth/data` for screening), only its own settings, and only its own keys (`/etc/plynth/keys` is hidden from the services that sign nothing). The `plynth` user owns the code and runs the migrations.
 - **Upgrading a server provisioned before this:** the next `deploy.sh` creates the users, splits `/etc/plynth/plynth.env` into `/etc/plynth/env/` (the old file stays as `plynth.env.pre-split`), re-owns the keys and installs the new units; nothing else to do.
 - Postgres from Ubuntu (its current major version), listening on localhost only, with a `plynth` role and the `plynth_mainnet` database.
 - ufw: inbound 22/tcp, 80/tcp and 443 only. fail2ban on SSH. SSH password logins off when root has an authorized key.

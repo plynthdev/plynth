@@ -7,6 +7,8 @@
 // weekly cap, a whole-amount spend): those rows are skipped with the reason. Accruals are also capped per user per
 // vault week and per pass (AccrueGate), and this job runs after the core jobs (keeper.ts), so imports can never
 // starve sweep, beacon, execute or delivery of the keeper's gas or time.
+// Review v2 (V2-M5): each accrual must move at least $0.25 (KEEPER_MIN_ACCRUE_CENTS), at most KEEPER_MAX_ACCRUALS_PER_USER_PASS
+// per user per pass, and the job stops at its wall-clock and gas budget (KEEPER_ACCRUE_PASS_MS / _GAS).
 import { getAddress, type Address } from "viem";
 import type { Ctx, JobResult } from "@/keeper/context";
 import { AccrueGate, accrueSpend } from "@/keeper/sources/accrue";
@@ -55,7 +57,7 @@ export async function runSpends(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<J
       const units = usdgUnits(e);
       const g = await gate.check(user, units);
       if (!g.ok) {
-        if (!g.skip) break; // pass budget used: this row and the rest stay open for the next pass
+        if (!g.skip) break; // pass (or this user's per-pass) budget used: this row and the rest stay open for the next pass
         await setEventResult(ctx, row, { status: "skipped", reason: g.reason });
         continue;
       }
@@ -68,11 +70,12 @@ export async function runSpends(ctx: Ctx, gate = new AccrueGate(ctx)): Promise<J
       }
       await setEventResult(ctx, row, { status: "done", reason: o.reason, accrualKey: key, added: o.added, tx: o.tx });
       if (o.tx) {
-        gate.record(user, units, o.added);
+        gate.record(user, units, o.added, o.gasUsed);
         res.actions++;
       }
     }
   }
-  if (gate.passFull()) res.notes.push(`pass budget of ${gate.limits.perPass} accruals used; the rest waits for the next pass`);
+  const spent = gate.passSpent();
+  if (spent) res.notes.push(`${spent}: the rest waits for the next pass`);
   return res;
 }

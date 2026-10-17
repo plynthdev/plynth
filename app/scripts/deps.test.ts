@@ -6,7 +6,9 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const PKGS = ["app", "sdk", "circuits", "web"];
-const pkg = (d: string) => JSON.parse(readFileSync(join(ROOT, d, "package.json"), "utf8")) as { dependencies?: Record<string, string>; scripts?: Record<string, string> };
+const pkg = (d: string) =>
+  JSON.parse(readFileSync(join(ROOT, d, "package.json"), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; overrides?: Record<string, string>; scripts?: Record<string, string> };
+const EXACT = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 describe("dependency controls", () => {
   test("viem is pinned to one exact version in every package, and the lockfile resolves that version", () => {
@@ -29,6 +31,32 @@ describe("dependency controls", () => {
       const m = readFileSync(f, "utf8").match(/^\s*minimumReleaseAge\s*=\s*(\d+)/m);
       expect(m, d).not.toBeNull();
       expect(Number(m![1]), d).toBeGreaterThanOrEqual(86_400);
+    }
+  });
+
+  // Review v2 (V2-L25, DEPS-1): only viem was exact; app had 13 ranges (hono, plaid ^41, @mcp/sdk ^1, @trpc/server ^11,
+  // ...), sdk 2, web about 71, and circuits had no lockfile.
+  test("every dependency of every package is an exact version (or a local file:), no ^ / ~ / x ranges", () => {
+    const bad: string[] = [];
+    for (const d of PKGS) {
+      const p = pkg(d);
+      for (const [name, spec] of Object.entries({ ...p.dependencies, ...p.devDependencies, ...p.overrides })) if (!EXACT.test(spec) && !spec.startsWith("file:")) bad.push(`${d}: ${name}@${spec}`);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  test("every package has a committed bun.lock whose specifiers are the package.json's exact versions", () => {
+    for (const d of PKGS) {
+      const lock = join(ROOT, d, "bun.lock");
+      expect(existsSync(lock), d).toBe(true);
+      const tracked = Bun.spawnSync(["git", "ls-files", "--error-unmatch", `${d}/bun.lock`], { cwd: ROOT, stdout: "ignore", stderr: "ignore" });
+      expect(tracked.exitCode, `${d}/bun.lock is not committed`).toBe(0);
+      const text = readFileSync(lock, "utf8");
+      const p = pkg(d);
+      for (const [name, spec] of Object.entries({ ...p.dependencies, ...p.devDependencies })) {
+        expect(text, `${d}: ${name}`).toContain(`"${name}": "${spec}"`);
+        if (EXACT.test(spec)) expect(text, `${d}: ${name} resolves to ${spec}`).toContain(`"${name}": ["${name}@${spec}"`);
+      }
     }
   });
 

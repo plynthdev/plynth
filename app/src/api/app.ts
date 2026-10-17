@@ -75,8 +75,18 @@ export const REST: Proc[] = [
 /** Requests per minute per client address (an IPv6 /64), and for the routes that cost real work (audit L-13). */
 export const DEFAULT_RATE_LIMIT = 600;
 export const DEFAULT_HEAVY_RATE_LIMIT = 30;
-/** Proof and statement verification (RPC fan-out, proof checks) and the CFO pack: the expensive routes. */
-const HEAVY = [/^\/(v1\/)?(statements|proofs)\/verify$/, /^\/trpc\/(statements|proofs)\.verify/, /^\/v1\/treasury\/[^/]+\/cfo-pack\//, /^\/trpc\/cfo\.pack/];
+/**
+ * Proof and statement verification (RPC fan-out, proof checks), the CFO pack, and the treasury reads that scan logs or
+ * read every close (desk list, close list / get; review v2 V2-L16): the expensive routes.
+ */
+const HEAVY = [
+  /^\/(v1\/)?(statements|proofs)\/verify$/,
+  /^\/trpc\/(statements|proofs)\.verify/,
+  /^\/v1\/treasury\/[^/]+\/cfo-pack\//,
+  /^\/trpc\/cfo\.pack/,
+  /^\/v1\/treasury\/[^/]+\/(desks|closes)(\/|$)/,
+  /^\/trpc\/(desk\.list|close\.(list|get))/,
+];
 export const isHeavyPath = (path: string) => HEAVY.some((r) => r.test(path));
 
 export type ApiRateLimit = { perMinute?: number | undefined; heavyPerMinute?: number | undefined };
@@ -121,7 +131,14 @@ export function createApp(
 
   const ctxOf = (c: Context): Ctx => ({ ...deps, headers: c.req.raw.headers });
 
-  app.use("/trpc/*", trpcServer({ router: appRouter, endpoint: "/trpc", createContext: (_o, c) => ctxOf(c) }));
+  // Review v2 (V2-L12): no tRPC batching. One batched request (/trpc/meta.health,statements.verify x200?batch=1) ran
+  // every listed procedure while the rate limiter charged it once, and the heavy limit only looked at the first name.
+  // Refused before tRPC parses anything, and switched off in tRPC itself: one HTTP request is one procedure.
+  app.use("/trpc/*", async (c, next) => {
+    if (c.req.path.includes(",") || c.req.query("batch") !== undefined) return c.json({ error: { code: "BAD_REQUEST", message: "tRPC batching is disabled: one procedure per request" } }, 400);
+    await next();
+  });
+  app.use("/trpc/*", trpcServer({ router: appRouter, endpoint: "/trpc", allowBatching: false, maxBatchSize: 1, createContext: (_o, c) => ctxOf(c) }));
 
   for (const p of REST) {
     const handler = async (c: Context) => {

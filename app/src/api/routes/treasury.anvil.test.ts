@@ -205,7 +205,8 @@ describe("treasury API on a factory-made treasury", () => {
     expect(JSON.stringify(statement)).toContain(c.bundleHash);
     const csv = await ok("cfo.pack", { account: acct, periodEnd: c.periodEndUnix, format: "csv" });
     expect(csv.body.split("\n").length).toBeGreaterThan(2);
-    const dl = await app.request(`/v1/treasury/${acct}/cfo-pack/${c.periodEndUnix}/download?format=html`);
+    expect((await app.request(`/v1/treasury/${acct}/cfo-pack/${c.periodEndUnix}/download?format=html`)).status).toBe(401);
+    const dl = await app.request(`/v1/treasury/${acct}/cfo-pack/${c.periodEndUnix}/download?format=html`, { headers: auth() });
     expect(dl.status).toBe(200);
     expect(dl.headers.get("content-type")).toContain("text/html");
     expect(await dl.text()).toContain("<html");
@@ -291,7 +292,8 @@ describe("treasury API on a factory-made treasury", () => {
     expect(cur.board).toBe(BOARD2.address);
     const nav = await ok("nav.latest", { account: a.account });
     expect(nav.navUsdRaw).toBe("0");
-    expect((await ok("close.list", { account: a.account })).closes).toHaveLength(0);
+    // close.list is a private record (review v2 V2-L15): the reader token is for the other treasury
+    expect((await trpc("close.list", { account: a.account })).status).toBe(401);
     // The REST mirror and template listing.
     expect((await rest("/v1/treasury/templates")).body.map((x: any) => x.name)).toEqual(["balanced", "carry", "conservative"]);
     const bad = await rest("/v1/treasury/create", { method: "POST", body: JSON.stringify({ templateName: "nope", controller: kit.deployer.address, board: BOARD2.address }), headers: { "content-type": "application/json" } });
@@ -300,9 +302,11 @@ describe("treasury API on a factory-made treasury", () => {
 
   test("anything that is not a treasury account is a 404", async () => {
     if (!ready) return;
-    for (const p of ["nav.latest", "positions.list", "policy.current", "desk.list", "close.list"]) {
+    for (const p of ["nav.latest", "positions.list", "policy.current"]) {
       expect((await trpc(p, { account: kit.a.usdg })).status).toBe(404);
     }
+    // private reads answer 401 first: a token for one treasury says nothing about any other address
+    for (const p of ["desk.list", "close.list"]) expect((await trpc(p, { account: kit.a.usdg })).status).toBe(401);
   }, 60_000);
 });
 
@@ -492,7 +496,8 @@ describe("todo 30: receipts, NAV marks, marketplace, MCP tokens", () => {
   test("audit L-14: off-chain records need an MCP token for that treasury; chain-derived reads stay public", async () => {
     if (!ready) return;
     const bare = async (path: string, headers: Record<string, string> = {}) => (await app.request(path, { headers })).status;
-    for (const p of [`/v1/treasury/${acct}/actions`, `/v1/treasury/${acct}/exceptions`, `/v1/treasury/${acct}/mcp-tokens`, `/v1/treasury/${acct}/actions/1/proof`]) {
+    // review v2 V2-L15: desks, closes and the CFO pack carry desk decisions and pending rows too
+    for (const p of [`/v1/treasury/${acct}/actions`, `/v1/treasury/${acct}/exceptions`, `/v1/treasury/${acct}/mcp-tokens`, `/v1/treasury/${acct}/actions/1/proof`, `/v1/treasury/${acct}/desks`, `/v1/treasury/${acct}/closes`, `/v1/treasury/${acct}/closes/0`]) {
       expect(await bare(p)).toBe(401);
       expect(await bare(p, { authorization: "Bearer pmcp_forged.AAAA" })).toBe(401);
       expect(await bare(p, { authorization: `Bearer ${reader}` })).not.toBe(401);
@@ -509,7 +514,7 @@ describe("todo 30: receipts, NAV marks, marketplace, MCP tokens", () => {
     await conn.sql`update treasury_mcp_tokens set revoked_at = now() where id = ${otherId}`;
     expect(await bare(`/v1/treasury/${other}/actions`, { authorization: `Bearer ${otherTok}` })).toBe(401);
     // public by design: derived from the chain
-    for (const p of [`/v1/treasury/${acct}/nav`, `/v1/treasury/${acct}/positions`, `/v1/treasury/${acct}/desks`, `/v1/treasury/${acct}/policy`, `/v1/treasury/${acct}/closes`]) expect(await bare(p)).toBe(200);
+    for (const p of [`/v1/treasury/${acct}/nav`, `/v1/treasury/${acct}/positions`, `/v1/treasury/${acct}/policy`]) expect(await bare(p)).toBe(200);
   }, 60_000);
 
   test("exception requests filed for the board show up in exceptions.list and never touch the chain", async () => {

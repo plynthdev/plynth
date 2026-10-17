@@ -15,7 +15,9 @@ import { getConnInfo } from "hono/bun";
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, type PublicClient } from "viem";
 import { loadSigner } from "@/keeper/signer";
 import { relayerApp } from "@/relayer/app";
-import { chainDeps, NonceManager, relayerTables, tradeDeps, withdrawDeps } from "@/relayer/chain";
+import { chainDeps, feeValuer, NonceManager, relayerTables, tradeDeps, withdrawDeps } from "@/relayer/chain";
+import { DEFAULT_MAX_FEE_PER_GAS_WEI, Economics, SettleTickets } from "@/relayer/economics";
+import { createHash } from "node:crypto";
 import { RateLimiter } from "@/relayer/ratelimit";
 
 const config = loadConfig();
@@ -40,24 +42,48 @@ for (const s of Object.values(dep.stocks ?? {})) plynth.push(s.token);
 
 const trustProxy = config.RELAYER_TRUST_PROXY;
 const tables = relayerTables(config, config.RELAYER_CHAIN, dep as { usdg?: unknown; stocks?: Record<string, { token: string }> });
-// One nonce source for claims and withdraws: concurrent requests never sign the same nonce.
-const nonces = new NonceManager(() => pub.getTransactionCount({ address: account.address, blockTag: "pending" }));
+// One nonce source for claims and withdraws: concurrent requests never sign the same nonce. A gap the node dropped
+// is alerted and refilled (review v2 V2-L18).
+const log = (m: string) => console.log(`[relayer ${chainId}] ${m}`);
+const nonces = new NonceManager(() => pub.getTransactionCount({ address: account.address, blockTag: "pending" }), { alert: (m) => log(`ALERT ${m}`) });
+// Review v2 (V2-L17): fees must pay for gas at the current price, gas is capped, a swap prepays its settle. On local
+// (anvil, base fee 1 gwei) only when RELAYER_MAX_FEE_PER_GAS_WEI is set.
+const maxFeePerGas =
+  config.RELAYER_MAX_FEE_PER_GAS_WEI !== undefined ? BigInt(config.RELAYER_MAX_FEE_PER_GAS_WEI) : config.RELAYER_CHAIN === "local" ? undefined : DEFAULT_MAX_FEE_PER_GAS_WEI;
+const shieldedTrade = typeof dep.shieldedTrade === "string" ? getAddress(dep.shieldedTrade) : undefined;
+const economics =
+  maxFeePerGas === undefined
+    ? undefined
+    : new Economics(
+        { maxFeePerGasWei: maxFeePerGas, ethUsd: config.RELAYER_ETH_USD, marginBps: config.RELAYER_FEE_MARGIN_BPS },
+        // Robinhood Chain is Arbitrum Nitro: a transaction pays the block's base fee and the priority tip is ignored,
+        // so the base fee is the price (eth_gasPrice adds a suggested tip, 1 gwei on anvil).
+        { gasPrice: async () => (await pub.getBlock({ blockTag: "latest" })).baseFeePerGas ?? (await pub.getGasPrice()), valueMicroUsd: feeValuer({ pub, dep: dep as any, trade: shieldedTrade }) },
+      );
+// The ticket key is derived from the relayer's own key (a deterministic signature), so tickets survive a restart
+// without another secret to provision.
+const ticketKey = createHash("sha256")
+  .update(await account.signMessage!({ message: `plynth relayer settle tickets v1 chain ${chainId}` }))
+  .digest();
+const tickets = economics ? new SettleTickets(ticketKey) : undefined;
 const app = relayerApp({
-  ...chainDeps({ pub, wallet, account, chain, stealthClaims: getAddress(dep.stealthClaims), plynth, nonces }),
+  ...chainDeps({ pub, wallet, account, chain, stealthClaims: getAddress(dep.stealthClaims), plynth, nonces, maxFeePerGas }),
+  economics,
+  tickets,
   claimMin: tables.claimMin,
   ipOf: (c) => (trustProxy ? (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown") : (getConnInfo(c).remote.address ?? "unknown")),
   ipLimiter: new RateLimiter(config.RELAYER_IP_LIMIT, 60_000),
   stealthLimiter: new RateLimiter(config.RELAYER_STEALTH_LIMIT, 60_000),
   withdraw:
     typeof dep.shieldedPool === "string"
-      ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces })
+      ? withdrawDeps({ pub, wallet, account, chain, pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces, maxFeePerGas })
       : undefined,
   // Private sell / buy / park (POST /swap, /settle) when the deployment has a ShieldedTrade.
   trade:
     typeof dep.shieldedTrade === "string" && typeof dep.shieldedPool === "string"
-      ? tradeDeps({ pub, wallet, account, chain, trade: getAddress(dep.shieldedTrade), pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces })
+      ? tradeDeps({ pub, wallet, account, chain, trade: getAddress(dep.shieldedTrade), pool: getAddress(dep.shieldedPool), minFee: tables.minFee, nonces, maxFeePerGas })
       : undefined,
-  log: (m) => console.log(`[relayer ${chainId}] ${m}`),
+  log,
   corsOrigins: config.CORS_ORIGINS
     ? config.CORS_ORIGINS.split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean)
     : undefined,

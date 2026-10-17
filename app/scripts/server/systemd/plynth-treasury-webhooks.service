@@ -11,18 +11,21 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Its own Unix user and only its own settings (audit: one user and one env file for every service).
-User=plynth-treasury
-Group=plynth-treasury
-SupplementaryGroups=plynth
-StateDirectory=plynth-treasury
-WorkingDirectory=/var/lib/plynth-treasury
-Environment=HOME=/var/lib/plynth-treasury
+# Its own Unix user and only its own settings (audit: one user and one env file for every service). Review v2
+# (V2-L23): it signs nothing, and it fetches customer URLs, so it no longer runs as plynth-treasury (which can read the
+# controller and desk keystores): its own user, not in group plynth, the keys directory hidden, and treasury-ro.env
+# (the treasury settings without any signing material).
+User=plynth-webhooks
+Group=plynth-webhooks
+StateDirectory=plynth-webhooks
+WorkingDirectory=/var/lib/plynth-webhooks
+Environment=HOME=/var/lib/plynth-webhooks
 EnvironmentFile=/etc/plynth/env/common.env
 EnvironmentFile=/etc/plynth/db.env
-EnvironmentFile=/etc/plynth/env/treasury.env
+EnvironmentFile=/etc/plynth/env/treasury-ro.env
 EnvironmentFile=-/etc/plynth/treasury-webhooks.env
-ReadWritePaths=/var/lib/plynth-treasury
+ReadWritePaths=/var/lib/plynth-webhooks
+InaccessiblePaths=-/etc/plynth/keys
 ExecStart=/usr/local/bin/bun /opt/plynth/current/app/src/bin/treasury-webhooks.ts run
 Restart=always
 RestartSec=10

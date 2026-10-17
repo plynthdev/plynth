@@ -13,6 +13,7 @@ import { encodeAbiParameters, getAddress, hexToBytes, type Address, type Hex } f
 import { crowdAbi, vaultAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { setJob } from "@/keeper/jobstore";
+import { TxReverted } from "@/keeper/sender";
 
 export const MODE_HIDDEN = 2;
 /** Deposits inserted per insertPending transaction (each leaf is ~1.2M gas). */
@@ -110,7 +111,19 @@ async function deliverOne(ctx: Ctx, res: JobResult, { asset, bookId, user }: { a
     return;
   }
   sending.now = true;
-  const r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", args, "deliver-hidden");
+  let r;
+  try {
+    r = await ctx.sender.sendCall(ctx.dep.crowd, crowdAbi, "deliver", args, "deliver-hidden");
+  } catch (err) {
+    // Review v2 (V2-L14): mined and reverted, e.g. the user's own claimOpen or cancel landed between our simulation and
+    // our send. Final for this transaction, so not a reason to stop the pass (as quiet.ts): note it and go on; the
+    // next pass re-reads settled/orderOf and records how the allocation ended. TxUnconfirmed and transport errors
+    // still stop the pass, since our transaction may yet land.
+    if (!(err instanceof TxReverted)) throw err;
+    sending.now = false;
+    res.notes.push(`${user} ${asset} book ${bookId}: deliver ${err.hash} reverted; the next pass checks how it was settled`);
+    return;
+  }
   sending.now = false;
   await record(ctx, asset, bookId, user, { status: "delivered", raw, commitment: plan.commitment, txHash: r.transactionHash });
   res.actions++;
@@ -125,7 +138,14 @@ async function insertPhase(ctx: Ctx, res: JobResult): Promise<void> {
     res.notes.push(`insertPending reverts ${sim.errorName}`);
     return;
   }
-  await ctx.sender.sendCall(pool, shieldedPoolAbi, "insertPending", [INSERT_BATCH], "insert-pending");
+  try {
+    await ctx.sender.sendCall(pool, shieldedPoolAbi, "insertPending", [INSERT_BATCH], "insert-pending");
+  } catch (err) {
+    // Someone else's insertPending (anyone may call it) landed first: nothing left to do this pass (V2-L14).
+    if (!(err instanceof TxReverted)) throw err;
+    res.notes.push(`insertPending ${err.hash} reverted; the next pass retries`);
+    return;
+  }
   res.actions++;
 }
 
