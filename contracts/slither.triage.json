@@ -357,6 +357,12 @@
   },
   {
    "check": "uninitialized-local",
+   "where": "PolicyGuard.venueLossBps",
+   "impact": "Medium",
+   "reason": "`ms`, `b` and `i` start at their zero defaults on purpose: `ms` stays empty when the venue has no markets() (not in-house, bound 0), `b` stays 0 when a market's openSpreadBps or feeBpsFor call reverts (that market adds nothing), `i` is the loop counter. The result is capped at VENUE_LOSS_CAP_BPS either way."
+  },
+  {
+   "check": "uninitialized-local",
    "where": "CashSleeve.run",
    "impact": "Medium",
    "reason": "Deliberate use of Solidity zero-initialisation for counters, accumulators and try/catch result variables."
