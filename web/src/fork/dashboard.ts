@@ -103,7 +103,7 @@ async function load(force = false) {
   }
   S.loading = true;
   S.error = "";
-  document.body.dataset.forkLoading = "1";
+  document.body.dataset["forkLoading"] = "1";
   S.rerender();
   const a = acct.address;
   try {
@@ -154,7 +154,7 @@ async function load(force = false) {
     S.error = (e as Error).message;
   } finally {
     S.loading = false;
-    delete document.body.dataset.forkLoading;
+    delete document.body.dataset["forkLoading"];
     S.rerender();
   }
 }
@@ -166,7 +166,7 @@ async function run(label: string, f: (p: A.Progress) => Promise<unknown>) {
   S.log.unshift(entry);
   S.log = S.log.slice(0, 30);
   S.busy = true;
-  document.body.dataset.forkBusy = "1";
+  document.body.dataset["forkBusy"] = "1";
   S.rerender();
   // Each confirmed transaction is listed once, nested under its action's line (it used to be listed twice).
   const progress: A.Progress = (msg, hash) => {
@@ -186,7 +186,7 @@ async function run(label: string, f: (p: A.Progress) => Promise<unknown>) {
     entry.msg = (e as { shortMessage?: string }).shortMessage ?? (e as Error).message;
   } finally {
     S.busy = false;
-    delete document.body.dataset.forkBusy;
+    delete document.body.dataset["forkBusy"];
     await load(true);
   }
 }
@@ -571,7 +571,7 @@ const handlers: Record<string, (el: HTMLElement) => void> = {
   },
   "save-mix": () => {
     const rows = [...document.querySelectorAll<HTMLInputElement>("[data-mix-token]")].map((i) => ({
-      token: i.dataset.mixToken as Address,
+      token: i.dataset["mixToken"] as Address,
       percent: i.value,
     }));
     void run("Save mix", (p) => A.saveMix(rows, p));
@@ -632,13 +632,13 @@ function setup(ctx: { rerender(): void; signal: AbortSignal }) {
       S.data = {};
       S.rerender();
     });
-    document.body.dataset.forkLoading = "1";
+    document.body.dataset["forkLoading"] = "1";
     // Learn early whether this chain has a deployment at all, so the page can say "not deployed yet" up front.
     void deployment().catch(() => {
       if (deploymentMissing()) S.rerender();
     });
     void restoreConnection().then(() => {
-      delete document.body.dataset.forkLoading;
+      delete document.body.dataset["forkLoading"];
       S.loadedFor = "";
       S.rerender();
     });
@@ -650,17 +650,17 @@ function setup(ctx: { rerender(): void; signal: AbortSignal }) {
     (e) => {
       const t = e.target as HTMLElement;
       const a = t.closest<HTMLElement>("[data-action]");
-      if (a && !a.hasAttribute("disabled")) return handlers[a.dataset.action!]?.(a);
+      if (a && !a.hasAttribute("disabled")) return handlers[a.dataset["action"]!]?.(a);
       const m = t.closest<HTMLElement>("[data-live-mode]");
       if (m && !m.hasAttribute("disabled")) {
-        const mode = modeKey(m.dataset.liveMode!);
+        const mode = modeKey(m.dataset["liveMode"]!);
         if (mode !== (S.data.overview?.mode ?? S.data.settings?.mode))
           void run(`Switch to ${MODE_NAMES[mode]}`, (p) => A.switchMode(mode, p));
         return;
       }
       const per = t.closest<HTMLElement>("[data-live-period]");
       if (per) {
-        S.period = per.dataset.livePeriod as typeof S.period;
+        S.period = per.dataset["livePeriod"] as typeof S.period;
         void load();
       }
     },

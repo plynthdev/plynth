@@ -609,7 +609,8 @@ async function syncedNotes(p?: Progress) {
   const d = await deployment();
   const v = await vaultMod();
   const keys = await vaultKeys(p);
-  poolState = await v.syncPool(publicClient(), d.shieldedPool, poolState as never, {
+  // The SDK takes viem's PublicClient from its own node_modules copy: the same type, a distinct declaration.
+  poolState = await v.syncPool(publicClient() as never, d.shieldedPool, poolState as never, {
     fromBlock: BigInt(d.deployBlock),
     ...(d.shieldedTrade ? { trade: d.shieldedTrade } : {}),
   });
@@ -628,7 +629,7 @@ export async function hiddenNotes(p?: Progress): Promise<HiddenNote[]> {
     raw: n.raw,
     leafIndex: n.leafIndex,
     spent: n.spent,
-    version: (n as { version?: number }).version,
+    ...((n as { version?: number }).version !== undefined ? { version: (n as { version?: number }).version as number } : {}),
   }));
 }
 

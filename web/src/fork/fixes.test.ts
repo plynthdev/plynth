@@ -126,10 +126,10 @@ async function mount(path = "/dashboard/") {
   }, signal: ac.signal };
   render();
   liveDashboard.setup(ctx); // first call: watchers + restore
-  await vi.waitFor(() => expect(document.body.dataset.forkLoading).toBeUndefined());
+  await vi.waitFor(() => expect(document.body.dataset["forkLoading"]).toBeUndefined());
   ctx.rerender();
   await vi.waitFor(() => {
-    expect(document.body.dataset.forkLoading).toBeUndefined();
+    expect(document.body.dataset["forkLoading"]).toBeUndefined();
     expect(document.querySelector('[data-field="loading"]')).toBeNull();
   });
   return { ac, ctx };
@@ -435,7 +435,7 @@ describe("8. weekly cap shows the saved value after Save Settings", () => {
     (document.getElementById("weekly-cap") as HTMLInputElement).value = "100";
     (document.querySelector('[data-action="save-settings"]') as HTMLButtonElement).click();
     await vi.waitFor(() => expect(document.querySelector('#fork-log > li[data-state="ok"]')).not.toBeNull());
-    await vi.waitFor(() => expect(document.body.dataset.forkLoading).toBeUndefined());
+    await vi.waitFor(() => expect(document.body.dataset["forkLoading"]).toBeUndefined());
     expect(m.saveSettings).toHaveBeenCalledWith(
       expect.objectContaining({ weeklyCap: "100", roundTo: 10 }),
       expect.any(Function),
