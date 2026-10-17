@@ -140,6 +140,8 @@ export const perpMarketKeeperAbi = parseAbi([
   "function HELD_GRACE() view returns (uint256)",
   "function liquidate(address account)",
   "function settleHeld(address account)",
+  "function settleRetired(address account)",
+  "function retireAt() view returns (uint256)",
   "function openPositionCount() view returns (uint256)",
   "function lastPriceAt() view returns (uint256)",
   "function unpricedSince() view returns (uint256)",
@@ -151,6 +153,8 @@ export const perpMarketKeeperAbi = parseAbi([
   "error NoPosition()",
   "error NotLiquidatable()",
   "error NotHeldLongEnough(uint256 heldFor)",
+  "error NotRetired(uint256 settleFrom)",
+  "error Hold()",
 ]);
 
 export const perpPoolKeeperAbi = parseAbi(["function isOperator(address account, address operator) view returns (bool)"]);

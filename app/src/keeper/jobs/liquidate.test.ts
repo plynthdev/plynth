@@ -33,6 +33,7 @@ type Chain = {
   positions: Record<string, Address[]>;
   liquidatable: Set<string>;
   heldFor?: Record<string, bigint>;
+  retireAt?: Record<string, bigint>;
   operatorOf?: Set<string>;
   throwOn?: Set<string>;
   revertOn?: Record<string, string>;
@@ -52,6 +53,7 @@ function fakeCtx(chain: Chain, markets: Address[]) {
       if (functionName === "pool") return POOL;
       if (functionName === "heldFor") return chain.heldFor?.[address] ?? 0n;
       if (functionName === "HELD_GRACE") return 432_000n;
+      if (functionName === "retireAt") return chain.retireAt?.[address] ?? 0n;
       if (functionName === "isOperator") return chain.operatorOf?.has(String(args[0]).toLowerCase()) ?? false;
       if (functionName === "isLiquidatable") {
         if (chain.throwOn?.has(key(address, args[0]))) throw new Error("rpc: connection reset\nstack");
@@ -126,6 +128,33 @@ describe("runLiquidate over a fake chain", () => {
     const r = await runLiquidate(ctx);
     expect(sent).toEqual([`settleheld:${M2}:${a1}`.toLowerCase(), `settleheld:${M2}:${a2}`.toLowerCase()]);
     expect(r.notes.join("|")).toMatch(/cannot list positions/);
+  });
+
+  test("review v3 R3-PERP-5: a retired market past its notice: settleRetired every position; before it, nothing", async () => {
+    const a1 = A(1), a2 = A(2);
+    const due = fakeCtx({ positions: { [M1]: [a1, a2] }, liquidatable: new Set(), retireAt: { [M1]: 1_800_000_000n } }, [M1]);
+    const r = await runLiquidate(due.ctx);
+    expect(due.sent).toEqual([`settleretired:${M1}:${a1}`.toLowerCase(), `settleretired:${M1}:${a2}`.toLowerCase()]);
+    expect(r.ok).toBe(true);
+    const early = fakeCtx({ positions: { [M1]: [a1] }, liquidatable: new Set(), retireAt: { [M1]: 1_800_000_001n } }, [M1]);
+    await runLiquidate(early.ctx);
+    expect(early.sent).toEqual([]);
+    // Market closed (Hold): a note, not a failure; the next open-market pass settles it.
+    const held = fakeCtx(
+      { positions: { [M1]: [a1] }, liquidatable: new Set(), retireAt: { [M1]: 1n }, revertOn: { [`${M1}:${a1}`.toLowerCase()]: "Hold" } },
+      [M1],
+    );
+    const rh = await runLiquidate(held.ctx);
+    expect(held.sent).toEqual([]);
+    expect(rh.ok).toBe(true);
+    expect(rh.notes.join("|")).toMatch(/settleRetired reverts Hold/);
+  });
+
+  test("liquidationAction: liquidation first, then the held settle, then the retired settle", () => {
+    const base = { account: A(1), keeper: KEEPER, keeperIsOperator: false, liquidatable: false, settleable: false };
+    expect(liquidationAction({ ...base, retiredDue: true }).kind).toBe("settleRetired");
+    expect(liquidationAction({ ...base, retiredDue: true, settleable: true }).kind).toBe("settle");
+    expect(liquidationAction({ ...base, retiredDue: true, liquidatable: true }).kind).toBe("liquidate");
   });
 
   test("healthy book or no markets: nothing sent, ok", async () => {

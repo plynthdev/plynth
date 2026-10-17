@@ -48,8 +48,10 @@ contract MainnetBetaTest is Test {
     function setUp() public {
         vm.warp(1_800_000_000);
         script = new MainnetBeta();
-        // Mainnet mode wants OWNER to be a contract (a Safe, review v2 L-22): give the test owner code.
-        vm.etch(owner, hex"00");
+        // Mainnet mode wants OWNER to be a Safe with threshold >= 2 (review v2 L-22, v4 R4-ORC-1).
+        address[] memory safeOwners = new address[](3);
+        (safeOwners[0], safeOwners[1], safeOwners[2]) = (makeAddr("signer1"), makeAddr("signer2"), makeAddr("signer3"));
+        deployCodeTo("MockSafe.sol:MockSafe", abi.encode(safeOwners, uint256(2)), owner);
         deployCodeTo("MockUSDG.sol:MockUSDG", script.USDG());
         MainnetBeta.Stock[] memory s = script.stocks();
         for (uint256 i; i < s.length; ++i) {

@@ -51,27 +51,29 @@ contract PerpDustRegressionTest is PerpFixture {
     /// Filling every slot now locks at least 100 x 100 USDG for as long as the slots are held (the PoC: 0.61 USDG
     /// recycled through 100 sybils), and `retire` empties the market and lets the owner remove it anyway.
     function test_V2M2_slotsCostRealCapitalAndRetireEmptiesTheMarket() public {
-        // Review v3 R3-PERP-1: the size floor scales with occupancy, so filling every slot needs ~1M of size; give
-        // the pool enough LP liquidity for the per-side OI cap to allow it.
-        _fund(lp, 5_000_000e6);
-        vm.prank(lp);
-        pool.deposit(5_000_000e6, lp);
         uint256 n = market.MAX_OPEN_POSITIONS();
         uint256 locked;
         for (uint256 i; i < n; i++) {
             address s = _sybil(i);
-            uint256 size = market.slotFloor(i + 1);
-            _fund(s, size * 101 / 100);
+            _fund(s, 101e6);
             vm.prank(s);
-            market.open(i % 2 == 0, size, size * 101 / 100, 10_000); // the cheapest slot at this occupancy, 1x
+            market.open(i % 2 == 0, 100e6, 101e6, 10_000); // the cheapest slot: 100 size, 100.5 kept
             locked += market.position(s).collateral;
         }
         emit log_named_uint("collateral locked to fill every slot (USDG units)", locked);
         assertGe(locked, n * market.minCollateral());
+        // Review v4 R4-PERP-1: a full market of mature 100-size slots refuses only opens under 200; a bigger one
+        // displaces the smallest mature position (closed for its owner as its own close would be).
+        skip(market.minHoldSeconds());
+        _refresh();
         _fund(alice, 1_000e6);
         vm.prank(alice);
         vm.expectRevert(PerpMarket.TooManyPositions.selector);
+        market.open(true, 199e6, 1_000e6, 10_000);
+        vm.prank(alice);
         market.open(true, 1_000e6, 1_000e6, 10_000);
+        assertEq(market.openPositionCount(), n);
+        assertEq(market.position(alice).size, 1_000e6);
 
         // The owner retires the market: opens stop at once, settlement opens after the pool's timelock.
         vm.prank(owner);
@@ -151,7 +153,7 @@ contract PerpDustRegressionTest is PerpFixture {
         address liquidator = makeAddr("liq");
         _fund(attacker, 200e6);
         uint256 lpBefore = pool.totalAssets();
-        uint256 n = market.FREE_SLOTS(); // at the base size floor (review v3 R3-PERP-1 scales it above)
+        uint256 n = market.MAX_OPEN_POSITIONS();
         address[] memory s = new address[](n);
         for (uint256 i; i < n; i++) {
             s[i] = _sybil(i);

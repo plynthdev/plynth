@@ -3,7 +3,9 @@
 // MAX_OPEN_POSITIONS per market) and liquidates every one below maintenance; liquidation always pays at least
 // minLiquidationReward, so underwater positions (bad debt) are worth the gas too. On a market that has been on
 // hold longer than HELD_GRACE (feed halted, token delisted) it settles each position at the last price
-// (settleHeld) so open interest reaches zero and LP deposits reopen.
+// (settleHeld) so open interest reaches zero and LP deposits reopen. On a market OWNER retired whose notice has passed
+// (PerpMarket.retireAt) it settles each remaining position at the oracle price (settleRetired), so the market empties
+// and the pool can drop it (review v3 R3-PERP-5, KEEP-5); a Hold refusal (market closed) just waits for the next pass.
 //
 // Isolation: each account is its own try/catch, so one account that reverts or throws never stops the others,
 // and each skip is a note. The market refuses a liquidation by the account itself or by one of its operators, so
@@ -11,7 +13,7 @@
 // job (ok = false), which turns the keeper's /health red: an unliquidated position is a risk to the LPs.
 import type { Address } from "viem";
 import { perpMarketKeeperAbi, perpPoolKeeperAbi } from "@/abi/keeper";
-import { simulate, type Ctx, type JobResult } from "@/keeper/context";
+import { chainNow, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { runPerpPoke } from "./perp-poke";
 
 export type LiquidationView = {
@@ -22,9 +24,16 @@ export type LiquidationView = {
   liquidatable: boolean;
   /** The market has been on hold longer than HELD_GRACE. */
   settleable: boolean;
+  /** The market is retired and its notice has passed (settleRetired is open). */
+  retiredDue?: boolean;
 };
 
-export type LiquidationAction = { kind: "liquidate" } | { kind: "settle" } | { kind: "skip"; reason: string } | { kind: "none" };
+export type LiquidationAction =
+  | { kind: "liquidate" }
+  | { kind: "settle" }
+  | { kind: "settleRetired" }
+  | { kind: "skip"; reason: string }
+  | { kind: "none" };
 
 /** What the keeper does with one open position. Pure: mirrors PerpMarket.liquidate / settleHeld preconditions. */
 export function liquidationAction(v: LiquidationView): LiquidationAction {
@@ -35,6 +44,7 @@ export function liquidationAction(v: LiquidationView): LiquidationAction {
     return { kind: "liquidate" };
   }
   if (v.settleable) return { kind: "settle" };
+  if (v.retiredDue) return { kind: "settleRetired" };
   return { kind: "none" };
 }
 
@@ -66,11 +76,19 @@ async function liquidatePhase(ctx: Ctx): Promise<JobResult> {
     let accounts: readonly Address[];
     let pool: Address;
     let settleable: boolean;
+    let retiredDue = false;
     try {
       accounts = await read<readonly Address[]>(market, "openPositions");
       if (accounts.length === 0) continue;
       pool = await read<Address>(market, "pool");
       settleable = BigInt(await read<bigint>(market, "heldFor")) > BigInt(await read<bigint>(market, "HELD_GRACE"));
+      let retireAt = 0n;
+      try {
+        retireAt = BigInt(await read<bigint>(market, "retireAt"));
+      } catch {
+        retireAt = 0n; // a market built before retire existed
+      }
+      if (retireAt !== 0n) retiredDue = (await chainNow(ctx)) >= retireAt;
     } catch (err) {
       // An old market without openPositions, or the RPC: note it and go on with the other markets.
       res.ok = false;
@@ -80,20 +98,22 @@ async function liquidatePhase(ctx: Ctx): Promise<JobResult> {
     for (const account of accounts) {
       try {
         const liquidatable = await read<boolean>(market, "isLiquidatable", [account]);
-        if (!liquidatable && !settleable) continue;
+        if (!liquidatable && !settleable && !retiredDue) continue;
         const keeperIsOperator = await read<boolean>(pool, "isOperator", [account, ctx.account], perpPoolKeeperAbi);
-        const action = liquidationAction({ account, keeper: ctx.account, keeperIsOperator, liquidatable, settleable });
+        const action = liquidationAction({ account, keeper: ctx.account, keeperIsOperator, liquidatable, settleable, retiredDue });
         if (action.kind === "none") continue;
         if (action.kind === "skip") {
           res.ok = false; // liquidatable and still open: someone else must close it
           res.notes.push(`${market} ${account}: skipped, ${action.reason}`);
           continue;
         }
-        const fn = action.kind === "liquidate" ? "liquidate" : "settleHeld";
+        const fn = action.kind === "liquidate" ? "liquidate" : action.kind === "settle" ? "settleHeld" : "settleRetired";
         const sim = await simulate(ctx, market, perpMarketKeeperAbi as any, fn, [account]);
         if (!sim.ok) {
-          // NotLiquidatable / NoPosition: the price or the position moved since the read (someone else won).
-          if (sim.errorName !== "NotLiquidatable" && sim.errorName !== "NoPosition") res.ok = false;
+          // NotLiquidatable / NoPosition: the price or the position moved since the read (someone else won). Hold on
+          // settleRetired: the market is closed; the next open-market pass settles it.
+          const benign = sim.errorName === "NotLiquidatable" || sim.errorName === "NoPosition" || (fn === "settleRetired" && sim.errorName === "Hold");
+          if (!benign) res.ok = false;
           res.notes.push(`${market} ${account}: ${fn} reverts ${sim.errorName}`);
           continue;
         }

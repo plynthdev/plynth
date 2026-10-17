@@ -60,6 +60,14 @@ export const V2 = {
   perpMinHold: 30n * 60n,
   perpMinLiqReward: 1_000_000n, // 1 USDG
   perpMinCollateral: 100_000_000n, // 100 USDG
+  /** The remaining perp risk params MainnetBeta pins (review v2 I-5). */
+  perpOffHoursSpreadBps: 1_000n,
+  perpBorrowBpsPerHour: 1n,
+  perpFundingK: 278_000_000_000n,
+  perpMaxProfitBps: 10_000n,
+  perpLiquidationFee: 5_000_000n, // 5 USDG
+  /** OWNER pin (review v4 R4-ORC-1): a Safe with at least this threshold. */
+  minSafeThreshold: 2n,
   /** CALENDAR_VALID_UNTIL: 2029-10-01 00:00 UTC. */
   calendarValidUntil: 1_885_507_200n,
   /** Ops alert (review v2 M-1): FAIL with less than this much holiday table left, WARN below calendarWarnDays. */
@@ -255,7 +263,18 @@ export async function verifyDeployment(
     if (dep.fork === true) push("ok", "OWNER is a contract", "fork mode: not required (dry run)");
     else if ((await codeAt(O)) && opts.codeOf && isDelegatedEoaCode(await opts.codeOf(O))) {
       push(dep.allowEoaOwner === true ? "WARN" : "FAIL", "OWNER is a contract", `OWNER ${O} is an EIP-7702 delegated EOA (one key), not a Safe`);
-    } else if (await codeAt(O)) push("ok", "OWNER is a contract", O);
+    } else if (await codeAt(O)) {
+      // A contract is not enough: a 1-of-1 Safe or a one-key forwarder is still a single key (review v4 R4-ORC-1).
+      const level = dep.allowEoaOwner === true ? "WARN" : "FAIL";
+      try {
+        const t = BigInt((await read(O, "function getThreshold() view returns (uint256)")) as bigint);
+        const owners = (await read(O, "function getOwners() view returns (address[])")) as readonly Address[];
+        if (t >= V2.minSafeThreshold && BigInt(owners.length) >= t) push("ok", "OWNER is a contract", `${O}: Safe ${t}-of-${owners.length}`);
+        else push(level, "OWNER is a contract", `OWNER ${O} is a ${t}-of-${owners.length} Safe; mainnet needs threshold >= ${V2.minSafeThreshold}`);
+      } catch (e) {
+        push(level, "OWNER is a contract", `OWNER ${O} has code but does not answer like a Safe (${firstLine(e)})`);
+      }
+    }
     else if (dep.allowEoaOwner === true) push("WARN", "OWNER is a contract", `OWNER ${O} is an EOA (deployed with ALLOW_EOA_OWNER=1)`);
     else push("FAIL", "OWNER is a contract", `no code at OWNER ${O} and allowEoaOwner is not set`);
     if (dep.fork !== true) {
@@ -381,8 +400,9 @@ export async function verifyDeployment(
     if (valuer) {
       try {
         const until = (await read(valuer, "function calendarValidUntil() view returns (uint256)")) as bigint;
-        if (!eq(until, BigInt(dep.calendarValidUntil ?? 0))) push("FAIL", "valuer.calendarValidUntil() == file", `on chain ${until} (${iso(until)}), file ${dep.calendarValidUntil}`);
-        else push("ok", "valuer.calendarValidUntil() == file", `${until}`);
+        // At least the file's value: OWNER extending the table is the remedy the alert asks for (review v3 R3-ORC-3).
+        if (until < BigInt(dep.calendarValidUntil ?? 0)) push("FAIL", "valuer.calendarValidUntil() >= file", `on chain ${until} (${iso(until)}), file ${dep.calendarValidUntil}`);
+        else push("ok", "valuer.calendarValidUntil() >= file", `${until}`);
         out.push(calendarCheck(until, now));
       } catch (e) {
         push("FAIL", "valuer.calendarValidUntil()", firstLine(e));
@@ -509,6 +529,11 @@ export async function verifyDeployment(
     await expect(`perpMarket ${sym}.makerFeeBps()`, a, "function makerFeeBps() view returns (uint256)", V2.perpMakerFeeBps);
     await expect(`perpMarket ${sym}.minLiquidationReward()`, a, "function minLiquidationReward() view returns (uint256)", V2.perpMinLiqReward);
     await expect(`perpMarket ${sym}.minCollateral()`, a, "function minCollateral() view returns (uint256)", V2.perpMinCollateral);
+    await expect(`perpMarket ${sym}.offHoursSpreadBps()`, a, "function offHoursSpreadBps() view returns (uint256)", V2.perpOffHoursSpreadBps);
+    await expect(`perpMarket ${sym}.borrowBpsPerHour()`, a, "function borrowBpsPerHour() view returns (uint256)", V2.perpBorrowBpsPerHour);
+    await expect(`perpMarket ${sym}.fundingK()`, a, "function fundingK() view returns (uint256)", V2.perpFundingK);
+    await expect(`perpMarket ${sym}.maxProfitBps()`, a, "function maxProfitBps() view returns (uint256)", V2.perpMaxProfitBps);
+    await expect(`perpMarket ${sym}.liquidationFee()`, a, "function liquidationFee() view returns (uint256)", V2.perpLiquidationFee);
     try {
       const dev = (await read(a, "function FEED_DEVIATION_BPS() view returns (uint256)")) as bigint;
       const trip = V2.perpOpenSpreadBps + 2n * V2.perpMakerFeeBps;

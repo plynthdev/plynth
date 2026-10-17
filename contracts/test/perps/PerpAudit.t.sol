@@ -211,7 +211,7 @@ contract PerpAuditTest is PerpFixture {
         assertEq(market.position(alice).openedAt, block.timestamp - market.minHoldSeconds());
         _fund(alice, 1e6);
         vm.prank(alice);
-        market.increase(1e6, 1e6, 10_000); // any size restarts the clock
+        market.increase(100e6, 1e6, 10_000); // any size increase (at least minCollateral) restarts the clock
         assertEq(market.position(alice).openedAt, block.timestamp);
         _setPrice(110e8);
         uint256 coll = market.position(alice).collateral;
@@ -477,8 +477,15 @@ contract PerpAuditTest is PerpFixture {
     function test_timelock_guards() public {
         _productionGuards();
         vm.startPrank(owner);
-        market.setGuards(100, 30 minutes, 1e6, 200e6);
+        market.setGuards(100, 30 minutes, 1e6, 100e6); // raising the spread alone: instant
         assertEq(market.openSpreadBps(), 100);
+        // Review v3 R3-PERP-3: a minimum-collateral raise also stops existing positions trimming, so it waits.
+        bytes32 rid = market.guardsId(PerpMarket.Guards(100, 30 minutes, 1e6, 200e6));
+        vm.expectRevert(abi.encodeWithSelector(PerpMarket.TimelockActive.selector, rid, 0));
+        market.setGuards(100, 30 minutes, 1e6, 200e6);
+        market.proposeGuards(100, 30 minutes, 1e6, 200e6);
+        skip(pool.TIMELOCK());
+        market.setGuards(100, 30 minutes, 1e6, 200e6);
         assertEq(market.minCollateral(), 200e6);
         PerpMarket.Guards memory g = PerpMarket.Guards(100, 1 hours, 1e6, 200e6);
         bytes32 id = market.guardsId(g);

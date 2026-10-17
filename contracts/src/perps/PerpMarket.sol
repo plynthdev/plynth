@@ -48,11 +48,23 @@ import {PerpPool} from "./PerpPool.sol";
 /// the LPs never pay a liquidator more than the liquidated position brought in (review v2 M-3). LP equity values
 /// every position on its own, floored at minus its collateral and capped at its maximum payout, so one trader's bad
 /// debt is never netted against another's gain. That needs the open positions enumerable: at most
-/// `MAX_OPEN_POSITIONS` per market, and every position keeps at least `minCollateral` of collateral and at least
-/// `slotFloor(openPositionCount())` of size after every open, increase and partial decrease (a smaller remainder
-/// must close in full), so a slot always locks real capital that pays borrow on real size (review v2 M-2), and the
-/// size floor doubles every few slots once half the slots are taken, so holding all of them costs about 1M USDG of
-/// size (review v3 R3-PERP-1). The owner can `retire` a market: opens stop at
+/// `MAX_OPEN_POSITIONS` per market, and every position keeps at least `minCollateral` of collateral and of size
+/// after every open, increase and partial decrease (a smaller remainder must close in full), so a slot always locks
+/// real capital that pays borrow on real size (review v2 M-2).
+///
+/// Slots (review v3 R3-PERP-1, v4 R4-PERP-1): the bound is held by whoever fills it, not charged to newcomers. When
+/// the market is full, an open of at least DISPLACE_FACTOR times the smallest position past its minimum hold
+/// displaces it: that position is closed for its owner exactly as its own full close at the oracle price would be
+/// (fee and profit cap; it is past the hold, so its profit is paid), and the newcomer takes its slot. A position
+/// inside its hold is never displaced, so nobody can confiscate a young position's profit, and displacing one's own
+/// position gains nothing over closing it. Invariant (PerpSlotInvariant): the open-position count never exceeds
+/// MAX_OPEN_POSITIONS, an open of DISPLACE_FACTOR times the smallest mature position is always admitted, and a
+/// displaced position receives what its voluntary close would have paid. So keeping opens of size X out requires
+/// every slot either to hold at least X / DISPLACE_FACTOR (50·X of open interest paying borrow, 3.6·X USDG a month at
+/// 1 bps/h: over 50k a month to keep out opens under about 14k, and room for it under the per-side OI cap) or to be
+/// kept inside its hold, which only an increase of at least minCollateral every minHoldSeconds does (fee and spread
+/// in, fee out: about 89k USDG a month for 100 slots at mainnet values). Nothing scales anyone else's floor. The owner can
+/// `retire` a market: opens stop at
 /// once and, after `pool.TIMELOCK()` in public, anyone settles the remaining positions at a fresh oracle price, so a
 /// market can always be emptied and removed from the pool whoever holds its slots.
 ///
@@ -85,16 +97,15 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// Open positions per market (both sides). Every LP share-price read (deposit, redeem, the treasury's NAV)
     /// values each one: ~10k gas each cold (set slot + size, collateral, tokens), ~1.1M for a full market, and
     /// the pool's four mainnet markets stay under ~5M per read (test_M4_totalAssetsGasWithAFullMarket). With
-    /// the occupancy-scaled size floor (`slotFloor`), occupying every slot needs about 1,000,000 USDG of size, which
-    /// pays borrow (about 74,000 USDG a month at 1 bps/h) and fits only under the per-side OI cap of a pool with
-    /// millions of liquidity; `retire` still empties a market whatever holds its slots (review v3 R3-PERP-1).
+    /// displacement (DISPLACE_FACTOR), a full market keeps an open out only if it is under twice the smallest
+    /// position, so holding the slots against size X costs 50·X of open interest; `retire` still empties a market.
     uint256 public constant MAX_OPEN_POSITIONS = 100;
-    /// Slots at the base size floor (minCollateral). Above it the size floor doubles every SLOT_DOUBLING slots, so
-    /// the last slots of a market cost real size to hold: 100 USDG up to the 50th position, then 200 USDG for the
-    /// 51st-55th, ... 102,400 USDG for the 96th-100th (review v3 R3-PERP-1: 100 hedged positions at the floors
-    /// blocked every open for about 780 USDG a month).
-    uint256 public constant FREE_SLOTS = 50;
-    uint256 public constant SLOT_DOUBLING = 5;
+    /// In a full market, an open at least this many times the smallest open position's size displaces it (see the
+    /// contract notes).
+    uint256 public constant DISPLACE_FACTOR = 2;
+    /// settleHeld uses a delisted token's own feed only within this distance of the last recorded price (30%, the
+    /// largest hold spread): a bigger jump on a feed that was just delisted is more likely a fault than a move.
+    uint256 public constant MAX_HELD_FEED_DEVIATION_BPS = 3_000;
     /// How long a market may sit on hold (measured from its last fresh price) before it stops blocking the pool
     /// and its positions become settleable at the last price: longer than a weekend plus a market holiday, and
     /// plus Chainlink's 24 h heartbeat on these feeds, so a normal off-hours hold never triggers it.
@@ -179,6 +190,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     event Opened(address indexed account, address indexed by, bool isLong, uint256 sizeUsd, uint256 collateral, uint256 price, uint256 fee);
     event Increased(address indexed account, address indexed by, uint256 sizeUsd, uint256 collateral, uint256 price, uint256 fee);
     event Decreased(address indexed account, address indexed by, uint256 sizeUsd, int256 pnl, int256 funding, uint256 borrow, uint256 fee, uint256 payout, uint256 price);
+    event Displaced(address indexed account, address indexed by, uint256 size);
     event Liquidated(address indexed account, address indexed by, uint256 size, int256 equity, uint256 reward, uint256 price);
     event FundingAccrued(int256 longIndex, int256 shortIndex, uint256 borrowIndex);
     event ChangeProposed(bytes32 indexed id, uint256 eta);
@@ -287,8 +299,9 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
 
     /// Guards: the open spread (10..300 bps), the minimum hold for a profit (5 min..1 day), the minimum
     /// liquidation reward (1 unit..liquidationFee) and the minimum collateral of a new position (1..10,000 units).
-    /// Timelocked like setParams; instant before any LP or position, and when it only raises the open spread
-    /// and/or the minimum collateral (both only make new opens dearer, and maxSlippageBps protects a pending open).
+    /// Timelocked like setParams; instant before any LP or position, and when it only raises the open spread (it only
+    /// makes new opens dearer, and maxSlippageBps protects a pending open). A minimum-collateral change always waits:
+    /// a raise also stops existing positions from trimming (review v3 R3-PERP-3).
     function setGuards(
         uint256 openSpreadBps_,
         uint256 minHoldSeconds_,
@@ -392,7 +405,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     }
 
     function _guardsReduceRisk(Guards memory g) internal view returns (bool) {
-        return g.openSpreadBps >= openSpreadBps && g.minCollateral >= minCollateral && g.minHoldSeconds == minHoldSeconds
+        return g.openSpreadBps >= openSpreadBps && g.minCollateral == minCollateral && g.minHoldSeconds == minHoldSeconds
             && g.minLiquidationReward == minLiquidationReward;
     }
 
@@ -614,14 +627,29 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         }
     }
 
-    /// Least size a position keeps while the market holds `n` open positions: minCollateral up to FREE_SLOTS, then
-    /// doubling every SLOT_DOUBLING positions (x1024 at MAX_OPEN_POSITIONS). The floor applies only when a position's
-    /// size changes (open, increase, partial decrease); a full close, a liquidation and margin-only top-ups never
-    /// check it, so no position is ever trapped by a busier market.
-    function slotFloor(uint256 n) public view returns (uint256) {
-        uint256 m = minCollateral;
-        if (n <= FREE_SLOTS) return m;
-        return m << ((n - FREE_SLOTS + SLOT_DOUBLING - 1) / SLOT_DOUBLING);
+    /// The smallest open position past its minimum hold (by size) and its size; (0, 0) if there is none. A full market
+    /// lets an open of DISPLACE_FACTOR times this size displace it. A position inside its hold is never displaced: its
+    /// owner keeps the right to the profit a voluntary close after the hold would pay.
+    function smallestMaturePosition() public view returns (address account, uint256 size) {
+        (account, size) = _smallestMatureIn(_longAccounts, address(0), type(uint256).max);
+        (account, size) = _smallestMatureIn(_shortAccounts, account, size);
+        if (account == address(0)) size = 0;
+    }
+
+    function _smallestMatureIn(EnumerableSet.AddressSet storage set, address best, uint256 bestSize)
+        internal
+        view
+        returns (address, uint256)
+    {
+        uint256 n = set.length();
+        uint256 hold = minHoldSeconds;
+        for (uint256 i; i < n; i++) {
+            address a = set.at(i);
+            Position storage p = _positions[a];
+            uint256 s = p.size;
+            if (s < bestSize && block.timestamp >= uint256(p.openedAt) + hold) (best, bestSize) = (a, s);
+        }
+        return (best, bestSize);
     }
 
     function openPositionCount() public view returns (uint256) {
@@ -667,8 +695,16 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (_positions[account].size != 0) revert HasPosition();
         if (sizeUsd == 0) revert ZeroSize();
         if (collateral < minCollateral) revert CollateralTooLow();
-        if (openPositionCount() >= MAX_OPEN_POSITIONS) revert TooManyPositions();
         if (retireAt != 0) revert Retired();
+        if (openPositionCount() >= MAX_OPEN_POSITIONS) {
+            // A full market: the newcomer displaces the smallest position past its minimum hold if it is at least
+            // DISPLACE_FACTOR times its size; that position is closed for its owner exactly as its own full close at
+            // the oracle price would be (fee, profit cap; past the hold, so its profit is paid).
+            (address smallest, uint256 s) = smallestMaturePosition();
+            if (smallest == address(0) || sizeUsd < s * DISPLACE_FACTOR) revert TooManyPositions();
+            _close(smallest, s, MODE_DISPLACED, 0);
+            emit Displaced(smallest, account, s);
+        }
         _accrue();
         (isLong ? _longAccounts : _shortAccounts).add(account);
         Position storage p = _positions[account];
@@ -686,6 +722,9 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         _auth(account);
         Position storage p = _positions[account];
         if (p.size == 0) revert NoPosition();
+        // An increase restarts the minimum hold (and so protects the position from displacement): it must add at
+        // least minCollateral of size, so keeping a slot young costs real fees every hold period.
+        if (sizeUsd != 0 && sizeUsd < minCollateral) revert SizeTooSmall();
         _accrue();
         _fold(p);
         (uint256 pr, uint256 fee) = _add(account, p, sizeUsd, collateral, maxSlippageBps);
@@ -760,10 +799,21 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         uint256 collateralOut;
     }
 
-    /// `settle`: settleHeld (anyone, whole position, last price without the hold spread).
+    /// `settle`: settleHeld / settleRetired (anyone, whole position, no hold spread, no minimum-hold cap).
     /// `settlePrice` (settleHeld on a delisted token only): a feed round newer than `lastPrice`, used instead of it.
     function _decrease(address account, uint256 sizeUsd, bool settle, uint256 settlePrice) internal nonReentrant {
-        if (!settle) _auth(account);
+        _close(account, sizeUsd, settle ? MODE_SETTLE : MODE_TRADER, settlePrice);
+    }
+
+    uint8 internal constant MODE_TRADER = 0;
+    uint8 internal constant MODE_SETTLE = 1;
+    /// A full market's smallest position displaced by a bigger open: no auth, no hold spread (opens need a fresh
+    /// price), but the minimum-hold profit cap applies as for the trader's own close.
+    uint8 internal constant MODE_DISPLACED = 2;
+
+    function _close(address account, uint256 sizeUsd, uint8 mode, uint256 settlePrice) internal {
+        bool settle = mode == MODE_SETTLE;
+        if (mode == MODE_TRADER) _auth(account);
         Position storage p = _positions[account];
         if (p.size == 0) revert NoPosition();
         if (sizeUsd == 0) revert ZeroSize();
@@ -775,7 +825,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (settlePrice != 0) pr = settlePrice;
         Exit memory x;
         x.exec = pr;
-        if (hold && !settle) {
+        if (hold && mode == MODE_TRADER) {
             // Worse for the trader: a long sells lower, a short buys back higher.
             x.exec = p.isLong
                 ? pr * (BPS - offHoursSpreadBps) / BPS
@@ -828,11 +878,12 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         emit Decreased(account, msg.sender, sizeUsd, x.pnl, x.funding, x.borrow, x.fee, x.payout, x.exec);
     }
 
-    /// The minimum collateral (minCollateral) and the minimum size (`slotFloor` at the market's current occupancy, the
-    /// position itself included) a position keeps after any open, increase or partial decrease.
+    /// The minimum collateral and the minimum size (also minCollateral) a position keeps after any open, increase or
+    /// partial decrease.
     function _checkFloors(Position storage p) internal view {
-        if (p.collateral < minCollateral) revert CollateralTooLow();
-        if (p.size < slotFloor(openPositionCount())) revert SizeTooSmall();
+        uint256 m = minCollateral;
+        if (p.collateral < m) revert CollateralTooLow();
+        if (p.size < m) revert SizeTooSmall();
     }
 
     /// Net profit of a realization (PnL - funding - borrow), capped at the reserve held for that size, and at 0
@@ -992,7 +1043,10 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// settleHeld's price when the Valuer reverts (delisted token): the token's own feed, read directly, if it has a
     /// round newer than `lastPrice` (a delisted token's feed keeps publishing while its market trades elsewhere), else
     /// 0 (use `lastPrice`). Without it, a market nobody poked settled after the grace at a days-old price (review v3
-    /// R3-PERP-6). The read never reverts: a feed that is gone or answers nonsense leaves `lastPrice`.
+    /// R3-PERP-6). The read never reverts, and the round is used only if it is sane (review v4 R4-PERP-2): positive,
+    /// decimals at most 18, not in the future, at most the Valuer's maxStaleness older than the delisting, and within
+    /// MAX_HELD_FEED_DEVIATION_BPS of `lastPrice` (a feed that broke, the usual reason to delist at once, must not
+    /// price the settlement). Anything else leaves `lastPrice`.
     function _heldSettlePrice() internal view returns (uint256) {
         try valuer.quote(underlying) returns (Valuer.Quote memory) {
             return 0; // the Valuer answers: _decrease already uses (and records) its latest round
@@ -1003,6 +1057,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         uint256 answer;
         try f.latestRoundData() returns (uint80, int256 a, uint256, uint256 updatedAt, uint80) {
             if (a <= 0 || updatedAt <= lastPriceAt || updatedAt > block.timestamp) return 0;
+            // Fresh when the trouble started (the delisting) or later: an ancient round is not a price.
+            if (updatedAt + valuer.maxStaleness() < _unpricedStart()) return 0;
             answer = uint256(a);
         } catch {
             return 0;
@@ -1013,7 +1069,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         } catch {
             return 0;
         }
-        uint256 p = dec <= 18 ? answer * 10 ** (18 - dec) : answer / 10 ** (dec - 18);
+        if (dec > 18) return 0;
+        uint256 p = answer * 10 ** (18 - dec);
         if (!e.multiplierEmbedded) {
             try IStockToken(underlying).uiMultiplier() returns (uint256 m) {
                 p = p * m / 1e18;
@@ -1021,6 +1078,9 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
                 return 0;
             }
         }
+        uint256 last = lastPrice;
+        uint256 band = last * MAX_HELD_FEED_DEVIATION_BPS / BPS;
+        if (last == 0 || p > last + band || p + band < last) return 0;
         return p;
     }
 

@@ -143,12 +143,13 @@ describe("Orderly adapter (recorded fixtures)", () => {
 
   test("as a VenueReader for the mirror pusher; unmapped venue positions refuse to post", async () => {
     const c = new OrderlyClient({ accountId: "0xabc", secret: SEED, markets, fetchImpl: mockFetch(routes, []) });
-    const r = await asVenueReader(c, "0x0000000000000000000000000000000000000c05", async () => 7n).read();
+    const r = await asVenueReader(c, "0x0000000000000000000000000000000000000c05", async () => 7n, async () => 3n).read();
     expect(r.flowInSeen).toBe(7n);
+    expect(r.flowOutSeen).toBe(3n); // review v2 I-6: passed through, never defaulted
     expect(r.positions[0]!.tokens).toBe(-125n * 10n ** 17n);
     expect(r.funding![0]!.ratePerSecond > 0n).toBe(true);
     const lonely = new OrderlyClient({ accountId: "0xabc", secret: SEED, markets: [{ underlying: TSLA, symbol: "PERP_NVDA_USDC", multiplier: E18 }], fetchImpl: mockFetch({ ...routes, "GET /v1/public/info/PERP_NVDA_USDC": routes["GET /v1/public/info/PERP_TSLA_USDC"], "GET /v1/public/funding_rate/PERP_NVDA_USDC": routes["GET /v1/public/funding_rate/PERP_TSLA_USDC"] }, []) });
-    await expect(asVenueReader(lonely, "0x0000000000000000000000000000000000000c05", async () => 0n).read()).rejects.toThrow("unmapped venue positions PERP_TSLA_USDC");
+    await expect(asVenueReader(lonely, "0x0000000000000000000000000000000000000c05", async () => 0n, async () => 0n).read()).rejects.toThrow("unmapped venue positions PERP_TSLA_USDC");
   });
 });
 

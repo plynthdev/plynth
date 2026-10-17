@@ -3,6 +3,8 @@
 // venue equity already includes; the operator reads it on-chain when the venue credits a deposit. `flowOutSeen` is
 // the adapter's `flowOut()` (cash received back) the venue equity already excludes, read when the venue's
 // withdrawal has landed at the adapter; until it is signed, the adapter itself nets the unseen return out.
+// Both counters are required (review v2 I-6): a silent 0n default for flowOutSeen would sign "no cash seen back"
+// for a venue whose equity already excludes a withdrawal, so a caller must wire the adapter's counter explicitly.
 import type { Address } from "viem";
 import type { MirrorReading, VenueReader } from "@/treasury/risk/mirror";
 import type { PerpVenueClient } from "./types";
@@ -11,7 +13,7 @@ export function asVenueReader(
   client: PerpVenueClient,
   venue: Address,
   flowInSeen: () => Promise<bigint>,
-  flowOutSeen: () => Promise<bigint> = async () => 0n,
+  flowOutSeen: () => Promise<bigint>,
 ): VenueReader {
   return {
     venue,

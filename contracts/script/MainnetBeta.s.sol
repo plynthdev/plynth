@@ -163,6 +163,17 @@ contract MainnetBeta is Script {
     /// the 50 bps deviation threshold (review v2 L-2 follow-up: desks count as adversaries, PRIV-4).
     uint256 public constant PERP_TAKER_FEE_BPS = 10;
     uint256 public constant PERP_MAKER_FEE_BPS = 6;
+    /// The remaining perp risk params, pinned and asserted (review v2 I-5): hold spread 10%, borrow 1 bps/h, funding
+    /// k (about 0.1%/h at a skew equal to the pool), profit cap 100% of size, liquidation fee 5 USDG.
+    uint256 public constant PERP_OFF_HOURS_SPREAD_BPS = 1_000;
+    uint256 public constant PERP_BORROW_BPS_PER_HOUR = 1;
+    uint256 public constant PERP_FUNDING_K = 2.78e11;
+    uint256 public constant PERP_MAX_PROFIT_BPS = 10_000;
+    uint256 public constant PERP_LIQUIDATION_FEE = 5e6;
+    /// TSLA, AAPL, NVDA, SPY: indexes into stocks().
+    function perpPicks() public pure returns (uint256[4] memory) {
+        return [uint256(0), 1, 2, 8];
+    }
     uint256 public constant PERP_MIN_HOLD = 30 minutes;
     /// Audit M-4: a liquidator is always paid (from the pool when equity is gone); positions need real collateral.
     uint256 public constant PERP_MIN_LIQ_REWARD = 1e6;
@@ -214,6 +225,7 @@ contract MainnetBeta is Script {
     error NotEnoughUsdg(uint256 have, uint256 need);
     error HandoffIncomplete(address target, string what);
     error OwnerNotContract(address owner);
+    error OwnerNotMultisig(address owner);
     error BadCalendar(uint256 validUntil, uint256 nowTs);
 
     // Outputs (script storage: keeps every function's stack small).
@@ -367,6 +379,26 @@ contract MainnetBeta is Script {
         return !(code.length >= 3 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00);
     }
 
+    /// The mainnet OWNER pin (review v4 R4-ORC-1): a contract (not a 7702 designator) that answers like a Safe with
+    /// getThreshold() >= 2 and getOwners().length >= threshold, so a 1-of-1 Safe or a one-key forwarder fails.
+    /// Low-level calls: anything that is not Safe-shaped (reverts, or returns malformed data) fails, never reverts.
+    function isMultisigOwner(address a) public view returns (bool) {
+        if (!isContractOwner(a)) return false;
+        (bool ok, bytes memory r) = a.staticcall(abi.encodeWithSignature("getThreshold()"));
+        if (!ok || r.length != 32) return false;
+        uint256 threshold = abi.decode(r, (uint256));
+        (ok, r) = a.staticcall(abi.encodeWithSignature("getOwners()"));
+        if (!ok || r.length < 64) return false;
+        uint256 offset = abi.decode(r, (uint256));
+        if (offset != 32) return false;
+        uint256 n;
+        assembly {
+            n := mload(add(r, 64))
+        }
+        if (r.length < 64 + n * 32) return false;
+        return threshold >= 2 && n >= threshold;
+    }
+
     /// Every role set, all distinct from each other and from the deployer; staleness and crowd size in range; in
     /// mainnet mode staleness at most 26 h, MIN_CROWD at least 3 and OWNER a contract (unless allowEoaOwner); the
     /// holiday table long enough.
@@ -386,7 +418,10 @@ contract MainnetBeta is Script {
         if (!c.fork) {
             if (c.maxStaleness > DEFAULT_MAX_STALENESS) revert BadStaleness(c.maxStaleness);
             if (c.minCrowd < DEFAULT_MIN_CROWD) revert BadMinCrowd(c.minCrowd);
-            if (!isContractOwner(c.owner) && !c.allowEoaOwner) revert OwnerNotContract(c.owner);
+            if (!c.allowEoaOwner) {
+                if (!isContractOwner(c.owner)) revert OwnerNotContract(c.owner);
+                if (!isMultisigOwner(c.owner)) revert OwnerNotMultisig(c.owner);
+            }
         }
         checkCalendar(block.timestamp);
     }
@@ -631,18 +666,18 @@ contract MainnetBeta is Script {
     function _perps() private {
         perpPool = new PerpPool(IERC20(USDG), deployer, PERP_COOLDOWN, TIMELOCK);
         Stock[] memory s = stocks();
-        uint256[4] memory pick = [uint256(0), 1, 2, 8]; // TSLA, AAPL, NVDA, SPY
+        uint256[4] memory pick = perpPicks();
         for (uint256 i; i < pick.length; ++i) {
             PerpMarket m = new PerpMarket(perpPool, valuer, s[pick[i]].token, deployer);
             m.setParams(
                 PERP_TAKER_FEE_BPS,
                 PERP_MAKER_FEE_BPS,
-                m.offHoursSpreadBps(),
-                m.borrowBpsPerHour(),
-                m.fundingK(),
+                PERP_OFF_HOURS_SPREAD_BPS,
+                PERP_BORROW_BPS_PER_HOUR,
+                PERP_FUNDING_K,
                 PERP_OI_CAP_BPS,
-                m.maxProfitBps(),
-                m.liquidationFee()
+                PERP_MAX_PROFIT_BPS,
+                PERP_LIQUIDATION_FEE
             );
             m.setGuards(PERP_OPEN_SPREAD_BPS, PERP_MIN_HOLD, PERP_MIN_LIQ_REWARD, PERP_MIN_COLLATERAL);
             perpPool.addMarket(address(m));
@@ -701,7 +736,7 @@ contract MainnetBeta is Script {
     /// and nothing left with the deployer. `verifyDeployment` runs the same check later against a deployment file.
     function checkHandoff() public view {
         address o = cfg.owner;
-        if (!cfg.fork && !cfg.allowEoaOwner) _is(isContractOwner(o), o, "OWNER is a contract");
+        if (!cfg.fork && !cfg.allowEoaOwner) _is(isMultisigOwner(o), o, "OWNER is a multisig (Safe, threshold >= 2)");
         _owned(address(registry), "registry");
         _owned(address(valuer), "valuer");
         _is(IOwned(address(router)).owner() == o, address(router), "router owner");
@@ -807,7 +842,9 @@ contract MainnetBeta is Script {
     function _checkCore() private view {
         _is(valuer.registry() == registry && valuer.maxStaleness() == cfg.maxStaleness, address(valuer), "valuer wiring");
         _is(valuer.marketCalendar(), address(valuer), "market calendar on");
-        _is(valuer.calendarValidUntil() == CALENDAR_VALID_UNTIL, address(valuer), "calendar valid until");
+        // At least the deploy's table end: OWNER extending it later is the intended remedy, not a mismatch (review v3
+        // R3-ORC-3).
+        _is(valuer.calendarValidUntil() >= CALENDAR_VALID_UNTIL, address(valuer), "calendar valid until");
         uint256[] memory closed = nyseClosedDays();
         for (uint256 i; i < closed.length; ++i) {
             _is(valuer.closedDay(closed[i]), address(valuer), "NYSE closed day");
@@ -853,7 +890,19 @@ contract MainnetBeta is Script {
 
     function _checkPerps() private view {
         _is(perpPool.REDEEM_COOLDOWN() == PERP_COOLDOWN && perpPool.TIMELOCK() == TIMELOCK, address(perpPool), "pool timers");
-        _is(perpPool.asset() == USDG && perpPool.markets().length == perpMarkets.length, address(perpPool), "pool markets");
+        // The pool lists exactly the four intended markets, one per picked stock (review v2 I-5: the count used to be
+        // compared with an array read from the pool itself).
+        uint256[4] memory pick = perpPicks();
+        Stock[] memory st = stocks();
+        address[] memory listed = perpPool.markets();
+        _is(perpPool.asset() == USDG && listed.length == pick.length, address(perpPool), "pool markets");
+        for (uint256 i; i < pick.length; ++i) {
+            bool found;
+            for (uint256 j; j < listed.length; ++j) {
+                if (PerpMarket(listed[j]).underlying() == st[pick[i]].token) found = true;
+            }
+            _is(found, st[pick[i]].token, string.concat(st[pick[i]].sym, " perp market listed"));
+        }
         _is(perpPool.depositsOpen(), address(perpPool), "pool deposits open");
         _is(perpPool.makerRegistrar() == cfg.owner, address(perpPool), "maker registrar = OWNER");
         for (uint256 i; i < perpMarkets.length; ++i) {
@@ -871,6 +920,13 @@ contract MainnetBeta is Script {
                 m.minLiquidationReward() == PERP_MIN_LIQ_REWARD && m.minCollateral() == PERP_MIN_COLLATERAL,
                 address(m),
                 "M-4 guards"
+            );
+            _is(
+                m.offHoursSpreadBps() == PERP_OFF_HOURS_SPREAD_BPS && m.borrowBpsPerHour() == PERP_BORROW_BPS_PER_HOUR
+                    && m.fundingK() == PERP_FUNDING_K && m.maxProfitBps() == PERP_MAX_PROFIT_BPS
+                    && m.liquidationFee() == PERP_LIQUIDATION_FEE,
+                address(m),
+                "perp risk params"
             );
         }
     }

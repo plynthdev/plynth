@@ -21,6 +21,9 @@ import {ChangeDelay} from "../libs/ChangeDelay.sol";
 ///   E4 The attester can revoke a user at any time; the owner can rotate the attester after CHANGE_DELAY (48 h) in
 ///      public (review v2 L-21: the attester is the compliance trust root). Rotation invalidates unsubmitted
 ///      signatures from the old attester, not records already on chain (revoke those explicitly).
+///      The owner can also disable the attester at once (`disableAttester`, risk-reducing: no new attestation is
+///      accepted until a rotation applies), so a compromised attester key is not trusted for the whole 48 h of a
+///      rotation (review v3 R3-ORC-5). Existing records stay until they expire (31 days at most).
 ///   E5 This registry only gates buying. It holds no funds and nothing here can block an exit.
 contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay {
     struct Record {
@@ -62,6 +65,13 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay 
         if (!_delayed()) return;
         attester = attester_;
         emit AttesterSet(attester_);
+    }
+
+    /// Emergency: no attestation is accepted (and none can be revoked by an attester) until a rotation applies.
+    /// Instant, because it only closes the buy gate for new or renewing users; exits never check eligibility.
+    function disableAttester() external onlyOwner {
+        attester = address(0);
+        emit AttesterSet(address(0));
     }
 
     /// Drops a queued change (see ChangeDelay).

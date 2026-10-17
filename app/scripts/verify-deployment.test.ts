@@ -15,6 +15,9 @@ const hasCode = async () => true;
 const fails = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "FAIL" && what.test(c.what));
 const warns = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "WARN" && what.test(c.what));
 const DAY = 86_400n;
+const A1 = getAddress("0x00000000000000000000000000000000000000a1");
+const A2 = getAddress("0x00000000000000000000000000000000000000a2");
+const A3 = getAddress("0x00000000000000000000000000000000000000a3");
 const NOW = 1_792_108_800n; // 2026-10-16 (any time well before the table's end)
 
 /** Answers owner() / pendingOwner() / keeper() as given, and throws on everything else. */
@@ -122,6 +125,13 @@ function world(dep: Deployment, over: Record<string, unknown> = {}): Reader {
       case "minLiquidationReward": return V2.perpMinLiqReward;
       case "minCollateral": return V2.perpMinCollateral;
       case "FEED_DEVIATION_BPS": return 50n;
+      case "offHoursSpreadBps": return V2.perpOffHoursSpreadBps;
+      case "borrowBpsPerHour": return V2.perpBorrowBpsPerHour;
+      case "fundingK": return V2.perpFundingK;
+      case "maxProfitBps": return V2.perpMaxProfitBps;
+      case "liquidationFee": return V2.perpLiquidationFee;
+      case "getThreshold": return 2n; // OWNER: a 2-of-3 Safe
+      case "getOwners": return [A1, A2, A3];
     }
     throw new Error(`not stubbed: ${id}`);
   };
@@ -223,10 +233,10 @@ describe("holiday table ops alert (review v2 M-1)", () => {
     expect(warns(later, /holiday table/)).toHaveLength(1);
     expect(fails(later, /./)).toHaveLength(0);
   });
-  test("the Valuer's calendarValidUntil must equal the file's", async () => {
+  test("the Valuer's calendarValidUntil must be at least the file's (an extension passes, review v3 R3-ORC-3)", async () => {
     const dep = v2File();
     const checks = await verifyDeployment(dep, world(dep, { calendarValidUntil: V2.calendarValidUntil - DAY }), codeAll, dep.chainId, { now: NOW });
-    expect(fails(checks, /calendarValidUntil\(\) == file/)).toHaveLength(1);
+    expect(fails(checks, /calendarValidUntil\(\) >= file/)).toHaveLength(1);
     const bad = v2File({ calendarValidUntil: Number(V2.calendarValidUntil) + 1 });
     const c2 = await verifyDeployment(bad, world(bad), codeAll, bad.chainId, { now: NOW });
     expect(fails(c2, /file calendarValidUntil == CALENDAR_VALID_UNTIL/)).toHaveLength(1);
@@ -364,6 +374,41 @@ describe("exit code", () => {
     expect(exitCode(summarize([c("ok"), c("WARN")]), true)).toBe(1);
     expect(exitCode(summarize([c("FAIL")]), false)).toBe(1);
     expect(summarize([c("ok"), c("WARN"), c("FAIL")])).toEqual({ ok: 1, warn: 1, fail: 1, total: 3 });
+  });
+
+  test("review v4 R4-ORC-1: OWNER must be a Safe with threshold >= 2 (a 1-of-1 or a non-Safe contract fails)", async () => {
+    const dep = v2File();
+    const ok = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW });
+    expect(ok.find((c) => c.what === "OWNER is a contract")).toMatchObject({ status: "ok", detail: expect.stringMatching(/2-of-3/) });
+    const one = await verifyDeployment(dep, world(dep, { getThreshold: 1n, getOwners: [A1] }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(one, /OWNER is a contract/)).toHaveLength(1);
+    const bad = await verifyDeployment(dep, world(dep, { getThreshold: 3n, getOwners: [A1, A2] }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(bad, /OWNER is a contract/)).toHaveLength(1);
+    const base = world(dep);
+    const notSafe: Reader = async (address, sig, args) => {
+      if (/getThreshold|getOwners/.test(sig)) throw new Error("execution reverted");
+      return base(address, sig, args);
+    };
+    const ns = await verifyDeployment(dep, notSafe, codeAll, dep.chainId, { now: NOW });
+    expect(fails(ns, /OWNER is a contract/)).toHaveLength(1);
+    const eoaOk = v2File({ allowEoaOwner: true });
+    const w = await verifyDeployment(eoaOk, world(eoaOk, { getThreshold: 1n, getOwners: [A1] }), codeAll, eoaOk.chainId, { now: NOW });
+    expect(warns(w, /OWNER is a contract/)).toHaveLength(1);
+  });
+
+  test("review v3 R3-ORC-3: an extended holiday table passes; a shortened one fails", async () => {
+    const dep = v2File();
+    const longer = await verifyDeployment(dep, world(dep, { calendarValidUntil: V2.calendarValidUntil + 365n * DAY }), codeAll, dep.chainId, { strict: true, now: NOW });
+    expect(fails(longer, /calendarValidUntil/)).toHaveLength(0);
+    const shorter = await verifyDeployment(dep, world(dep, { calendarValidUntil: V2.calendarValidUntil - DAY }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(shorter, /calendarValidUntil\(\) >= file/)).toHaveLength(1);
+  });
+
+  test("review v2 I-5: the remaining perp risk params are pinned", async () => {
+    const dep = v2File();
+    const c = await verifyDeployment(dep, world(dep, { "perpMarket.borrowBpsPerHour": 100n, "perpMarket.liquidationFee": 1_000_000n }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(c, /borrowBpsPerHour/).length).toBeGreaterThan(0);
+    expect(fails(c, /liquidationFee/).length).toBeGreaterThan(0);
   });
 
 describe("adapter allow-list (v2)", () => {

@@ -20,98 +20,141 @@ contract R3PerpsRegressionTest is PerpFixture {
         usdg.approve(address(pool), type(uint256).max);
     }
 
-    // ------------------------------------------------------------ R3-PERP-1: hedged slot fill
+    // ------------------------------------------------------------ R3-PERP-1: hedged slot fill (v4: displacement)
 
-    /// The size floor scales with occupancy: 100 USDG up to the 50th position, doubling every 5 positions after.
-    function test_R3P1_slotFloorSchedule() public view {
-        assertEq(market.slotFloor(1), 100e6);
-        assertEq(market.slotFloor(50), 100e6);
-        assertEq(market.slotFloor(51), 200e6);
-        assertEq(market.slotFloor(55), 200e6);
-        assertEq(market.slotFloor(56), 400e6);
-        assertEq(market.slotFloor(100), 102_400e6);
-        uint256 total;
-        for (uint256 n = 1; n <= market.MAX_OPEN_POSITIONS(); n++) total += market.slotFloor(n);
-        assertGe(total, 1_000_000e6, "occupying every slot needs ~1M USDG of size");
-    }
-
-    /// The PoC's move: 100 hedged sybils at the old floors (100 size, 100.5 posted). Only the first 50 fit; the 51st
-    /// needs twice the size, and an honest trader's ordinary open still goes through.
-    function test_R3P1_floorSizedSybilsStopAtHalfTheSlots() public {
-        uint256 n = market.MAX_OPEN_POSITIONS();
-        uint256 free = market.FREE_SLOTS();
-        for (uint256 i; i < n; i++) {
+    function _fillAt(uint256 from, uint256 to, uint256 size) internal {
+        for (uint256 i = from; i < to; i++) {
             address s = _sybil(i);
-            _fund(s, 100.5e6);
+            uint256 coll = size * 1_006 / 1_000 + 1e6;
+            _fund(s, coll);
             vm.prank(s);
-            if (i < free) {
-                market.open(i % 2 == 0, 100e6, 100.5e6, 10_000);
-            } else {
-                vm.expectRevert(PerpMarket.SizeTooSmall.selector);
-                market.open(i % 2 == 0, 100e6, 100.5e6, 10_000);
-            }
-        }
-        assertEq(market.openPositionCount(), market.FREE_SLOTS());
-        _fund(alice, 20_000e6);
-        vm.prank(alice);
-        market.open(true, 20_000e6, 20_000e6, 10_000); // the PoC's blocked honest open
-        assertEq(market.position(alice).size, 20_000e6);
-    }
-
-    /// Holding every slot for 30 days through +/-20% swings (the PoC) now costs tens of thousands of USDG instead of
-    /// 780, and needs a pool deep enough for ~0.5M of size per side under the 20% OI cap.
-    function test_R3P1_blockingEveryOpenForAMonthIsUneconomic() public {
-        _fund(lp, 5_000_000e6);
-        vm.prank(lp);
-        pool.deposit(5_000_000e6, lp);
-        uint256 n = market.MAX_OPEN_POSITIONS();
-        address[] memory s = new address[](n);
-        uint256 capital;
-        for (uint256 i; i < n; i++) {
-            s[i] = _sybil(i);
-            uint256 size = market.slotFloor(i + 1);
-            uint256 coll = size * 1_005 / 1_000 + 1e6; // fee + spread 0.5%, so the floors hold at 1x
-            _fund(s[i], coll);
-            capital += coll;
-            vm.prank(s[i]);
             market.open(i % 2 == 0, size, coll, 10_000);
         }
-        assertEq(market.openPositionCount(), n);
-        for (uint256 d; d < 30; d++) {
-            skip(1 days);
-            _setPrice(d % 2 == 0 ? int256(120e8) : int256(80e8));
-        }
-        _setPrice(100e8);
-        uint256 back;
-        for (uint256 i; i < n; i++) {
-            back += _close(s[i]);
-        }
-        uint256 cost = capital - back;
-        emit log_named_uint("attacker capital (USDG units)", capital);
-        emit log_named_uint("attacker cost for 30 days of a fully blocked market (USDG units)", cost);
-        assertGt(capital, 1_000_000e6);
-        assertGt(cost, 70_000e6, "a month of blocking every open now costs over 70k USDG (was under 800)");
     }
 
-    /// The floor only binds when a position's size changes: a busier market never traps a position (full close and
-    /// margin top-ups work), but a partial decrease must respect the current floor.
+    function _mature() internal {
+        skip(market.minHoldSeconds());
+        _refresh();
+    }
+
+    /// The PoC: 100 hedged sybils at the floors fill the market. Once they are past their minimum hold, the blocked
+    /// honest 20,000 open goes through by displacing the smallest; the slot count stays bounded.
+    function test_R3P1_hedgedSlotFillNoLongerBlocksOpens() public {
+        uint256 n = market.MAX_OPEN_POSITIONS();
+        _fillAt(0, n, 100e6);
+        _mature();
+        (address smallest, uint256 sz) = market.smallestMaturePosition();
+        assertEq(sz, 100e6);
+        _fund(alice, 20_000e6);
+        vm.expectEmit(true, true, false, true, address(market));
+        emit PerpMarket.Displaced(smallest, alice, 100e6);
+        vm.prank(alice);
+        market.open(true, 20_000e6, 20_000e6, 10_000);
+        assertEq(market.position(alice).size, 20_000e6);
+        assertEq(market.position(smallest).size, 0, "the smallest sybil was closed for its owner");
+        assertEq(market.openPositionCount(), n);
+    }
+
+    /// In a full market whose smallest mature slot holds Y, an open under DISPLACE_FACTOR * Y is refused, one at it
+    /// is admitted.
+    function test_R3P1_displacementThreshold() public {
+        _fillAt(0, market.MAX_OPEN_POSITIONS(), 1_000e6);
+        _mature();
+        _fund(alice, 3_000e6);
+        vm.prank(alice);
+        vm.expectRevert(PerpMarket.TooManyPositions.selector);
+        market.open(true, 2_000e6 - 1, 3_000e6, 10_000);
+        vm.prank(alice);
+        market.open(true, 2_000e6, 3_000e6, 10_000);
+        assertEq(market.openPositionCount(), market.MAX_OPEN_POSITIONS());
+    }
+
+    /// Nothing raises anyone else's floor: in a full market an existing position trims down to the base floor.
     function test_R3P1_busyMarketNeverTrapsAPosition() public {
-        _open(alice, true, 150e6, 200e6);
-        for (uint256 i; i < 60; i++) {
-            address s = _sybil(i);
-            uint256 size = market.slotFloor(market.openPositionCount() + 1);
-            _fund(s, size * 2);
-            vm.prank(s);
-            market.open(i % 2 == 0, size, size * 2, 10_000);
-        }
-        _fund(alice, 100e6);
+        _open(alice, true, 2_000e6, 2_000e6);
+        _fillAt(0, market.MAX_OPEN_POSITIONS() - 1, 3_200e6);
         vm.prank(alice);
-        market.increase(0, 100e6, 10_000); // margin only
+        market.decrease(1_000e6);
         vm.prank(alice);
-        vm.expectRevert(PerpMarket.SizeTooSmall.selector);
-        market.decrease(10e6); // 140 left under the 61-position floor (400)
+        market.decrease(850e6);
         _close(alice);
         assertEq(market.position(alice).size, 0);
+    }
+
+    /// A young profitable position is never displaced: a 2x open takes the smallest MATURE position instead, and with
+    /// no mature position it qualifies for, it reverts TooManyPositions.
+    function test_R3P1_youngProfitablePositionCannotBeDisplaced() public {
+        _fillAt(1, market.MAX_OPEN_POSITIONS(), 1_000e6);
+        _mature();
+        address young = _sybil(0);
+        _fund(young, 101e6);
+        vm.prank(young);
+        market.open(true, 100e6, 101e6, 10_000); // the smallest, inside its hold
+        _setPrice(105e8); // in profit
+        _fund(bob, 10_000e6);
+        vm.prank(bob);
+        vm.expectRevert(PerpMarket.TooManyPositions.selector);
+        market.open(false, 1_999e6, 3_000e6, 10_000); // 2x the young one, but under 2x every mature one
+        (address target,) = market.smallestMaturePosition();
+        assertTrue(target != young);
+        vm.prank(bob);
+        market.open(false, 2_000e6, 3_000e6, 10_000); // 2x a mature 1,000: displaces that one
+        assertEq(market.position(young).size, 100e6, "the young position keeps its slot and its profit");
+        assertEq(market.position(target).size, 0);
+    }
+
+    /// A mature position that is displaced gets exactly what its own full close at the oracle price would pay,
+    /// profit included.
+    function test_R3P1_matureDisplacedKeepsItsProfit() public {
+        address small = _sybil(0);
+        _fund(small, 101e6);
+        vm.prank(small);
+        market.open(true, 100e6, 101e6, 10_000);
+        _fillAt(1, market.MAX_OPEN_POSITIONS(), 1_000e6);
+        _mature();
+        _setPrice(110e8); // +10% for the small long
+        uint256 expected = market.exitValueOf(small);
+        assertGt(expected, market.position(small).collateral, "the close would pay a profit");
+        uint256 b = usdg.balanceOf(small);
+        _fund(bob, 1_000e6);
+        vm.prank(bob);
+        market.open(false, 200e6, 1_000e6, 10_000);
+        assertEq(market.position(small).size, 0);
+        assertEq(usdg.balanceOf(small) - b, expected, "displaced = its own full close, profit included");
+    }
+
+    /// Displacing one's own position (through a second account) pays exactly what closing it would: no advantage.
+    function test_R3P1_selfDisplacementGivesNoAdvantage() public {
+        address mine = _sybil(0);
+        _fund(mine, 101e6);
+        vm.prank(mine);
+        market.open(true, 100e6, 101e6, 10_000);
+        _fillAt(1, market.MAX_OPEN_POSITIONS(), 1_000e6);
+        _mature();
+        _setPrice(103e8);
+        uint256 snap = vm.snapshotState();
+        uint256 closed = _close(mine);
+        vm.revertToState(snap);
+        uint256 b = usdg.balanceOf(mine);
+        _fund(bob, 1_000e6);
+        vm.prank(bob); // the owner's own second account
+        market.open(true, 200e6, 1_000e6, 10_000);
+        assertEq(usdg.balanceOf(mine) - b, closed, "displacement pays what a close pays");
+    }
+
+    /// Keeping a slot inside its hold (so it cannot be displaced) needs an increase of at least minCollateral every
+    /// hold period: a dust increase is refused.
+    function test_R3P1_keepingASlotYoungNeedsARealIncrease() public {
+        _open(alice, true, 1_000e6, 1_000e6);
+        _fund(alice, 100e6);
+        vm.prank(alice);
+        vm.expectRevert(PerpMarket.SizeTooSmall.selector);
+        market.increase(1, 100e6, 10_000);
+        vm.prank(alice);
+        market.increase(0, 100e6, 10_000); // margin only: fine, and it does not restart the hold
+        _fund(alice, 1e6);
+        vm.prank(alice);
+        market.increase(100e6, 1e6, 10_000);
     }
 
     // ------------------------------------------------------------ R3-PERP-6: settleHeld at a stale price
@@ -125,6 +168,7 @@ contract R3PerpsRegressionTest is PerpFixture {
         _setPrice(109e8);
         registry.delist(address(token));
         skip(market.HELD_GRACE() + 1);
+        _setPrice(109e8); // the delisted token's feed keeps publishing (a fresh round, within 30% of lastPrice)
         uint256 b = usdg.balanceOf(alice);
         vm.prank(alice);
         market.settleHeld(alice);
