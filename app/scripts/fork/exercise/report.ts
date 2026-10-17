@@ -17,15 +17,16 @@ export type RunMeta = {
   diagnosis?: Record<string, string>;
 };
 
-export type AreaSummary = { area: string; steps: number; passed: number; failed: number; known: number; txs: number; gas: bigint };
+export type AreaSummary = { area: string; steps: number; passed: number; failed: number; known: number; skipped: number; txs: number; gas: bigint };
 
 export function summarize(steps: Step[]): AreaSummary[] {
   const out = new Map<string, AreaSummary>();
   for (const s of steps) {
-    const a = out.get(s.area) ?? { area: s.area, steps: 0, passed: 0, failed: 0, known: 0, txs: 0, gas: 0n };
+    const a = out.get(s.area) ?? { area: s.area, steps: 0, passed: 0, failed: 0, known: 0, skipped: 0, txs: 0, gas: 0n };
     a.steps++;
     if (s.status === "pass") a.passed++;
     else if (s.status === "fail") a.failed++;
+    else if (s.status === "skip") a.skipped++;
     else a.known++;
     if (s.tx) a.txs++;
     if (s.gas) a.gas += BigInt(s.gas);
@@ -44,12 +45,12 @@ const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 
 export function renderMarkdown(meta: RunMeta, steps: Step[], bugs: KnownBug[]): string {
   const sum = summarize(steps);
-  const tot = sum.reduce((t, a) => ({ steps: t.steps + a.steps, passed: t.passed + a.passed, failed: t.failed + a.failed, known: t.known + a.known, txs: t.txs + a.txs }), { steps: 0, passed: 0, failed: 0, known: 0, txs: 0 });
+  const tot = sum.reduce((t, a) => ({ steps: t.steps + a.steps, passed: t.passed + a.passed, failed: t.failed + a.failed, known: t.known + a.known, skipped: t.skipped + a.skipped, txs: t.txs + a.txs }), { steps: 0, passed: 0, failed: 0, known: 0, skipped: 0, txs: 0 });
   const used = new Set(steps.filter((s) => s.bug).map((s) => s.bug));
   const L: string[] = [];
   L.push(`# Mainnet fork run ${meta.date}`, "");
   L.push(`Anvil fork of Robinhood Chain mainnet (${meta.forkSource}) at block ${meta.forkBlock}, run as chain id ${meta.chainId}. Started ${meta.startedAt}, finished ${meta.finishedAt}.`, "");
-  L.push(`**${tot.passed} passed, ${tot.failed} failed, ${tot.known} known bugs** out of ${tot.steps} steps (${tot.txs} transactions).`, "");
+  L.push(`**${tot.passed} passed, ${tot.failed} failed, ${tot.known} known bugs, ${tot.skipped} skipped** out of ${tot.steps} steps (${tot.txs} transactions).`, "");
   for (const n of meta.notes) L.push(`- ${n}`);
   if (meta.notes.length) L.push("");
   L.push("## Summary by area", "", "| Area | Steps | Passed | Failed | Known bug | Transactions | Gas used |", "|---|---:|---:|---:|---:|---:|---:|");
@@ -62,7 +63,7 @@ export function renderMarkdown(meta: RunMeta, steps: Step[], bugs: KnownBug[]): 
     const key = `${s.area}/${s.step}`;
     const bug = bugs.find((b) => b.id === s.bug);
     L.push(`### ${s.area}: ${s.step}`, "");
-    L.push(`- Status: ${s.status === "known" ? `known bug ${s.bug}` : "FAILED"}`);
+    L.push(`- Status: ${s.status === "known" ? `known bug ${s.bug}` : s.status === "skip" ? "SKIPPED" : "FAILED"}`);
     L.push(`- Actor: ${s.actor}${s.tx ? `, tx ${s.tx}` : ""}`);
     L.push(`- Expected: ${s.assertion}`);
     L.push(`- Got: ${s.detail ?? "-"}`);
@@ -76,7 +77,7 @@ export function renderMarkdown(meta: RunMeta, steps: Step[], bugs: KnownBug[]): 
   for (const b of listed) L.push(`### ${b.id}: ${b.title}`, "", `- Repro: ${b.repro}`, `- Diagnosis: ${b.diagnosis}`, "");
   L.push("## Every step", "", "| # | Area | Step | Actor | Tx | Gas | Status | Assertion |", "|---:|---|---|---|---|---:|---|---|");
   steps.forEach((s, i) => {
-    L.push(`| ${i + 1} | ${s.area} | ${cell(s.step)} | ${cell(s.actor)} | ${s.tx ? `\`${s.tx}\`` : ""} | ${s.gas ?? ""} | ${s.status === "pass" ? "pass" : s.status === "known" ? `known ${s.bug}` : "FAIL"} | ${cell(s.status === "pass" ? s.assertion : `${s.assertion}: ${s.detail ?? ""}`)} |`);
+    L.push(`| ${i + 1} | ${s.area} | ${cell(s.step)} | ${cell(s.actor)} | ${s.tx ? `\`${s.tx}\`` : ""} | ${s.gas ?? ""} | ${s.status === "pass" ? "pass" : s.status === "known" ? `known ${s.bug}` : s.status === "skip" ? "SKIP" : "FAIL"} | ${cell(s.status === "pass" ? s.assertion : `${s.assertion}: ${s.detail ?? ""}`)} |`);
   });
   L.push("");
   return L.join("\n");
@@ -91,7 +92,7 @@ export function renderHtml(meta: RunMeta, steps: Step[], bugs: KnownBug[]): stri
   const known = steps.filter((s) => s.status === "known").length;
   const used = new Set(steps.filter((s) => s.bug).map((s) => s.bug));
   const bad = steps.filter((s) => s.status !== "pass");
-  const badge = (s: Step) => (s.status === "pass" ? `<span class="b ok">pass</span>` : s.status === "known" ? `<span class="b kn">known ${esc(s.bug ?? "")}</span>` : `<span class="b no">FAIL</span>`);
+  const badge = (s: Step) => (s.status === "pass" ? `<span class="b ok">pass</span>` : s.status === "known" ? `<span class="b kn">known ${esc(s.bug ?? "")}</span>` : s.status === "skip" ? `<span class="b kn">skip</span>` : `<span class="b no">FAIL</span>`);
   const rows = steps
     .map(
       (s, i) =>

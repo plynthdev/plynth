@@ -98,7 +98,7 @@ async function main(): Promise<number> {
     copyFileSync(md, join(out, `fork-run-${date}.md`));
     copyFileSync(html, join(out, `fork-run-${date}.html`));
   }
-  for (const a of summarize(r.steps)) log(`${a.area.padEnd(12)} ${a.passed}/${a.steps} passed, ${a.failed} failed, ${a.known} known, ${a.txs} txs`);
+  for (const a of summarize(r.steps)) log(`${a.area.padEnd(12)} ${a.passed}/${a.steps} passed, ${a.failed} failed, ${a.known} known, ${a.skipped} skipped, ${a.txs} txs`);
   const code = exitCode(r.steps);
   log(`report ${md}${out ? ` (copied to ${out})` : ""}; exit ${code}`);
   return code;

@@ -123,11 +123,15 @@ describe("report", () => {
   });
 
   test("summary counts per area, transactions and gas", () => {
-    const s = summarize([step("a", "1", "pass"), step("a", "2", "fail"), step("b", "3", "known", "B1")]);
+    const s = summarize([step("a", "1", "pass"), step("a", "2", "fail"), step("b", "3", "known", "B1"), step("b", "4", "skip")]);
     expect(s).toEqual([
-      { area: "a", steps: 2, passed: 1, failed: 1, known: 0, txs: 1, gas: 21000n },
-      { area: "b", steps: 1, passed: 0, failed: 0, known: 1, txs: 0, gas: 0n },
+      { area: "a", steps: 2, passed: 1, failed: 1, known: 0, skipped: 0, txs: 1, gas: 21000n },
+      { area: "b", steps: 2, passed: 0, failed: 0, known: 1, skipped: 1, txs: 0, gas: 0n },
     ]);
+  });
+
+  test("a skipped step (closed market on a weekend fork) is neither a pass nor a failure", () => {
+    expect(exitCode([step("a", "s1", "pass"), step("a", "s2", "skip")])).toBe(0);
   });
 
   test("no known bugs are left (todo 37 fixed B1-B3): every step has to pass", () => {

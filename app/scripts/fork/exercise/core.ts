@@ -81,7 +81,8 @@ export function revertReason(err: unknown): string {
 
 // ---------------------------------------------------------------- recorder
 
-export type Status = "pass" | "fail" | "known";
+/** skip: not run, with the reason (e.g. the market is closed on a weekend fork); never counted as a pass. */
+export type Status = "pass" | "fail" | "known" | "skip";
 export type Step = {
   area: string;
   step: string;
@@ -246,6 +247,13 @@ export class Recorder {
   }
 
   /** A check with no transaction of its own (a view, an API answer, a service's effect). */
+  /** Records a step that was not run, and why. Not a pass and not a failure (exit code ignores it). */
+  skip(step: string, reason: string, actor = "-"): void {
+    const s: Step = { area: this.area, step, actor, status: "skip", assertion: "skipped", detail: reason, ms: 0 };
+    this.steps.push(s);
+    console.log(`  SKIP [${this.area}] ${step}: ${reason}`);
+  }
+
   async check(step: string, fn: () => Promise<string> | string, actor = "-"): Promise<boolean> {
     const t0 = Date.now();
     try {

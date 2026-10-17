@@ -13,7 +13,7 @@ import { issueMessage } from "@/api";
 import { beaconKey, dayStart, offsetOf, secretFor } from "@/treasury/desks/beacon";
 import { exceptionFromChain, JuryService, PgJuryStore } from "@/treasury/jury";
 import { packProofs } from "@/treasury/desks/runner";
-import { devAccount, FORK_CHAIN_ID, PORTS } from "../lib";
+import { devAccount, FORK_CHAIN_ID, PATHS, PORTS } from "../lib";
 import { abiOf, expect, j } from "./core";
 import { api, DAY, E18, erc20Abi, HOUR, U, usdgOf, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
@@ -326,16 +326,26 @@ export async function treasury(x: Ctx) {
       if (bal > 0n) {
         // The sell, like the desk's own orders, stays inside the guard's slippage: halve it until the pool takes it.
         let part = bal / 4n;
+        let fits = false;
         const sell = (a: bigint) => exec("equity", equitySleeve, wrap(tsla, a, equityRun(1, tsla, a, slip)), [proofOf(usdg)]);
-        for (let k = 0; k < 4; k++) {
+        for (let k = 0; k < 4 && !fits; k++) {
           try {
             await r.pub.simulateContract({ account: A.equityDesk.address, ...sell(part) } as never);
-            break;
+            fits = true;
           } catch {
             part /= 2n;
           }
         }
-        await r.send("DERISK: selling a Stock Token toward cash is allowed", A.equityDesk, sell(part), async () => `sold ${Number((part * 10_000n) / bal) / 100}% of the TSLA position`);
+        const step = "DERISK: selling a Stock Token toward cash is allowed";
+        // A fork taken while the market is closed carries feeds frozen at the last close while the pools kept
+        // trading: no sell is inside the guard's slippage of that stale oracle. That is the closed market working,
+        // not a guard failure, so the step is skipped with the reason (a weekday fork runs it).
+        const forkTs = (await r.pub.getBlock({ blockNumber: BigInt(readFileSync(PATHS.forkBlock, "utf8").trim()) })).timestamp;
+        if (!fits && (await r.read<boolean>(x.addr("valuer"), abiOf("Valuer"), "isClosedAt", [forkTs]))) {
+          r.skip(step, `the fork block (${new Date(Number(forkTs) * 1000).toISOString()}) is inside a market closure: feeds are frozen at the last close and the TSLA pool is more than ${slip} bps away even for 1/32 of the position`, "equity desk");
+        } else {
+          await r.send(step, A.equityDesk, sell(part), async () => `sold ${Number((part * 10_000n) / bal) / 100}% of the TSLA position`);
+        }
       }
       const idle3 = await usdgOf(x, t.account!);
       await r.send("board withdraws in DERISK (never gated)", A.deployer, { address: t.account!, abi: ACC, functionName: "withdrawToBoard", args: [usdg, idle3 / 10n] });
