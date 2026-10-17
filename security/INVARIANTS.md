@@ -26,7 +26,7 @@ FOUNDRY_PROFILE=ci forge test --match-path 'test/**/*nvariant*'   # every suite 
 | | The board can always withdraw everything | [`invariant_boardCanAlwaysWithdraw`](../contracts/test/treasury/TreasuryInvariant.t.sol) |
 | Treasury (real CashSleeve and EquitySleeve, StockRouter, ERC-4626 vault) | Bands hold or improve after every success, under oracle moves, pool drift, vault yield, stale feeds and slippage | [`invariant_bandsHoldOrImproveAfterEverySuccess`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
 | | Day and per-order caps are never exceeded | [`invariant_dayAndOrderCapsNeverExceeded`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
-| | NAV lost in any successful operation is at most `maxOpLossBps` x notional | [`invariant_navLossPerOpBounded`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
+| | NAV lost in any successful operation is at most `maxOpLossBps` x notional (an in-house perp venue's open or close: its `venueLossBps`, at most 100 bps, for the gross it moved) | [`invariant_navLossPerOpBounded`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
 | | The sleeves never keep a balance, share or allowance | [`invariant_sleevesKeepNothing`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
 | | The board can always withdraw USDG, vault shares and every Stock Token | [`invariant_boardCanAlwaysWithdraw`](../contracts/test/treasury/TreasuryRealSleeves.invariant.t.sol) |
 | PlinthStaking | Supply counters equal the sum over stakers | [`invariant_totalsEqualSumOfStakers`](../contracts/test/token/PlinthStaking.invariant.t.sol) |

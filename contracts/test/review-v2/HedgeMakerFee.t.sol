@@ -14,12 +14,10 @@ import {PerpMarket} from "../../src/perps/PerpMarket.sol";
 import {PerpMarketHarness} from "../perps/PerpMarketHarness.sol";
 
 /// v2 mainnet values: the treasury guard allows 50 bps of NAV loss per operation (GUARD_MAX_OP_LOSS_BPS) and the
-/// perp markets charge a 40 bps open spread, 10 bps taker and 6 bps maker. The venue's equity is its exit value, so an
-/// open loses fee in + spread + fee out of size: 60 bps as a taker, 52 bps as a registered maker (MainnetBeta makes
-/// OWNER the maker registrar; OWNER registers the treasury's InHousePerpVenue). Both are above the 50 bps bound, and
-/// the market's own round-trip floor (spread + 2 x cheaper fee > the feeds' 50 bps deviation) means no fee setting can
-/// bring it under: these tests pin that conflict until it is decided (raise the bound for venue operations, or value
-/// a venue without its exit fee).
+/// perp markets charge a 40 bps open spread, 10 bps taker and 6 bps maker. The venue is valued at exit, so an open
+/// loses fee in + spread + fee out: 60 bps of size as a taker, 52 as a registered maker. The market's round-trip floor
+/// (spread + 2 x fee above the feeds' 50 bps deviation) means no fee fits under 50, so an in-house venue's opens and
+/// closes have their own bound, read live from its markets: spread + 2 x fee + 10 bps headroom, capped at 100 bps.
 contract HedgeMakerFeeTest is TreasuryFixture {
     bytes32 constant HEDGE_DESK = "hedge";
     address hedgeKey = makeAddr("hedgeKey");
@@ -103,29 +101,47 @@ contract HedgeMakerFeeTest is TreasuryFixture {
         _hedge(_op(2, abi.encode(address(aapl), false, size, margin, uint256(100)), 0));
     }
 
-    function test_takerHedgeAt3xIsRefusedByThe50BpsGuard() public {
-        assertEq(market.feeBpsFor(address(inHouse)), 10);
-        _hedge(_op(0, abi.encode(uint256(80_000e6)), 80_000e6));
-        _expectCode(guard.R6_UNKNOWN_CHANGE());
-        _hedge(_op(2, abi.encode(address(aapl), false, uint256(240_000e6), uint256(80_000e6), uint256(100)), 0));
+    function _short(uint256 margin, uint256 size, uint256 maxSlippageBps) internal {
+        _hedge(_op(2, abi.encode(address(aapl), false, size, margin, maxSlippageBps), 0));
     }
 
-    function test_makerHedgeCosts52BpsOfSizeStillAboveThe50BpsGuard() public {
+    function test_venueBoundIsReadFromTheMarket() public {
+        assertEq(guard.venueLossBps(address(inHouse)), 40 + 2 * 10 + 10, "taker: 70 bps");
         pool.setMaker(address(inHouse), true); // OWNER, the registrar
-        assertEq(market.feeBpsFor(address(inHouse)), 6);
-        assertEq(market.openSpreadBps() + 2 * market.makerFeeBps(), 52, "open loss in bps of size (exit-value equity)");
-        assertGt(market.openSpreadBps() + 2 * market.makerFeeBps(), guard.maxOpLossBps());
-        _hedge(_op(0, abi.encode(uint256(80_000e6)), 80_000e6));
-        _expectCode(guard.R6_UNKNOWN_CHANGE());
-        _hedge(_op(2, abi.encode(address(aapl), false, uint256(240_000e6), uint256(80_000e6), uint256(100)), 0));
+        assertEq(guard.venueLossBps(address(inHouse)), 40 + 2 * 6 + 10, "maker: 62 bps");
+        assertEq(guard.venueLossBps(address(perp)), 0, "not an in-house venue");
     }
 
-    /// The floor and the bound cannot both hold: any maker fee the market accepts (spread + 2 x fee above the 50 bps
-    /// deviation) makes a hedge open lose more than 50 bps of size.
-    function test_roundTripFloorAndGuardBoundConflict() public view {
-        uint256 dev = market.FEED_DEVIATION_BPS();
-        uint256 spread = market.openSpreadBps();
-        uint256 minFee = (dev - spread) / 2 + 1; // least fee the floor allows at this spread
-        assertGt(spread + 2 * minFee, guard.maxOpLossBps());
+    function test_takerHedgeAt3xPasses() public {
+        assertEq(market.feeBpsFor(address(inHouse)), 10);
+        _depositAndShort(80_000e6, 230_000e6); // ~2.9x of its own margin, inside the policy's 3x
+        assertEq(market.position(address(inHouse)).size, 230_000e6);
+        assertEq(guard.snapshot(address(account)).perpDeltaUsd, -int256(uint256(230_000e18)));
+    }
+
+    function test_makerHedgeAt3xPassesAndCloses() public {
+        pool.setMaker(address(inHouse), true);
+        assertEq(market.feeBpsFor(address(inHouse)), 6);
+        _depositAndShort(80_000e6, 230_000e6);
+        assertEq(market.position(address(inHouse)).size, 230_000e6);
+        _warp(block.timestamp + 1 hours); // past the minimum hold
+        _hedge(_op(3, abi.encode(address(aapl), uint256(230_000e6)), 0)); // close
+        assertEq(market.position(address(inHouse)).size, 0);
+    }
+
+    /// A venue op that costs more than its computed bound is refused: an owner-raised spread (300 bps, the market's
+    /// maximum) makes the bound 300 + 2 x 10 + 10 = 330 bps, capped at 100; the open would lose about 320.
+    function test_spreadAboveTheCapIsRefused() public {
+        PerpMarketHarness(address(market)).setGuardsUnchecked(300, market.minHoldSeconds(), market.minCollateral());
+        assertEq(guard.venueLossBps(address(inHouse)), 100);
+        _hedge(_op(0, abi.encode(uint256(80_000e6)), 80_000e6));
+        _expectCode(guard.R6_UNKNOWN_CHANGE());
+        _short(80_000e6, 230_000e6, 1_000);
+    }
+
+    /// The rest of an operation keeps 50 bps: the venue bound covers only the gross the venue moved.
+    function test_otherOperationsKeepThe50BpsBound() public view {
+        assertEq(guard.maxOpLossBps(), 50);
+        assertEq(guard.venueLossBps(address(offVenue)), 0);
     }
 }

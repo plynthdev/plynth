@@ -13,6 +13,16 @@ import {IPeriodStartNav, ISleeve} from "../interfaces/ISleeve.sol";
 import {IPerpVenue, IPositionSleeve} from "../interfaces/IPerpVenue.sol";
 import {IPrivateSleeve} from "./PrivateSleeve.sol";
 
+/// The in-house perp venue's markets (InHousePerpVenue.markets) and what an open or close there costs.
+interface IInHouseVenueMarkets {
+    function markets() external view returns (address[] memory);
+}
+
+interface IPerpMarketCost {
+    function openSpreadBps() external view returns (uint256);
+    function feeBpsFor(address account) external view returns (uint256);
+}
+
 /// "Agent proposes, code disposes." The TreasuryAccount takes a `snapshot` before a desk operation, runs it,
 /// then asks `check` to compare the resulting state with the policy. Any broken rule returns a non-zero
 /// reason code and the account reverts the whole operation.
@@ -75,6 +85,11 @@ contract PolicyGuard {
     /// NAV before the operation. maxOpLossBps bounds each operation; this bounds a desk that sandwiches its own
     /// swaps (or bleeds fees) op after op within it.
     uint256 public constant DAY_LOSS_BPS = 50;
+    /// An in-house perp venue open or close may lose what the market charges for it, read live from its markets:
+    /// open spread + fee in + fee out (the venue is valued at exit), plus VENUE_HEADROOM_BPS, never more than
+    /// VENUE_LOSS_CAP_BPS of the gross notional it moved. Every other part of an operation keeps maxOpLossBps.
+    uint256 public constant VENUE_HEADROOM_BPS = 10;
+    uint256 public constant VENUE_LOSS_CAP_BPS = 100;
     uint256 private constant WAD = 1e18;
     uint256 private constant BPS = 10_000;
 
@@ -242,6 +257,8 @@ contract PolicyGuard {
         bool venueRiskUp; // some venue's gross or margin went up
         bool venueGrossDown; // some venue's gross notional went down
         uint256 loss; // NAV lost by the operation (USD 1e18)
+        uint256 venueGross; // |delta gross| at in-house venues (part of grossMoved)
+        uint256 venueAllowance; // loss allowed for that gross at each venue's own cost bound
     }
 
     /// Called by the account itself after running the operation. Returns OK or the first broken rule's code.
@@ -280,7 +297,7 @@ contract PolicyGuard {
 
         // Rules 5-6: value may only leave the tracked set as bounded fees/slippage, per operation and per 24 h.
         c.loss = before.nav > c.a.nav ? before.nav - c.a.nav : 0;
-        if (c.loss > c.notional * maxOpLossBps / BPS) return R6_UNKNOWN_CHANGE;
+        if (c.loss > (c.notional - c.venueGross) * maxOpLossBps / BPS + c.venueAllowance) return R6_UNKNOWN_CHANGE;
         if (c.loss != 0 && dayLoss(account) + c.loss > before.nav * DAY_LOSS_BPS / BPS) return R6_DAY_LOSS;
 
         // Rule 3.
@@ -333,12 +350,20 @@ contract PolicyGuard {
 
     /// Rule 6, per venue whose risk went up (more gross notional, or more margin than rounding): the venue's
     /// numbers are fresh and it is in venueAllowRoot (proofs follow the asset proofs, in venue order).
-    function _venueRules(Ctx memory c, Snapshot calldata b, bytes32[] calldata proofs) private pure returns (uint8) {
+    function _venueRules(Ctx memory c, Snapshot calldata b, bytes32[] calldata proofs) private view returns (uint8) {
         for (uint256 i; i < c.a.venues.length; ++i) {
             Venue memory a = c.a.venues[i];
             Venue calldata v = b.venues[i];
             c.moved += _absDiff(a.equity, v.equity);
-            c.grossMoved += _absDiff(a.gross, v.gross);
+            uint256 g = _absDiff(a.gross, v.gross);
+            c.grossMoved += g;
+            if (g != 0) {
+                uint256 bps = venueLossBps(a.venue);
+                if (bps != 0) {
+                    c.venueGross += g;
+                    c.venueAllowance += g * bps / BPS;
+                }
+            }
             if (a.gross < v.gross) c.venueGrossDown = true;
             if (!_riskUp(a, v)) continue;
             c.venueRiskUp = true;
@@ -349,6 +374,29 @@ contract PolicyGuard {
             if (!ok) return R6_VENUE_NOT_ALLOWED;
         }
         return OK;
+    }
+
+    /// The loss bound (bps of gross notional moved) of an open or close at `venue` when it is an in-house perp
+    /// venue: max over its markets of open spread + 2 x the fee the venue pays, plus VENUE_HEADROOM_BPS, capped at
+    /// VENUE_LOSS_CAP_BPS. 0 for any other venue (it keeps maxOpLossBps). The venue is in the board's allow-list
+    /// (rule 6); a venue that misreports its markets can at most reach the cap.
+    function venueLossBps(address venue) public view returns (uint256 bps) {
+        address[] memory ms;
+        try IInHouseVenueMarkets(venue).markets() returns (address[] memory m) {
+            ms = m;
+        } catch {
+            return 0;
+        }
+        for (uint256 i; i < ms.length; ++i) {
+            uint256 b;
+            try IPerpMarketCost(ms[i]).openSpreadBps() returns (uint256 spread) {
+                try IPerpMarketCost(ms[i]).feeBpsFor(venue) returns (uint256 fee) {
+                    b = spread + 2 * fee + VENUE_HEADROOM_BPS;
+                } catch {}
+            } catch {}
+            if (b > bps) bps = b;
+        }
+        if (bps > VENUE_LOSS_CAP_BPS) bps = VENUE_LOSS_CAP_BPS;
     }
 
     function _overlayRules(Ctx memory c, Snapshot calldata b) private pure returns (uint8) {
