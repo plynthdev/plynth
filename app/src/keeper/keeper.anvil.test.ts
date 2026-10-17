@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { bytesToHex, createPublicClient, createWalletClient, http, parseAbi, parseUnits, type Address, type Hex } from "viem";
 import { beaconAbi, crowdAbi, vaultAbi } from "@/abi/keeper";
 import { beaconKey } from "./jobs/beacon";
+import { WAITING } from "./jobs/roundups";
 import { ANVIL_ADDR_1, ANVIL_KEY_0, ANVIL_KEY_1, ROOT, keeperTestDb, permit2Runtime, startAnvil } from "@/testing/keeper-helpers";
 
 const U = 1_000_000n;
@@ -192,7 +193,7 @@ describe("keeper on anvil", () => {
     [0, 3_400_000n], // 3.40 -> (1 - 0.40) x2 = 1.20
     [1, 12_750_000n], // 12.75, roundTo 5 -> 2.25
     [2, 7_010_000n], // 7.01 -> 0.99
-    [0, 9_999_999n], // 9.999999 -> 0.000001 x2: under the 5-cent on-chain minimum, skipped (review v3 R3-SVC-2)
+    [0, 9_999_999n], // 9.999999 -> 0.000001 x2: under the 5-cent on-chain minimum, carried until user 0's carried round-ups reach it (review v3 R3-SVC-2)
     [2, 20_000_000n], // exact multiple -> 0
   ];
   const settingsOf = (i: number) => ({ roundTo: i === 1 ? 5n : 1n, mult: i === 0 ? 2n : 1n });
@@ -207,13 +208,14 @@ describe("keeper on anvil", () => {
     expect(expected).toEqual([1_200_000n, 2_250_000n, 990_000n]);
 
     const out = cycle();
-    expect(out).toContain("roundups: ok actions=3"); // the exact multiple adds 0 and the dust round-up is under the minimum: skipped, never sent
+    expect(out).toContain("roundups: ok actions=3"); // the exact multiple adds 0 (skipped) and the dust round-up is under the minimum (carried): neither is sent
     expect(out).toContain("topups: ok actions=1");
     expect(out).toContain("sweep: ok actions=1");
 
     const rows = await t.sql`select user_address, added, status, reason, spend from keeper_roundups order by block_number, log_index`;
     expect(rows.filter((r) => r.status === "done")).toHaveLength(3);
-    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason).sort()).toEqual(["no round-up (whole amount): the vault would add 0", "round-up below the keeper minimum of 5 cents per accrual", "transfer into a Plynth contract"]);
+    expect(rows.filter((r) => r.status === "skipped").map((r) => r.reason).sort()).toEqual(["no round-up (whole amount): the vault would add 0", "transfer into a Plynth contract"]);
+    expect(rows.filter((r) => r.status === "carried").map((r) => [BigInt(r.spend), r.reason])).toEqual([[9_999_999n, WAITING]]);
     expect(rows.some((r) => BigInt(r.spend) === 1_500_000n)).toBe(false); // pre-link spend never indexed
     for (const [i, u] of users.entries()) {
       const added = rows.filter((r) => r.user_address === u.toLowerCase() && r.status === "done").reduce((a, r) => a + BigInt(r.added), 0n);
@@ -242,7 +244,7 @@ describe("keeper on anvil", () => {
     await t.sql`delete from keeper_roundups`;
     const out2 = keeper("roundups");
     expect(out2).toContain("roundups: ok actions=0");
-    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(3); // the dust spend is skipped before any simulation
+    expect((await t.sql`select count(*)::int as n from keeper_roundups where reason = 'already accrued'`)[0]!.n).toBe(3); // the dust spend is carried again (2 units: still under the minimum), never simulated
     expect(await pub.getTransactionCount({ address: ANVIL_ADDR_1 })).toBe(before);
   }, 120_000);
 

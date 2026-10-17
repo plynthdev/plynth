@@ -7,7 +7,9 @@ import { index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp } 
  * One row per indexed USDG Transfer out of a linked spending wallet (the round-up source).
  * status: pending (seen, not yet accrued), done (accrued on-chain, or the vault already had it),
  * skipped (not a round-up: transfer into a Plynth contract, or wallet not linked at that block),
- * failed (pre-simulation reverted for another reason; retried next pass, attempts counts them).
+ * failed (pre-simulation reverted for another reason; retried next pass, attempts counts them),
+ * carried (an on-chain round-up under KEEPER_MIN_ONCHAIN_ACCRUE_CENTS, waiting to go out in one vault.accrueBatch with
+ * the user's other carried spends once they add up to the minimum; then done, accrueTx = the batch).
  */
 export const keeperRoundups = pgTable(
   "keeper_roundups",

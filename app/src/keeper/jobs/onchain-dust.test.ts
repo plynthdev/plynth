@@ -50,7 +50,7 @@ describe("R3-SVC-2: on-chain dust spends buy no keeper accrues", () => {
     expect(await pass(gate, 999_999n)).toBe(0);
     expect(gate.gasThisPass).toBe(0n);
     const why = await gate.check(A(0x1000), 999_999n);
-    expect(why).toEqual({ ok: false, skip: true, reason: "round-up below the keeper minimum of 5 cents per accrual" });
+    expect(why).toEqual({ ok: false, skip: true, belowMin: true, reason: "round-up below the keeper minimum of 5 cents per accrual" });
   });
 
   test("the minimum is the round-up, not the spend: a $x.95 spend (5-cent round-up) still accrues; $x.96 does not", async () => {

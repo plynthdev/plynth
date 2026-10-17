@@ -77,6 +77,23 @@ contract VaultHandler is Test {
         ++calls;
     }
 
+    /// accrueBatch with fresh keys (1-8 spends): must behave like the same accrues in a row (R2/R8 below).
+    function accrueBatch(uint256 seed, uint256 n, uint256 spend) external {
+        n = bound(n, 1, 8);
+        bytes32[] memory txs = new bytes32[](n);
+        uint32[] memory logs = new uint32[](n);
+        uint256[] memory spends = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            txs[i] = bytes32(uint256(nextLog) + 1);
+            logs[i] = nextLog;
+            spends[i] = bound(uint256(keccak256(abi.encode(spend, i))), 0, 10_000e6);
+            ++nextLog;
+        }
+        vm.prank(keeper);
+        vault.accrueBatch(_actor(seed), txs, logs, spends);
+        ++calls;
+    }
+
     function topUp(uint256 seed) external {
         address a = _actor(seed);
         SavingsVault.Account memory acc = vault.accountOf(a);

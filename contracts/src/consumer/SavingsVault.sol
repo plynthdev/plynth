@@ -67,6 +67,8 @@ contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
     }
 
     uint256 public constant MAX_MIX = 5;
+    /// Most spends one accrueBatch takes (bounds its gas: about 30k per spend).
+    uint256 public constant MAX_ACCRUE_BATCH = 32;
     uint256 private constant BN254_P =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint64 public constant TOP_UP_SPACING = 7 days;
@@ -120,6 +122,7 @@ contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
     error InvalidMix();
     error WrongPermitToken();
     error AlreadyAccrued(bytes32 sourceTx, uint32 logIndex);
+    error InvalidBatch();
     error SignatureExpired();
     error BadSignature();
     error NotLinked();
@@ -308,16 +311,59 @@ contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
         onlyKeeper
         returns (uint256 added)
     {
-        bytes32 key = keccak256(abi.encode(sourceTx, logIndex));
-        if (sourceUsed[key]) revert AlreadyAccrued(sourceTx, logIndex);
-        sourceUsed[key] = true;
+        (Account storage a, Settings memory s) = _accrualState(user);
+        added = _accrueOne(user, a, s, sourceTx, logIndex, spendAmount);
+    }
 
-        Account storage a = _accounts[user];
-        Settings memory s = _settings[user];
+    /// `accrue` for up to MAX_ACCRUE_BATCH spends of one user in one transaction (review v3 R3-SVC-2): the keeper
+    /// carries sub-minimum round-ups forward and sends them together once they are worth a transaction. Each spend
+    /// burns its own (sourceTx, logIndex) key and emits its own Accrued; any key already used, including a duplicate
+    /// inside this batch, reverts the whole batch, so nothing is burned. The weekly room and `available` are spent
+    /// cumulatively in order, exactly as the same calls to `accrue` one after another would.
+    ///
+    /// Every spend is rounded with the user's settings in force NOW (at batch time), not at the time of each spend.
+    /// That is also what `accrue` does (the keeper always sends after the spend), and it is acceptable here: the
+    /// keeper can only delay dust, never move more than the user's current roundTo / multiplier / weeklyCap allow,
+    /// and the user's current settings are the ones they consented to last. A user who lowers their settings while
+    /// round-ups are carried gets the lower amount.
+    function accrueBatch(
+        address user,
+        bytes32[] calldata sourceTxs,
+        uint32[] calldata logIndexes,
+        uint256[] calldata spends
+    ) external onlyKeeper returns (uint256 added) {
+        uint256 n = sourceTxs.length;
+        if (n == 0 || n > MAX_ACCRUE_BATCH || logIndexes.length != n || spends.length != n) revert InvalidBatch();
+        (Account storage a, Settings memory s) = _accrualState(user);
+        for (uint256 i; i < n; ++i) {
+            added += _accrueOne(user, a, s, sourceTxs[i], logIndexes[i], spends[i]);
+        }
+    }
+
+    /// The account (its weekly counter rolled to this week, so `a.week` is this week) and the settings in force now.
+    function _accrualState(address user) private returns (Account storage a, Settings memory s) {
+        a = _accounts[user];
+        s = _settings[user];
         uint64 week = uint64(block.timestamp / 1 weeks);
         if (a.week != week) {
             a.week = week;
             a.accruedThisWeek = 0;
+        }
+    }
+
+    /// One spend: burn its replay key, then move min(round-up, weekly room, available) from available to pending.
+    function _accrueOne(
+        address user,
+        Account storage a,
+        Settings memory s,
+        bytes32 sourceTx,
+        uint32 logIndex,
+        uint256 spendAmount
+    ) private returns (uint256 added) {
+        {
+            bytes32 key = keccak256(abi.encode(sourceTx, logIndex));
+            if (sourceUsed[key]) revert AlreadyAccrued(sourceTx, logIndex);
+            sourceUsed[key] = true;
         }
 
         uint256 r = roundUp(spendAmount, s.roundTo, s.multiplier);
@@ -330,7 +376,7 @@ contract SavingsVault is Ownable2Step, EIP712, ChangeDelay {
             a.pending += added;
             a.accruedThisWeek += uint64(added); // added <= room <= weeklyCap (uint64)
         }
-        emit Accrued(user, sourceTx, logIndex, spendAmount, added, week);
+        emit Accrued(user, sourceTx, logIndex, spendAmount, added, a.week);
     }
 
     /// Pulls the user's chosen fixed top-up through their Permit2 allowance. Amount and the 7-day

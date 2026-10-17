@@ -19,8 +19,8 @@ export async function knownUsers(db: Db, chainId: number, vault: Address): Promi
 export type SpendLog = { txHash: `0x${string}`; logIndex: number; blockNumber: bigint; from: string; to: string; value: bigint; indexedAt?: Date | undefined };
 
 /**
- * USDG transfers out of `wallets` that the keeper has not finished with (no done/skipped row yet),
- * oldest first.
+ * USDG transfers out of `wallets` that the keeper has not finished with (no done/skipped/carried row yet),
+ * oldest first. Carried rows (sub-minimum round-ups waiting for a batch) are read from keeper_roundups instead.
  */
 export async function openSpends(db: Db, chainId: number, usdg: Address, wallets: string[], limit = 500): Promise<SpendLog[]> {
   if (!wallets.length) return [];
@@ -33,7 +33,7 @@ export async function openSpends(db: Db, chainId: number, usdg: Address, wallets
       and lower(l.data_json->'args'->>'from') in ${sql`(${sql.join(lw.map((w) => sql`${w}`), sql`, `)})`}
       and not exists (
         select 1 from keeper_roundups r
-        where r.chain_id = l.chain_id and r.tx_hash = l.tx_hash and r.log_index = l.log_index and r.status in ('done', 'skipped'))
+        where r.chain_id = l.chain_id and r.tx_hash = l.tx_hash and r.log_index = l.log_index and r.status in ('done', 'skipped', 'carried'))
     order by l.block_number, l.log_index
     limit ${limit}`)) as unknown as { tx_hash: string; log_index: number; block_number: string; from: string; to: string; value: string; created_at: Date | string | null }[];
   return rows.map((r) => ({

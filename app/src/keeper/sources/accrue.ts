@@ -22,6 +22,61 @@ export async function accrueSpend(ctx: Ctx, user: Address, sourceTx: Hex, logInd
   return { status: "done", added: addedFromReceipt(r, ctx.dep.vault), tx: r.transactionHash, gasUsed: r.gasUsed };
 }
 
+/** SavingsVault.MAX_ACCRUE_BATCH: the most spends one accrueBatch takes (checked against the contract on anvil). */
+export const MAX_ACCRUE_BATCH = 32;
+
+export type BatchItem = { sourceTx: Hex; logIndex: number; units: bigint };
+export type BatchOutcome =
+  | { status: "done"; tx: Hex; gasUsed: bigint; added: Map<string, bigint>; total: bigint }
+  /** The vault already has this key (an earlier pass or a single accrue): the whole batch would revert. */
+  | { status: "replay"; sourceTx: Hex; logIndex: number }
+  | { status: "failed"; reason: string };
+
+export const batchKey = (sourceTx: string, logIndex: number) => `${sourceTx.toLowerCase()}:${logIndex}`;
+
+/**
+ * One vault.accrueBatch for up to MAX_ACCRUE_BATCH spends of one user (carried sub-minimum on-chain round-ups, review
+ * v3 R3-SVC-2). Pre-simulated as the keeper like accrueSpend; an AlreadyAccrued revert names the key so the caller can
+ * mark it done and send the rest. `added` maps batchKey(sourceTx, logIndex) to what the vault moved for that spend.
+ */
+export async function accrueBatchSpends(ctx: Ctx, user: Address, items: readonly BatchItem[]): Promise<BatchOutcome> {
+  if (items.length === 0 || items.length > MAX_ACCRUE_BATCH) return { status: "failed", reason: `batch of ${items.length} spends` };
+  const args = [getAddress(user), items.map((i) => i.sourceTx), items.map((i) => i.logIndex), items.map((i) => i.units)] as const;
+  const sim = await simulate(ctx, ctx.dep.vault, vaultAbi, "accrueBatch", args);
+  if (!sim.ok) {
+    if (sim.errorName === "AlreadyAccrued" && sim.args && sim.args.length >= 2) return { status: "replay", sourceTx: sim.args[0] as Hex, logIndex: Number(sim.args[1]) };
+    return { status: "failed", reason: sim.errorName };
+  }
+  let r: TransactionReceipt;
+  try {
+    r = await ctx.sender.sendCall(ctx.dep.vault, vaultAbi, "accrueBatch", args, "accrueBatch");
+  } catch (err) {
+    return { status: "failed", reason: (err as Error).message.split("\n")[0]! };
+  }
+  const added = accruedFromReceipt(r, ctx.dep.vault);
+  let total = 0n;
+  for (const v of added.values()) total += v;
+  return { status: "done", tx: r.transactionHash, gasUsed: r.gasUsed, added, total };
+}
+
+/** Every Accrued event of the vault in a receipt: batchKey(sourceTx, logIndex) -> added. */
+export function accruedFromReceipt(r: TransactionReceipt, vault: string): Map<string, bigint> {
+  const out = new Map<string, bigint>();
+  for (const l of r.logs) {
+    if (l.address.toLowerCase() !== vault.toLowerCase()) continue;
+    try {
+      const ev = decodeEventLog({ abi: vaultAbi, data: l.data, topics: l.topics });
+      if (ev.eventName === "Accrued") {
+        const a = ev.args as { sourceTx: Hex; logIndex: number; added: bigint };
+        out.set(batchKey(a.sourceTx, Number(a.logIndex)), a.added);
+      }
+    } catch {
+      // another vault event
+    }
+  }
+  return out;
+}
+
 /** The `added` amount from the vault's Accrued event in a receipt. */
 export function addedFromReceipt(r: TransactionReceipt, vault: string): bigint | undefined {
   for (const l of r.logs) {
@@ -65,7 +120,8 @@ export const DEFAULT_MIN_ACCRUE_CENTS = 25;
  * Review v3 (R3-SVC-2): the least round-up an ON-CHAIN spend must have for the keeper to accrue it. It used to be 0, so
  * a linked sybil sending 0.999999 USDG transfers (about $0.004 of its own gas each) bought one 57.5k-gas keeper accrue
  * per transfer, each moving 1e-6 USDG, ahead of sweep / beacon / execute. 5 cents: each keeper transaction moves about
- * ten times its own gas cost (0.02 gwei, ETH $4000) of the user's money into savings.
+ * ten times its own gas cost (0.02 gwei, ETH $4000) of the user's money into savings. Smaller round-ups are carried
+ * forward and sent together in one accrueBatch once a user's carried round-ups reach it (jobs/roundups.ts).
  */
 export const DEFAULT_MIN_ONCHAIN_ACCRUE_CENTS = 5;
 export const DEFAULT_ACCRUE_PASS_MS = 10_000;
@@ -73,7 +129,8 @@ export const DEFAULT_ACCRUE_PASS_GAS = 5_000_000n;
 const WEEK_S = 604_800n;
 
 export type AccrueLimits = { perPass: number; perUserWeek: number; perUserPass: number; minAccrueCents: number; passMs: number; passGas: bigint };
-export type GateDecision = { ok: true } | { ok: false; skip: true; reason: string } | { ok: false; skip: false; reason: string };
+/** `belowMin`: the only objection is the minimum round-up (an on-chain spend the roundups job carries forward). */
+export type GateDecision = { ok: true } | { ok: false; skip: true; reason: string; belowMin?: true } | { ok: false; skip: false; reason: string };
 
 type Budget = { roundTo: number; multiplier: number; available: bigint; room: bigint; sentThisWeek: number; sentThisPass: number };
 
@@ -159,7 +216,7 @@ export class AccrueGate {
     const cap = BigInt(s.weeklyCap);
     const [r] = (await this.ctx.db.execute(sql`
       select (select count(*) from roundup_events where chain_id = ${this.ctx.chainId} and user_address = ${k} and accrue_tx is not null and updated_at >= now() - interval '7 days')
-           + (select count(*) from keeper_roundups where chain_id = ${this.ctx.chainId} and user_address = ${k} and accrue_tx is not null and updated_at >= now() - interval '7 days') as n`)) as unknown as { n: string | number }[];
+           + (select count(distinct accrue_tx) from keeper_roundups where chain_id = ${this.ctx.chainId} and user_address = ${k} and accrue_tx is not null and updated_at >= now() - interval '7 days') as n`)) as unknown as { n: string | number }[];
     const b: Budget = { roundTo: Number(s.roundTo), multiplier: Number(s.multiplier), available: BigInt(a.available), room: cap > accrued ? cap - accrued : 0n, sentThisWeek: Number(r?.n ?? 0), sentThisPass: 0 };
     this.users.set(k, b);
     return b;
@@ -167,18 +224,37 @@ export class AccrueGate {
 
   /** May the keeper send vault.accrue(user, ..., units) now? */
   async check(user: Address, units: bigint): Promise<GateDecision> {
+    return this.decide(user, [units]);
+  }
+
+  /**
+   * May the keeper send one vault.accrueBatch(user, ...) for these spends now? Same rules as `check`, the batch counting
+   * as ONE keeper transaction and the minimum applying to the sum of its round-ups (each computed with the settings in
+   * force now, as the vault will).
+   */
+  async checkBatch(user: Address, units: readonly bigint[]): Promise<GateDecision> {
+    return this.decide(user, units);
+  }
+
+  /** The user's rounding as the vault applies it now: roundTo whole USDG, multiplier, and USDG's unit. */
+  async roundingOf(user: Address): Promise<{ roundTo: number; multiplier: number; unit: bigint }> {
+    const b = await this.budget(user);
+    return { roundTo: b.roundTo, multiplier: b.multiplier, unit: this.unit! };
+  }
+
+  private async decide(user: Address, units: readonly bigint[]): Promise<GateDecision> {
     const spent = this.passSpent();
     if (spent) return { ok: false, skip: false, reason: spent };
     const b = await this.budget(user);
     if (b.roundTo === 0) return { ok: false, skip: true, reason: "no savings settings: the vault would add 0" };
     if (b.available === 0n) return { ok: false, skip: true, reason: "no available balance: the vault would add 0" };
     if (b.room === 0n) return { ok: false, skip: true, reason: "weekly cap reached: the vault would add 0" };
-    const r = roundUpOf(units, b.roundTo, b.multiplier, this.unit!);
+    const r = units.reduce((m, u) => m + roundUpOf(u, b.roundTo, b.multiplier, this.unit!), 0n);
     if (r === 0n) return { ok: false, skip: true, reason: "no round-up (whole amount): the vault would add 0" };
     // On the round-up itself, not on the amount clipped by room or balance: a clip uses that resource up, so it can
     // happen at most twice per user per week, and an honest saver's last accrual under the cap still goes through.
     const min = (BigInt(this.limits.minAccrueCents) * this.unit!) / 100n;
-    if (r < min) return { ok: false, skip: true, reason: `round-up below the keeper minimum of ${this.limits.minAccrueCents} cents per accrual` };
+    if (r < min) return { ok: false, skip: true, belowMin: true, reason: `round-up below the keeper minimum of ${this.limits.minAccrueCents} cents per accrual` };
     if (b.sentThisWeek >= this.limits.perUserWeek) return { ok: false, skip: true, reason: `weekly limit of ${this.limits.perUserWeek} accruals for this user reached` };
     // Not a skip: this user's remaining rows wait for the next pass, other users go on.
     if (b.sentThisPass >= this.limits.perUserPass) return { ok: false, skip: false, reason: `pass limit of ${this.limits.perUserPass} accruals for this user reached; next pass` };
@@ -195,6 +271,18 @@ export class AccrueGate {
     const moved = added ?? [r, b.room, b.available].reduce((m, x) => (x < m ? x : m));
     b.available = b.available > moved ? b.available - moved : 0n;
     b.room = b.room > moved ? b.room - moved : 0n;
+    b.sentThisWeek++;
+    b.sentThisPass++;
+  }
+
+  /** After a sent accrueBatch: one keeper transaction that moved `added` in total (sum of its Accrued events). */
+  recordBatch(user: Address, added: bigint, gasUsed?: bigint) {
+    this.sent++;
+    this.gas += gasUsed ?? 0n;
+    const b = this.users.get(user.toLowerCase());
+    if (!b) return;
+    b.available = b.available > added ? b.available - added : 0n;
+    b.room = b.room > added ? b.room - added : 0n;
     b.sentThisWeek++;
     b.sentThisPass++;
   }
