@@ -127,4 +127,26 @@ describe("M-6: a malformed meta-address skips that user only", () => {
     expect(r.error).toBeUndefined();
     expect(["delivered", "done"]).toContain((await getJob(ctx, "quiet-plan", planKey(ATTACKER)))!.status);
   });
+
+  test("the contract's verdict: a key the SDK parses but CrowdBuy refuses is skipped before planning", async () => {
+    chain.meta.delete(ATTACKER.toLowerCase());
+    chain.metaValid.set(ATTACKER.toLowerCase(), false);
+    const r = await pass();
+    expect(r.error).toBeUndefined();
+    expect(r.res.notes.join(" ")).toContain(`${ATTACKER}: skipped, Quiet but meta-address is refused by CrowdBuy`);
+    expect(await getJob(ctx, "quiet-plan", planKey(ATTACKER))).toBeUndefined();
+    expect((await getJob(ctx, "quiet-plan", planKey(VICTIM)))!.status).toBe("delivered");
+    expect(chain.deliversSigned()).toBe(1);
+  });
+
+  test("a v1 CrowdBuy without metaAddressValid: the off-chain check stands alone and delivery goes on", async () => {
+    chain.meta.delete(ATTACKER.toLowerCase());
+    chain.metaValid.set(ATTACKER.toLowerCase(), "v1");
+    chain.metaValid.set(VICTIM.toLowerCase(), "v1");
+    const r = await pass();
+    expect(r.error).toBeUndefined();
+    expect(["delivered", "done"]).toContain((await getJob(ctx, "quiet-plan", planKey(ATTACKER)))!.status);
+    expect(["delivered", "done"]).toContain((await getJob(ctx, "quiet-plan", planKey(VICTIM)))!.status);
+    expect(chain.deliversSigned()).toBe(2);
+  });
 });

@@ -42,7 +42,7 @@
 // Privacy note: the plan row links user to stealth addresses; it is scrubbed to amounts once every part is out.
 import { computeStealthAddress, parseMetaAddress } from "@plynth/sdk/stealth";
 import { sql } from "drizzle-orm";
-import { encodeAbiParameters, getAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from "viem";
+import { BaseError, ContractFunctionRevertedError, ContractFunctionZeroDataError, encodeAbiParameters, getAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from "viem";
 import { crowdAbi, stealthClaimsAbi, vaultAbi } from "@/abi/keeper";
 import { confirmedBlock, simulate, type Ctx, type JobResult } from "@/keeper/context";
 import { TxReverted, type SignedTx } from "@/keeper/sender";
@@ -269,6 +269,23 @@ export function quietMetaProblem(meta: Hex): string | null {
 }
 
 /**
+ * The contract's own verdict (v2 CrowdBuy.metaAddressValid, the same KeyChecks that `deliver` enforces): a key the SDK
+ * parses but the contract refuses would otherwise be planned and then revert BadMetaAddress on every pass. A CrowdBuy
+ * without the view (v1) reverts with no data: the off-chain check and the deliver simulation then stand alone.
+ */
+export async function onChainMetaProblem(ctx: Ctx, user: Address): Promise<string | null> {
+  let valid: boolean;
+  try {
+    valid = (await ctx.pub.readContract({ address: ctx.dep.crowd, abi: crowdAbi, functionName: "metaAddressValid", args: [user] })) as boolean;
+  } catch (err) {
+    const e = err as BaseError;
+    if (typeof e?.walk === "function" && e.walk((x) => x instanceof ContractFunctionRevertedError || x instanceof ContractFunctionZeroDataError)) return null;
+    throw err;
+  }
+  return valid ? null : "meta-address is refused by CrowdBuy (metaAddressValid is false)";
+}
+
+/**
  * One saver who cannot be served this pass (malformed keys, a failing read): recorded as a "quiet-skip" row (kept
  * apart from the plan, so the user is retried every pass and served once they fix it) and a note. One user must
  * never stop the pass for everyone else (audit M-6).
@@ -332,7 +349,7 @@ async function deliverOne(
     if (!plan) {
       // Validated before planning: an off-curve or truncated key would make computeStealthAddress throw (M-6).
       const meta = (await ctx.pub.readContract({ address: ctx.dep.erc6538Registry, abi: registryAbi, functionName: "stealthMetaAddressOf", args: [user, 1n] })) as Hex;
-      const problem = quietMetaProblem(meta);
+      const problem = quietMetaProblem(meta) ?? (await onChainMetaProblem(ctx, user));
       if (problem) {
         await recordSkip(ctx, res, key, user, problem, `skipped, Quiet but ${problem} (they can still claim openly)`);
         return;

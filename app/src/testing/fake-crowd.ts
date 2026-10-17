@@ -57,6 +57,8 @@ export class FakeCrowd {
   receipts = new Map<Hash, { status: "success" | "reverted"; blockNumber: bigint; logs: Log[] }>();
   signed: { hash: Hash; fn: string }[] = [];
   fee = 30n;
+  /** CrowdBuy.metaAddressValid per user (default true); "v1" = the contract has no such view (empty revert). */
+  metaValid = new Map<string, boolean | "v1">();
   autoMine = true;
   /** The node never returns a receipt for keeper transactions (lost): the job must find the logs. */
   loseReceipts = false;
@@ -243,6 +245,11 @@ export class FakeCrowd {
             return this.alloc.get(String(args[2]).toLowerCase())!;
           case "settingsOf":
             return { mode: this.mode.get(String(args[0]).toLowerCase()) ?? 1 };
+          case "metaAddressValid": {
+            const v = this.metaValid.get(String(args[0]).toLowerCase());
+            if (v === "v1") throw new ContractFunctionRevertedError({ abi: errorsAbi as any, data: "0x", functionName: "metaAddressValid" }); // no such view
+            return v ?? true;
+          }
           case "stealthMetaAddressOf":
             return this.meta.get(String(args[0]).toLowerCase()) ?? META;
           case "balanceOf":
