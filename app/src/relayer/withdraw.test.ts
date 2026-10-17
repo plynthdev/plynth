@@ -234,7 +234,7 @@ describe("POST /swap and /settle", () => {
     encryptedChange: "0x",
     encryptedOut: "0x" + "cd".repeat(141),
   });
-  function tradeSetup(spent = new Set<string>()) {
+  function tradeSetup(spent = new Set<string>(), simulateSwap: () => Promise<{ ok: true } | { ok: false; error: string }> = async () => ({ ok: true })) {
     const sent: string[] = [];
     const app = relayerApp({
       chainId: 31337,
@@ -252,7 +252,7 @@ describe("POST /swap and /settle", () => {
         minFee: (a) => (a.toLowerCase() === ASSET.toLowerCase() ? 5n : undefined),
         nullifierSpent: async (n) => spent.has(n),
         isKnownRoot: async (r) => r === word(1),
-        simulateSwap: async () => ({ ok: true }),
+        simulateSwap,
         sendSwap: async (a) => (sent.push(`swap:${a.pub.nullifier}`), `0x${"5a".repeat(32)}` as Hex),
         simulateSettle: async () => ({ ok: true }),
         sendSettle: async (a) => (sent.push(`settle:${a.nullifier}`), `0x${"5e".repeat(32)}` as Hex),
@@ -270,6 +270,14 @@ describe("POST /swap and /settle", () => {
     expect((await t.post("/swap", { ...swapBody(), encryptedOut: "0x" })).status).toBe(400);
     expect((await t.post("/settle", { proof: "0x12", root: word(1), nullifier: word(43), outCommitment: word(5), encryptedOut: "0xab" })).status).toBe(200);
     expect(t.sent).toEqual([`swap:${word(40)}`, `settle:${word(43)}`]);
+  });
+
+  test("L-9: a fee-paying swap proof bound to another relayer is refused with the address to bind", async () => {
+    const t = tradeSetup(new Set(), async () => ({ ok: false, error: "InvalidProof" }));
+    const r = await t.post("/swap", swapBody());
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as any).error).toContain("must bind this relayer: 0x0000000000000000000000000000000000000001");
+    expect(t.sent).toHaveLength(0);
   });
 
   test("not configured: 503", async () => {

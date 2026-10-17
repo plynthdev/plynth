@@ -42,7 +42,8 @@ export type SettleArgs = { proof: Hex; root: Hex; nullifier: Hex; outCommitment:
 
 /**
  * Private sell / buy / park through ShieldedTrade (SDK lead from the audit): sent from the user's own wallet a swap
- * names that wallet as the trader, so the relayer submits it and keeps the proven relayerFee. Settle (a swap output
+ * names that wallet as the trader, so the relayer submits it and keeps the proven relayerFee. As with withdraws, a
+ * fee-paying swap proof binds this relayer's sending address (SDK proveSwap({ relayer }); audit L-9). Settle (a swap output
  * into a v1 note) carries no fee; it is relayed so that step does not link the wallet either.
  */
 export type TradeDeps = {
@@ -331,7 +332,11 @@ export function relayerApp(d: RelayerDeps) {
       if (await t.nullifierSpent(nullifier)) return c.json({ error: "note already spent" }, 409);
       if (!(await t.isKnownRoot(root))) return c.json({ error: "unknown or expired root: sync and prove again" }, 400);
       const sim = "pub" in a ? await t.simulateSwap(a) : await t.simulateSettle(a);
-      if (!sim.ok) return c.json({ error: `simulation reverted: ${sim.error}` }, 400);
+      if (!sim.ok) {
+        const paid = "pub" in a && a.pub.relayerFee !== 0n;
+        const hint = sim.error === "InvalidProof" && paid ? ` (a fee-paying proof must bind this relayer: ${d.relayer})` : "";
+        return c.json({ error: `simulation reverted: ${sim.error}${hint}` }, 400);
+      }
       const txHash = "pub" in a ? await t.sendSwap(a) : await t.sendSettle(a);
       log(`${kind} sent ${txHash}`);
       return c.json({ txHash });
