@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { devAccount, FORK_CHAIN_ID, PATHS, ROLE } from "../lib";
 import { abiOf, expect, j } from "./core";
-import { closedMarketReason, E18, erc20Abi, HOUR, toMarketOpen, U, usdgOf, type Ctx } from "./context";
+import { closedMarketReason, weekendBookReason, E18, erc20Abi, HOUR, toMarketOpen, U, usdgOf, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
 import { packProofs } from "@/treasury/desks/runner";
 
@@ -37,7 +37,7 @@ export async function perpsSetup(x: Ctx) {
 
 export async function perps(x: Ctx) {
   // On a fork taken during a market closure, steps that need a priced market are SKIPs with the reason (see core.ts).
-  x.r.closedMarket = () => closedMarketReason(x, [x.token("TSLA"), x.token("AAPL")]);
+  x.r.closedMarket = async () => (await closedMarketReason(x, [x.token("TSLA"), x.token("AAPL")])) ?? (await weekendBookReason(x));
   try {
     await perpsArea(x);
   } finally {

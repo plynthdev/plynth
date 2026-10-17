@@ -181,3 +181,22 @@ export async function closedMarketReason(x: Ctx, tokens: Address[]): Promise<str
   }
   return undefined;
 }
+
+/** The fork block lies inside the Valuer's closed span (feeds frozen at the last close). */
+export async function forkInClosure(x: Ctx): Promise<{ closed: boolean; at: bigint }> {
+  const at = (await x.r.pub.getBlock({ blockNumber: BigInt(readFileSync(PATHS.forkBlock, "utf8").trim()) })).timestamp;
+  return { closed: await x.r.read<boolean>(x.addr("valuer"), abiOf("Valuer"), "isClosedAt", [at]), at };
+}
+
+/**
+ * Why the treasury could not reach its policy bands because the fork was taken during a market closure: the equity
+ * desk's rebalance stayed partial (`x.state.weekendUnfilled`, names whose real pools trade further from their frozen
+ * feeds than the guard's slippage even for a minimum piece). undefined otherwise.
+ */
+export async function weekendBookReason(x: Ctx): Promise<string | undefined> {
+  const names = x.state.weekendUnfilled as string[] | undefined;
+  if (!names?.length) return undefined;
+  const f = await forkInClosure(x);
+  if (!f.closed) return undefined;
+  return `weekend fork: the fork block (${new Date(Number(f.at) * 1000).toISOString()}) is inside a market closure; the pools of ${names.join(", ")} trade further from their frozen feeds than the guard's slippage, so the equity desk could not reach its band and this step depends on it`;
+}

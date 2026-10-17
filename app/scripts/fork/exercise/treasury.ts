@@ -15,7 +15,7 @@ import { exceptionFromChain, JuryService, PgJuryStore } from "@/treasury/jury";
 import { packProofs } from "@/treasury/desks/runner";
 import { devAccount, FORK_CHAIN_ID, PATHS, PORTS } from "../lib";
 import { abiOf, expect, j } from "./core";
-import { api, DAY, E18, erc20Abi, HOUR, U, usdgOf, type Ctx } from "./context";
+import { api, DAY, E18, erc20Abi, HOUR, U, usdgOf, weekendBookReason, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
 import { receiptsOnce } from "@/treasury/receipts/service";
 import { ReceiptStore } from "@/treasury/receipts/store";
@@ -72,6 +72,13 @@ export async function treasury(x: Ctx) {
     if (at === 2n ** 64n - 1n) await r.warpTo(day + DAY + 60n);
   }
   const sent = rows.filter((w) => w.status === "sent");
+  // A weekend fork: names the desk could not fill at the guard's slippage (rebalance_partial) leave the book under
+  // its band; the steps that depend on the full rebalance are then SKIPs with that reason (core.ts closedMarket).
+  const partial = (await db().sql`select detail from desk_actions where lower(account) = ${t.account!.toLowerCase()} and action = 'rebalance_partial' order by id desc limit 1`) as unknown as { detail: { unfilled?: { token: string }[] } | null }[];
+  const unfilled = (partial[0]?.detail?.unfilled ?? []).map((u) => r.who(u.token as Address));
+  if (unfilled.length) x.state.weekendUnfilled = unfilled;
+  // Cleared at the end of this area (the perps area sets its own hook and clears it).
+  r.closedMarket = () => weekendBookReason(x);
   await r.check("equity desk bought real Stock Tokens on the real pools", async () => {
     const bought = new Set(sent.filter((w) => w.action === "buy").map((w) => w.asset));
     expect(bought.size >= 3, `bought ${bought.size} names: ${j(rows.filter((w) => w.action === "buy"))}`);
@@ -401,6 +408,7 @@ export async function treasury(x: Ctx) {
       return `${Number(got) / 1e6} USDG to the author`;
     });
   }
+  r.closedMarket = undefined;
 }
 
 /** Stakes PLTH for `who` (the deployer funds it), so its tier allows weekly closes. */
