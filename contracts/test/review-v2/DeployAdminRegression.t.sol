@@ -33,7 +33,7 @@ contract DeployAdminRegression is MainnetBetaTest {
     }
 
     function _writeJson(string memory json) internal returns (string memory f, string memory path) {
-        f = string.concat("rv-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        f = string.concat("rv-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
         path = string.concat(vm.projectRoot(), "/../app/deployments/", f);
         vm.writeFile(path, json);
     }

@@ -5,7 +5,6 @@ import {MainnetBetaTest} from "../script/MainnetBeta.t.sol";
 import {MainnetBeta} from "../../script/MainnetBeta.s.sol";
 import {Valuer} from "../../src/core/Valuer.sol";
 import {EligibilityRegistry} from "../../src/core/EligibilityRegistry.sol";
-import {MockSafe} from "../mocks/MockSafe.sol";
 
 /// A one-key "multisig" (the R4-ORC-1 PoC's OneOfOneSafe): Safe-shaped, threshold 1.
 contract OneOfOneSafe {
@@ -40,7 +39,7 @@ contract MalformedSafe {
 /// R3-ORC-3 and R3-ORC-5), turned into regression tests that assert the safe behaviour.
 contract R4DeployAdminRegressionTest is MainnetBetaTest {
     function _writeJson(string memory json) internal returns (string memory f, string memory path) {
-        f = string.concat("r4-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        f = string.concat("r4-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
         path = string.concat(vm.projectRoot(), "/../app/deployments/", f);
         vm.writeFile(path, json);
     }
@@ -48,7 +47,9 @@ contract R4DeployAdminRegressionTest is MainnetBetaTest {
     function _safe(uint256 owners, uint256 threshold) internal returns (address) {
         address[] memory o = new address[](owners);
         for (uint256 i; i < owners; i++) o[i] = makeAddr(string(abi.encode("signer", i)));
-        return address(new MockSafe(o, threshold));
+        address at = makeAddr(string(abi.encode("safe", owners, threshold)));
+        _makeSafe(at, o, threshold);
+        return at;
     }
 
     /// R4-ORC-1: a 1-of-1 Safe (or any one-key contract) fails the mainnet OWNER pin; a 2-of-3 Safe passes.

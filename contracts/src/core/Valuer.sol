@@ -209,6 +209,21 @@ contract Valuer is Ownable2Step, ChangeDelay {
             || sequencerHold();
     }
 
+    /// The token's registry feed read as `quote` reads it (multiplier applied once), whether or not the token is still
+    /// listed, with the round id: a delisted perp market's last-resort settlement price (PerpMarket settleHeld, which
+    /// applies its own staleness, band and confirmation checks). Reverts without a usable answer.
+    function feedQuote(address token) external view returns (uint256 price, uint256 updatedAt, uint80 roundId) {
+        StockTokenRegistry.Entry memory e = registry.entry(token);
+        if (e.feed == address(0)) revert NotCanonical(token);
+        AggregatorV3Interface feed = AggregatorV3Interface(e.feed);
+        int256 answer;
+        (roundId, answer,, updatedAt,) = feed.latestRoundData();
+        uint8 dec = feed.decimals();
+        if (answer <= 0 || dec > 18) revert BadAnswer(token, answer);
+        price = _to1e18(uint256(answer), dec);
+        if (!e.multiplierEmbedded) price = price * IStockToken(token).uiMultiplier() / 1e18;
+    }
+
     /// USD value (1e18) of `rawUnits` of `token` held in base units.
     function value(address token, uint256 rawUnits) external view returns (uint256 usd, bool hold) {
         Quote memory q = quote(token);

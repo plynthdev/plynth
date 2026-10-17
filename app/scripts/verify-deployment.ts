@@ -68,6 +68,16 @@ export const V2 = {
   perpLiquidationFee: 5_000_000n, // 5 USDG
   /** OWNER pin (review v4 R4-ORC-1): a Safe with at least this threshold. */
   minSafeThreshold: 2n,
+  /** OWNER pin (review v5 R5-ORC-1): official Safe singletons on 4663 and the official SafeProxy runtime code hashes
+   *  (MainnetBeta.SAFE_*; chain facts 2026-10-17). */
+  safeSingletons: [
+    "0x41675C099F32341bf84BFc5382aF534df5C7461a", "0x29fcB43b46531BcA003ddC8FCB67FFE91900C762", "0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552",
+    "0x3E5c63644E683549055b9Be8653de26E0B4CD36E", "0xfb1bffC9d739B8D520DaF37dF666da4C687191EA",
+  ] as Address[],
+  safeProxyCodehashes: [
+    "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c", "0xb89c1b3bdf2cf8827818646bce9a8f6e372885f8c55e5c07acbd307cb133b000", // not-a-key
+  ] as Hex[],
+  safeGuardSlot: "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8" as Hex, // not-a-key
   /** CALENDAR_VALID_UNTIL: 2029-10-01 00:00 UTC. */
   calendarValidUntil: 1_885_507_200n,
   /** Ops alert (review v2 M-1): FAIL with less than this much holiday table left, WARN below calendarWarnDays. */
@@ -145,7 +155,31 @@ export type Options = {
   /** The code at an address (the CLI passes eth_getCode): an OWNER whose code is an EIP-7702 delegation designator
    *  (0xef0100 || delegate) is still one private key, so it does not count as a contract (review v3 R3-ORC-2). */
   codeOf?: (a: Address) => Promise<Hex | undefined>;
+  /** eth_getStorageAt (the CLI passes it): the OWNER Safe's singleton (slot 0) and guard slot (review v5 R5-ORC-1). */
+  storageAt?: (a: Address, slot: Hex) => Promise<Hex | undefined>;
 };
+
+/** true, or why `a` is not a real Safe: official SafeProxy runtime, official singleton (slot 0), no guard, no module.
+ *  Without codeOf / storageAt (unit tests of other checks) the code and storage parts are skipped. */
+async function realSafe(a: Address, read: Reader, opts: Options): Promise<true | string> {
+  if (opts.codeOf) {
+    const code = await opts.codeOf(a);
+    const h = code ? keccak256(code) : undefined;
+    if (!h || !V2.safeProxyCodehashes.includes(h)) return `code hash ${h ?? "none"} is not the official SafeProxy`;
+  }
+  if (opts.storageAt) {
+    const s0 = (await opts.storageAt(a, "0x0")) ?? "0x0";
+    const singleton = getAddress(`0x${BigInt(s0).toString(16).padStart(40, "0").slice(-40)}`);
+    if (!V2.safeSingletons.some((x) => x.toLowerCase() === singleton.toLowerCase())) return `singleton ${singleton} is not an official Safe`;
+    const guard = (await opts.storageAt(a, V2.safeGuardSlot)) ?? "0x0";
+    if (BigInt(guard) !== 0n) return "a Safe guard is set";
+  }
+  const [modules] = (await read(a, "function getModulesPaginated(address,uint256) view returns (address[], address)", [
+    "0x0000000000000000000000000000000000000001", 1n,
+  ])) as readonly [readonly Address[], Address];
+  if (modules.length !== 0) return "a Safe module is enabled";
+  return true;
+}
 
 /** EIP-7702 delegation designator: 0xef0100 followed by the 20-byte delegate. */
 export function isDelegatedEoaCode(code: Hex | undefined): boolean {
@@ -267,6 +301,10 @@ export async function verifyDeployment(
       // A contract is not enough: a 1-of-1 Safe or a one-key forwarder is still a single key (review v4 R4-ORC-1).
       const level = dep.allowEoaOwner === true ? "WARN" : "FAIL";
       try {
+        // A real Safe, not something that says it is one (review v5 R5-ORC-1): official proxy code and singleton,
+        // no module, no guard; only then are its threshold and owners trusted.
+        const real = await realSafe(O, read, opts);
+        if (real !== true) throw new Error(real);
         const t = BigInt((await read(O, "function getThreshold() view returns (uint256)")) as bigint);
         const owners = (await read(O, "function getOwners() view returns (address[])")) as readonly Address[];
         if (t >= V2.minSafeThreshold && BigInt(owners.length) >= t) push("ok", "OWNER is a contract", `${O}: Safe ${t}-of-${owners.length}`);
@@ -590,7 +628,8 @@ if (import.meta.main) {
   };
   const now = (await c.getBlock()).timestamp;
   const codeOf = async (a: Address) => (await c.getCode({ address: getAddress(a) })) ?? undefined;
-  const checks = await verifyDeployment(dep, read, codeAt, await c.getChainId(), { strict, now, codeOf });
+  const storageAt = async (a: Address, slot: Hex) => (await c.getStorageAt({ address: getAddress(a), slot })) ?? undefined;
+  const checks = await verifyDeployment(dep, read, codeAt, await c.getChainId(), { strict, now, codeOf, storageAt });
   for (const ch of checks) console.log(`${ch.status.padEnd(4)} ${ch.what}${ch.detail ? `  ${ch.detail}` : ""}`);
   const s = summarize(checks);
   console.log(`\n${s.total} checks: ${s.ok} ok, ${s.warn} warn, ${s.fail} fail (v${deploymentVersion(dep)}${strict ? ", strict" : ""}; ${file})`);

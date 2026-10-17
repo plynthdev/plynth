@@ -23,13 +23,16 @@ import {ChangeDelay} from "../libs/ChangeDelay.sol";
 ///      signatures from the old attester, not records already on chain (revoke those explicitly).
 ///      The owner can also disable the attester at once (`disableAttester`, risk-reducing: no new attestation is
 ///      accepted until a rotation applies), so a compromised attester key is not trusted for the whole 48 h of a
-///      rotation (review v3 R3-ORC-5). Existing records stay until they expire (31 days at most).
+///      rotation (review v3 R3-ORC-5). Disabling also ends every record attested so far (attesterEpoch, review v5
+///      R5-ORC-2): the stolen key's last records stop counting at once; honest users attest again with the new
+///      attester. A normal rotation (no disable) keeps existing records.
 ///   E5 This registry only gates buying. It holds no funds and nothing here can block an exit.
 contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay {
     struct Record {
         uint64 issuedAt;
         uint64 expiry;
         uint32 flags; // which checks passed (bitmask, see FLAG_*); informational on chain
+        uint32 epoch; // attesterEpoch when it was attested: a record from before a disable no longer counts
     }
 
     uint32 public constant FLAG_SELF_ATTESTED = 1;
@@ -41,12 +44,16 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay 
         keccak256("Attestation(address user,uint64 issuedAt,uint64 expiry,uint32 flags)");
 
     address public attester;
+    /// Bumped by every disableAttester: records attested in an earlier epoch (by the disabled, possibly compromised
+    /// key) stop counting at once, without waiting for a rotation (review v5 R5-ORC-2).
+    uint32 public attesterEpoch;
     mapping(address user => Record) private _records;
     mapping(address user => uint64) public revokedAt;
 
     event AttesterSet(address indexed attester);
     event Attested(address indexed user, uint64 issuedAt, uint64 expiry, uint32 flags);
     event Revoked(address indexed user, uint64 at);
+    event AttesterEpochBumped(uint32 epoch);
 
     error ZeroAddress();
     error NotAttester();
@@ -71,7 +78,10 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay 
     /// Instant, because it only closes the buy gate for new or renewing users; exits never check eligibility.
     function disableAttester() external onlyOwner {
         attester = address(0);
+        uint32 e = attesterEpoch + 1;
+        attesterEpoch = e;
         emit AttesterSet(address(0));
+        emit AttesterEpochBumped(e);
     }
 
     /// Drops a queued change (see ChangeDelay).
@@ -95,7 +105,7 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay 
         if (issuedAt <= _records[user].issuedAt || issuedAt <= revokedAt[user]) revert Stale();
         bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(ATTESTATION_TYPEHASH, user, issuedAt, expiry, flags)));
         if (!SignatureChecker.isValidSignatureNow(attester, digest, sig)) revert BadSignature();
-        _records[user] = Record(issuedAt, expiry, flags);
+        _records[user] = Record(issuedAt, expiry, flags, attesterEpoch);
         emit Attested(user, issuedAt, expiry, flags);
     }
 
@@ -109,7 +119,7 @@ contract EligibilityRegistry is IEligibility, Ownable2Step, EIP712, ChangeDelay 
 
     function isEligible(address user) external view returns (bool) {
         Record memory r = _records[user];
-        return r.expiry > block.timestamp && r.issuedAt > revokedAt[user];
+        return r.expiry > block.timestamp && r.issuedAt > revokedAt[user] && r.epoch == attesterEpoch;
     }
 
     function recordOf(address user) external view returns (Record memory) {

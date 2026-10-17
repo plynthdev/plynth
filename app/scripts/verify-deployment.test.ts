@@ -15,6 +15,8 @@ const hasCode = async () => true;
 const fails = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "FAIL" && what.test(c.what));
 const warns = (checks: Check[], what: RegExp) => checks.filter((c) => c.status === "WARN" && what.test(c.what));
 const DAY = 86_400n;
+/** The official v1.3.0 SafeProxy runtime (SafeProxyFactory.proxyRuntimeCode() on 4663); its keccak is V2.safeProxyCodehashes[1]. */
+const SAFE_PROXY_130 = ("0x" + "608060405273ffffffffffffffffffffffffffffffffffffffff600054167fa619486e0000000000000000000000000000000000000000000000000000000060003514156050578060005260206000f35b3660008037600080366000845af43d6000803e60008114156070573d6000fd5b3d6000f3fea2646970667358221220d1429297349653a4918076d650332de1a1068c5f3e07c5c82360c277770b955264736f6c63430007060033") as Hex;
 const A1 = getAddress("0x00000000000000000000000000000000000000a1");
 const A2 = getAddress("0x00000000000000000000000000000000000000a2");
 const A3 = getAddress("0x00000000000000000000000000000000000000a3");
@@ -134,6 +136,7 @@ function world(dep: Deployment, over: Record<string, unknown> = {}): Reader {
       case "liquidationFee": return V2.perpLiquidationFee;
       case "getThreshold": return 2n; // OWNER: a 2-of-3 Safe
       case "getOwners": return [A1, A2, A3];
+      case "getModulesPaginated": return [[], "0x0000000000000000000000000000000000000001"];
     }
     throw new Error(`not stubbed: ${id}`);
   };
@@ -341,7 +344,7 @@ describe("verifyDeployment v2", () => {
     const eoa = v2File({ allowEoaOwner: true });
     const c2 = await verifyDeployment(eoa, world(eoa), codeAll, eoa.chainId, { now: NOW, codeOf: delegated });
     expect(warns(c2, /OWNER is a contract/)).toHaveLength(1);
-    const safe = async (): Promise<Hex | undefined> => "0x608060405234801561001057600080fd5b50";
+    const safe = async (): Promise<Hex | undefined> => SAFE_PROXY_130; // the official proxy (v5: other code fails)
     const c3 = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW, codeOf: safe });
     expect(fails(c3, /OWNER is a contract/)).toHaveLength(0);
     expect(isDelegatedEoaCode("0xEF0100aa")).toBe(true);
@@ -426,6 +429,34 @@ describe("adapter allow-list (v2)", () => {
     expect(fails(checks, /treasuryFactory hand-over/).length).toBe(1);
   });
 });
+
+  test("review v5 R5-ORC-1: OWNER must really be a Safe: official proxy code, official singleton, no guard, no module", async () => {
+    const dep = v2File();
+    const proxyCode = "0x6080" as Hex; // stands in; the hash is compared below
+    const officialCode = async (x: Address): Promise<Hex | undefined> => (x.toLowerCase() === dep.owner.toLowerCase() ? proxyCode : "0x6080");
+    const slot0 = (singleton: string) => async (_a: Address, slot: Hex): Promise<Hex | undefined> =>
+      slot === "0x0" ? (`0x${singleton.slice(2).toLowerCase().padStart(64, "0")}` as Hex) : ("0x0" as Hex);
+    // The official proxy hash, the official 1.3.0 singleton: ok.
+    const real = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, {
+      now: NOW,
+      codeOf: async (x) => (x.toLowerCase() === dep.owner.toLowerCase() ? SAFE_PROXY_130 : "0x6080"),
+      storageAt: slot0("0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552"),
+    });
+    expect(fails(real, /OWNER is a contract/)).toHaveLength(0);
+    // A contract that only says it is a Safe (the PoC's forwarder): its code is not the SafeProxy.
+    const forwarder = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW, codeOf: officialCode, storageAt: slot0("0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552") });
+    expect(fails(forwarder, /OWNER is a contract/)).toHaveLength(1);
+    // The official proxy pointing at an unofficial singleton.
+    const fake = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, {
+      now: NOW,
+      codeOf: async (x) => (x.toLowerCase() === dep.owner.toLowerCase() ? SAFE_PROXY_130 : "0x6080"),
+      storageAt: slot0("0x00000000000000000000000000000000000000bb"),
+    });
+    expect(fails(fake, /OWNER is a contract/)).toHaveLength(1);
+    // A module enabled.
+    const mod = await verifyDeployment(dep, world(dep, { getModulesPaginated: [[A1], "0x0000000000000000000000000000000000000001"] }), codeAll, dep.chainId, { now: NOW });
+    expect(fails(mod, /OWNER is a contract/)).toHaveLength(1);
+  });
 
 describe("adapter allow-list enumeration (v2)", () => {
   test("an extra allowed codehash (e.g. added by the deployer during setup) is a FAIL that names it", async () => {

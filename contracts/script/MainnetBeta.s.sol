@@ -379,12 +379,41 @@ contract MainnetBeta is Script {
         return !(code.length >= 3 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00);
     }
 
-    /// The mainnet OWNER pin (review v4 R4-ORC-1): a contract (not a 7702 designator) that answers like a Safe with
-    /// getThreshold() >= 2 and getOwners().length >= threshold, so a 1-of-1 Safe or a one-key forwarder fails.
-    /// Low-level calls: anything that is not Safe-shaped (reverts, or returns malformed data) fails, never reverts.
+    // ---- official Safe deployments on Robinhood Chain (chain facts, read 2026-10-17: same code hash as Ethereum's)
+    address public constant SAFE_141 = 0x41675C099F32341bf84BFc5382aF534df5C7461a;
+    address public constant SAFE_L2_141 = 0x29fcB43b46531BcA003ddC8FCB67FFE91900C762;
+    address public constant SAFE_130 = 0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552;
+    address public constant SAFE_L2_130 = 0x3E5c63644E683549055b9Be8653de26E0B4CD36E;
+    address public constant SAFE_L2_130_EIP155 = 0xfb1bffC9d739B8D520DaF37dF666da4C687191EA;
+    /// Runtime code hash of a proxy made by the official SafeProxyFactory (v1.4.1 0x4e1D...ec67; v1.3.0 0xa6B7...6AB2
+    /// and its eip155 twin 0xC228...10BC), derived by creating one on a local fork of 4663.
+    bytes32 public constant SAFE_PROXY_141_CODEHASH = 0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c; // not-a-key
+    bytes32 public constant SAFE_PROXY_130_CODEHASH = 0xb89c1b3bdf2cf8827818646bce9a8f6e372885f8c55e5c07acbd307cb133b000; // not-a-key
+    /// Safe's guard storage slot: keccak256("guard_manager.guard.address").
+    bytes32 internal constant SAFE_GUARD_SLOT = 0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8; // not-a-key
+
+    /// Whether `singleton` is one of the official Safe singletons on Robinhood Chain.
+    function isOfficialSafeSingleton(address singleton) public pure returns (bool) {
+        return singleton == SAFE_141 || singleton == SAFE_L2_141 || singleton == SAFE_130 || singleton == SAFE_L2_130
+            || singleton == SAFE_L2_130_EIP155;
+    }
+
+    /// The mainnet OWNER pin (review v4 R4-ORC-1, v5 R5-ORC-1): a real Safe, not something that says it is one. The
+    /// code must be the official SafeProxy runtime, its singleton (storage slot 0) an official Safe singleton, with no
+    /// module enabled and no guard set (either lets fewer keys than the threshold act), and getThreshold() >= 2 with
+    /// getOwners().length >= threshold. Low-level calls: anything else fails, never reverts.
     function isMultisigOwner(address a) public view returns (bool) {
         if (!isContractOwner(a)) return false;
-        (bool ok, bytes memory r) = a.staticcall(abi.encodeWithSignature("getThreshold()"));
+        bytes32 h = a.codehash;
+        if (h != SAFE_PROXY_141_CODEHASH && h != SAFE_PROXY_130_CODEHASH) return false;
+        if (!isOfficialSafeSingleton(address(uint160(uint256(vm.load(a, bytes32(0))))))) return false;
+        if (vm.load(a, SAFE_GUARD_SLOT) != bytes32(0)) return false;
+        (bool ok, bytes memory r) =
+            a.staticcall(abi.encodeWithSignature("getModulesPaginated(address,uint256)", address(1), uint256(1)));
+        if (!ok || r.length < 96) return false;
+        (address[] memory modules,) = abi.decode(r, (address[], address));
+        if (modules.length != 0) return false;
+        (ok, r) = a.staticcall(abi.encodeWithSignature("getThreshold()"));
         if (!ok || r.length != 32) return false;
         uint256 threshold = abi.decode(r, (uint256));
         (ok, r) = a.staticcall(abi.encodeWithSignature("getOwners()"));

@@ -9,8 +9,6 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Valuer} from "../core/Valuer.sol";
 import {StockTokenRegistry} from "../core/StockTokenRegistry.sol";
-import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
-import {IStockToken} from "../interfaces/IStockToken.sol";
 import {PerpPool} from "./PerpPool.sol";
 
 /// One oracle-priced pool perp per Stock Token (GMX-v1 style), isolated margin, USDG collateral, the
@@ -103,9 +101,16 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// In a full market, an open at least this many times the smallest open position's size displaces it (see the
     /// contract notes).
     uint256 public constant DISPLACE_FACTOR = 2;
+    /// Positions opened by registered makers (the pool's maker registrar, OWNER on mainnet, registers each treasury's
+    /// in-house venue) are never displaced: displacing a treasury hedge closes it at a stranger's chosen moment and
+    /// leaves the treasury unhedged (review v5 R5-PERP-1). So that makers cannot in turn fill a market with
+    /// undisplaceable positions, at most this many of a market's positions may be makers'.
+    uint256 public constant MAX_MAKER_POSITIONS = 20;
     /// settleHeld uses a delisted token's own feed only within this distance of the last recorded price (30%, the
     /// largest hold spread): a bigger jump on a feed that was just delisted is more likely a fault than a move.
     uint256 public constant MAX_HELD_FEED_DEVIATION_BPS = 3_000;
+    /// Beyond that band, a move counts as confirmed by two consecutive rounds within this distance of each other (5%).
+    uint256 public constant HELD_CONFIRM_BPS = 500;
     /// How long a market may sit on hold (measured from its last fresh price) before it stops blocking the pool
     /// and its positions become settleable at the last price: longer than a weekend plus a market holiday, and
     /// plus Chainlink's 24 h heartbeat on these feeds, so a normal off-hours hold never triggers it.
@@ -119,6 +124,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         uint256 collateral; // asset units
         uint256 tokens; // token base units
         bool isLong;
+        bool maker; // opened by a registered maker (an in-house treasury venue): never displaced
         int256 fundingIndex; // side index at last settle
         uint256 borrowIndex; // borrow index at last settle
         int256 accruedFunding; // + owes, - receives (asset units), not yet realized
@@ -174,6 +180,17 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     uint256 public unpricedSince;
     /// When settleRetired opens; opens stopped when it was set (0 = not retired). See `retire`.
     uint256 public retireAt;
+    /// Open positions opened by makers (see MAX_MAKER_POSITIONS).
+    uint256 public makerPositions;
+    /// The two latest distinct out-of-band rounds a held (delisted) market saw on its token's feed (`_heldSettlePrice`).
+    struct HeldRounds {
+        uint128 prevPrice;
+        uint80 prevRound;
+        uint128 price;
+        uint80 round;
+    }
+
+    HeldRounds public heldRounds;
     /// Index-level funding totals (asset units x 1e18): conservation check, paid >= received, diff is dust.
     uint256 public fundingPaidTotal;
     uint256 public fundingReceivedTotal;
@@ -190,6 +207,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     event Opened(address indexed account, address indexed by, bool isLong, uint256 sizeUsd, uint256 collateral, uint256 price, uint256 fee);
     event Increased(address indexed account, address indexed by, uint256 sizeUsd, uint256 collateral, uint256 price, uint256 fee);
     event Decreased(address indexed account, address indexed by, uint256 sizeUsd, int256 pnl, int256 funding, uint256 borrow, uint256 fee, uint256 payout, uint256 price);
+    event HeldSettleRoundRejected(uint256 feedPrice, uint256 lastPrice, uint80 roundId);
     event Displaced(address indexed account, address indexed by, uint256 size);
     event Liquidated(address indexed account, address indexed by, uint256 size, int256 equity, uint256 reward, uint256 price);
     event FundingAccrued(int256 longIndex, int256 shortIndex, uint256 borrowIndex);
@@ -215,6 +233,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     error BadParams();
     error NotHeldLongEnough(uint256 heldFor);
     error TooManyPositions();
+    error TooManyMakerPositions();
     error TimelockActive(bytes32 id, uint256 eta);
     error NotProposed(bytes32 id);
     error ProposalExpired(bytes32 id, uint256 eta);
@@ -500,6 +519,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     function settleHeld(address account) external {
         uint256 held = heldFor();
         if (held <= HELD_GRACE) revert NotHeldLongEnough(held);
+        _observeHeldFeed();
         _decrease(account, _positions[account].size, true, _heldSettlePrice());
         emit HeldSettled(account, msg.sender, held);
     }
@@ -629,7 +649,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
 
     /// The smallest open position past its minimum hold (by size) and its size; (0, 0) if there is none. A full market
     /// lets an open of DISPLACE_FACTOR times this size displace it. A position inside its hold is never displaced: its
-    /// owner keeps the right to the profit a voluntary close after the hold would pay.
+    /// owner keeps the right to the profit a voluntary close after the hold would pay. A maker's position (an in-house
+    /// treasury venue) is never displaced either (MAX_MAKER_POSITIONS).
     function smallestMaturePosition() public view returns (address account, uint256 size) {
         (account, size) = _smallestMatureIn(_longAccounts, address(0), type(uint256).max);
         (account, size) = _smallestMatureIn(_shortAccounts, account, size);
@@ -647,7 +668,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
             address a = set.at(i);
             Position storage p = _positions[a];
             uint256 s = p.size;
-            if (s < bestSize && block.timestamp >= uint256(p.openedAt) + hold) (best, bestSize) = (a, s);
+            if (s < bestSize && !p.maker && block.timestamp >= uint256(p.openedAt) + hold) (best, bestSize) = (a, s);
         }
         return (best, bestSize);
     }
@@ -709,6 +730,11 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         (isLong ? _longAccounts : _shortAccounts).add(account);
         Position storage p = _positions[account];
         p.isLong = isLong;
+        if (pool.isMaker(account)) {
+            if (makerPositions >= MAX_MAKER_POSITIONS) revert TooManyMakerPositions();
+            ++makerPositions;
+            p.maker = true;
+        }
         p.fundingIndex = isLong ? longFundingIndex : shortFundingIndex;
         p.borrowIndex = borrowIndex;
         (uint256 pr, uint256 fee) = _add(account, p, sizeUsd, collateral, maxSlippageBps);
@@ -912,6 +938,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     }
 
     function _forget(address account, bool isLong) internal {
+        if (_positions[account].maker) --makerPositions;
         (isLong ? _longAccounts : _shortAccounts).remove(account);
     }
 
@@ -1028,6 +1055,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
             return _held(q);
         } catch {
             if (unpricedSince == 0) unpricedSince = _unpricedStart();
+            _observeHeldFeed();
             return (lastPrice, true, _unpricedAt());
         }
     }
@@ -1041,47 +1069,57 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     }
 
     /// settleHeld's price when the Valuer reverts (delisted token): the token's own feed, read directly, if it has a
-    /// round newer than `lastPrice` (a delisted token's feed keeps publishing while its market trades elsewhere), else
-    /// 0 (use `lastPrice`). Without it, a market nobody poked settled after the grace at a days-old price (review v3
-    /// R3-PERP-6). The read never reverts, and the round is used only if it is sane (review v4 R4-PERP-2): positive,
-    /// decimals at most 18, not in the future, at most the Valuer's maxStaleness older than the delisting, and within
-    /// MAX_HELD_FEED_DEVIATION_BPS of `lastPrice` (a feed that broke, the usual reason to delist at once, must not
-    /// price the settlement). Anything else leaves `lastPrice`.
-    function _heldSettlePrice() internal view returns (uint256) {
-        try valuer.quote(underlying) returns (Valuer.Quote memory) {
-            return 0; // the Valuer answers: _decrease already uses (and records) its latest round
-        } catch {}
-        StockTokenRegistry.Entry memory e = valuer.registry().entry(underlying);
-        if (e.feed.code.length == 0) return 0;
-        AggregatorV3Interface f = AggregatorV3Interface(e.feed);
-        uint256 answer;
-        try f.latestRoundData() returns (uint80, int256 a, uint256, uint256 updatedAt, uint80) {
-            if (a <= 0 || updatedAt <= lastPriceAt || updatedAt > block.timestamp) return 0;
-            // Fresh when the trouble started (the delisting) or later: an ancient round is not a price.
-            if (updatedAt + valuer.maxStaleness() < _unpricedStart()) return 0;
-            answer = uint256(a);
-        } catch {
-            return 0;
-        }
-        uint8 dec;
-        try f.decimals() returns (uint8 d) {
-            dec = d;
-        } catch {
-            return 0;
-        }
-        if (dec > 18) return 0;
-        uint256 p = answer * 10 ** (18 - dec);
-        if (!e.multiplierEmbedded) {
-            try IStockToken(underlying).uiMultiplier() returns (uint256 m) {
-                p = p * m / 1e18;
-            } catch {
-                return 0;
-            }
-        }
+    /// sane round newer than `lastPrice` (a delisted token's feed keeps publishing while its market trades elsewhere),
+    /// else 0 (use `lastPrice`). Without it, a market nobody poked settled after the grace at a days-old price (review
+    /// v3 R3-PERP-6). Sane (review v4 R4-PERP-2): positive, decimals at most 18, not in the future, at most the Valuer's
+    /// maxStaleness older than the delisting. A sane round is used if it is within MAX_HELD_FEED_DEVIATION_BPS of
+    /// `lastPrice`, or, beyond that band, if consecutive rounds confirm the move (review v5 R5-PERP-3): the market saw
+    /// an earlier, different round on the same side of `lastPrice` and within HELD_CONFIRM_BPS of this one (every
+    /// state-changing call on the market while the Valuer reverts records the rounds it sees, poke() included). A
+    /// single round far from the last price is more likely a fault than a move: it settles at `lastPrice`, and the case
+    /// is recorded (HeldSettleRoundRejected).
+    function _heldSettlePrice() internal returns (uint256) {
+        (uint256 p, uint80 rid) = _heldFeedRound();
+        if (p == 0) return 0;
         uint256 last = lastPrice;
+        if (_inBand(p, last)) return p;
+        HeldRounds memory r = heldRounds;
+        bool confirmed = rid == r.round && r.prevRound != 0 && r.prevRound < rid && (p > last) == (r.prevPrice > last)
+            && (p > r.prevPrice ? p - r.prevPrice : r.prevPrice - p) <= uint256(r.prevPrice) * HELD_CONFIRM_BPS / BPS;
+        if (confirmed) return p;
+        emit HeldSettleRoundRejected(p, last, rid);
+        return 0;
+    }
+
+    /// Records the delisted feed's out-of-band rounds as they come (the two latest distinct ones).
+    function _observeHeldFeed() internal {
+        (uint256 p, uint80 rid) = _heldFeedRound();
+        if (p == 0 || _inBand(p, lastPrice)) return;
+        HeldRounds memory r = heldRounds;
+        if (rid == r.round) return;
+        heldRounds = HeldRounds(r.price, r.round, uint128(p), rid);
+    }
+
+    function _inBand(uint256 p, uint256 last) internal pure returns (bool) {
         uint256 band = last * MAX_HELD_FEED_DEVIATION_BPS / BPS;
-        if (last == 0 || p > last + band || p + band < last) return 0;
-        return p;
+        return last != 0 && p <= last + band && p + band >= last;
+    }
+
+    /// The delisted token's own feed round, if sane (see `_heldSettlePrice`), as (price per token 1e18, roundId); (0, 0)
+    /// otherwise, and while the Valuer still answers.
+    function _heldFeedRound() internal view returns (uint256 p, uint80 rid) {
+        try valuer.quote(underlying) returns (Valuer.Quote memory) {
+            return (0, 0); // the Valuer answers: _decrease already uses (and records) its latest round
+        } catch {}
+        try valuer.feedQuote(underlying) returns (uint256 pr, uint256 updatedAt, uint80 roundId) {
+            // Newer than the last recorded price, not in the future, and fresh when the trouble started (the
+            // delisting) or later: an ancient round is not a price.
+            if (updatedAt <= lastPriceAt || updatedAt > block.timestamp) return (0, 0);
+            if (updatedAt + valuer.maxStaleness() < _unpricedStart() || pr > type(uint128).max) return (0, 0);
+            return (pr, roundId);
+        } catch {
+            return (0, 0);
+        }
     }
 
     /// Hold start for a reverting Valuer: the later of the last recorded price time and when the trouble started.

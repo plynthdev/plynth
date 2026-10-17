@@ -24,6 +24,7 @@ import {PLTH} from "../../src/token/PLTH.sol";
 import {ExceptionInsurancePool} from "../../src/token/ExceptionInsurancePool.sol";
 import {Permit2Code} from "../consumer/Permit2Code.sol";
 import {StealthCode} from "../consumer/StealthCode.sol";
+import {SafeCode} from "../mocks/SafeCode.sol";
 
 interface IOwned2 {
     function owner() external view returns (address);
@@ -51,7 +52,10 @@ contract MainnetBetaTest is Test {
         // Mainnet mode wants OWNER to be a Safe with threshold >= 2 (review v2 L-22, v4 R4-ORC-1).
         address[] memory safeOwners = new address[](3);
         (safeOwners[0], safeOwners[1], safeOwners[2]) = (makeAddr("signer1"), makeAddr("signer2"), makeAddr("signer3"));
-        deployCodeTo("MockSafe.sol:MockSafe", abi.encode(safeOwners, uint256(2)), owner);
+        // A real-looking Safe (review v5 R5-ORC-1): the official SafeProxy runtime at OWNER, pointing at the official
+        // v1.3.0 singleton address (a Safe-storage-layout stand-in there, since tests run offline).
+        deployCodeTo("SafeCode.sol:MockSafeSingleton", SafeCode.SINGLETON_130);
+        _makeSafe(owner, safeOwners, 2);
         deployCodeTo("MockUSDG.sol:MockUSDG", script.USDG());
         MainnetBeta.Stock[] memory s = script.stocks();
         for (uint256 i; i < s.length; ++i) {
@@ -83,9 +87,32 @@ contract MainnetBetaTest is Test {
         vm.setEnv("FORK_MAX_STALENESS", vm.toString(uint256(7 days)));
     }
 
+    /// Turns `at` into a Safe the OWNER pin accepts: official SafeProxy runtime, official singleton in slot 0, the
+    /// owners linked list (slot 2), owner count (3), threshold (4) and an empty module list (slot 1).
+    function _makeSafe(address at, address[] memory signers, uint256 threshold) internal {
+        vm.etch(at, SafeCode.PROXY_130_RUNTIME);
+        vm.store(at, bytes32(0), bytes32(uint256(uint160(SafeCode.SINGLETON_130))));
+        address sentinel = address(1);
+        address prev = sentinel;
+        for (uint256 i; i < signers.length; i++) {
+            vm.store(at, keccak256(abi.encode(prev, uint256(2))), bytes32(uint256(uint160(signers[i]))));
+            prev = signers[i];
+        }
+        vm.store(at, keccak256(abi.encode(prev, uint256(2))), bytes32(uint256(uint160(sentinel))));
+        vm.store(at, bytes32(uint256(3)), bytes32(signers.length));
+        vm.store(at, bytes32(uint256(4)), bytes32(threshold));
+        vm.store(at, keccak256(abi.encode(sentinel, uint256(1))), bytes32(uint256(uint160(sentinel))));
+    }
+
+    /// Suites that inherit these tests run in parallel with this one: the test contract's code hash keeps their
+    /// output files apart.
+    function _suiteTag() internal view returns (string memory) {
+        return string.concat("-", vm.toString(uint256(uint32(uint256(address(this).codehash)))));
+    }
+
     /// One output file per test (tests run in parallel): named after the running test's selector.
     function _out() internal view returns (string memory) {
-        return string.concat("test-beta-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        return string.concat("test-beta-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
     }
 
     function _path() internal view returns (string memory) {
@@ -279,7 +306,7 @@ contract MainnetBetaTest is Test {
         }
         // The post-deploy check passes after OWNER's accepts too.
         MainnetBeta v = new MainnetBeta();
-        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
         vm.writeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f), json);
         v.verifyDeployment(f);
         vm.removeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f));
@@ -330,7 +357,7 @@ contract MainnetBetaTest is Test {
         vm.prank(owner);
         fac.setAdapterAllowed(_a(json, "cashSleeve").codehash, false); // removal applies at once
         MainnetBeta v = new MainnetBeta();
-        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
         vm.writeFile(string.concat(vm.projectRoot(), "/../app/deployments/", f), json);
         vm.expectRevert(
             abi.encodeWithSelector(MainnetBeta.HandoffIncomplete.selector, address(fac), "allow-list: cashSleeve")
@@ -543,7 +570,7 @@ contract MainnetBetaTest is Test {
         vm.warp(block.timestamp + 48 hours);
         vm.prank(owner);
         reg.list(s[0].token, s[1].feed, true);
-        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), ".json");
+        string memory f = string.concat("verify-", vm.toString(uint256(uint32(msg.sig))), _suiteTag(), ".json");
         string memory path = string.concat(vm.projectRoot(), "/../app/deployments/", f);
         vm.writeFile(path, json);
         MainnetBeta v = new MainnetBeta();

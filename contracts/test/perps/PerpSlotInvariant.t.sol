@@ -152,6 +152,7 @@ contract PerpSlotInvariantTest is Test {
             PerpMarket.Position memory p = market.position(a);
             assertEq(p.size, s);
             assertGe(block.timestamp, uint256(p.openedAt) + market.minHoldSeconds(), "only a mature position is displaceable");
+            assertFalse(p.maker, "a maker's position is never displaceable");
         }
     }
 
