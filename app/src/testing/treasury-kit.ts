@@ -5,7 +5,7 @@ import { compileTemplate, loadTemplate, policyAbiParam, type Policy } from "@/tr
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { estimateGasAhead, withGasHeadroom } from "@/lib/gas";
-import { createPublicClient, createWalletClient, decodeEventLog, defineChain, encodeAbiParameters, http, stringToHex, type Abi, type Address, type Hex, type PublicClient } from "viem";
+import { createPublicClient, createWalletClient, decodeEventLog, defineChain, encodeAbiParameters, http, keccak256, stringToHex, type Abi, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 
 export const ROOT = join(import.meta.dir, "..", "..", "..");
@@ -190,6 +190,14 @@ export class Kit {
     a.beacon = await this.deploy("JitterBeacon.sol", "JitterBeacon", [this.equityKey.address, d, 3600n]);
 
     if (!opts.factory) await this.send(a.approvals!, "BoardApprovals.sol", "BoardApprovals", "bindAccount", [a.account!]);
+    // Review v4: a factory treasury registers only reviewed adapters (the factory's codehash allow-list); the deployer
+    // still owns the kit's factory (first-time setup), so the additions apply at once.
+    if (opts.factory) {
+      for (const sleeve of [a.cashSleeve!, a.equitySleeve!]) {
+        const code = await this.pub.getCode({ address: sleeve });
+        await this.send(a.factory!, "TreasuryFactory.sol", "TreasuryFactory", "setAdapterAllowed", [keccak256(code!), true]);
+      }
+    }
     await this.send(a.account, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("cash", { size: 32 }), this.cashKey.address, [a.cashSleeve]]);
     await this.send(a.account, "TreasuryAccount.sol", "TreasuryAccount", "registerDesk", [stringToHex("equity", { size: 32 }), this.equityKey.address, [a.equitySleeve]]);
     await this.send(a.usdg, "MockUSDG.sol", "MockUSDG", "mint", [a.account, funding]);
