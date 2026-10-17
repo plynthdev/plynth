@@ -189,7 +189,7 @@ async function main() {
     checks.push("Hidden Vault caps proposed at uint256 max (apply after 48h)");
     const registrar = getAddress((await fork.readContract({ address: getAddress(dep.perpPool as string), abi: parseAbi(["function makerRegistrar() view returns (address)"]), functionName: "makerRegistrar" })) as Address);
     if (registrar !== A.owner) throw new Error(`perpPool maker registrar ${registrar}`);
-    checks.push("perpPool maker registrar = OWNER. OWNER then, for each treasury's InHousePerpVenue: perpPool.setMaker(venue, true) (instant; a hedge open then loses 52 bps of size instead of 60, still above the guard's 50 bps per operation: decision pending)");
+    checks.push("perpPool maker registrar = OWNER. OWNER then, for each treasury's InHousePerpVenue: perpPool.setMaker(venue, true) (instant; a hedge open then loses 52 bps of size instead of 60, inside the guard's in-house venue bound of spread + 2 x fee + 10 bps)");
     // Predicted addresses: the fork used the real deployer at its real nonce.
     const forkNonce0 = mainnetNonce;
     checks.push(`deployer nonce ${forkNonce0} on mainnet: the fork's addresses are the real ones if nothing else is sent from it first`);
