@@ -159,6 +159,8 @@ export type Ctx = {
   plaid?: PlaidLike | undefined;
   /** Statement / Plaid / on-chain accrual limits (KEEPER_MAX_ACCRUALS_PER_PASS / _PER_USER_WEEK; audit M-7). */
   accrueLimits?: { perPass: number; perUserWeek: number } | undefined;
+  /** perp-poke: a market's stored price older than this many seconds is refreshed (KEEPER_PERP_POKE_AGE_S, default 3600). */
+  perpPokeAgeS?: number;
   /** refresh-mock-feeds settings and its mainnet feed reader; absent = the job does nothing. */
   mockFeeds?: MockFeedOptions | undefined;
   log: (m: string) => void;

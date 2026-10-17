@@ -90,6 +90,7 @@ const schema = z.object({
   KEEPER_JOBS: list,
   KEEPER_MAX_ACCRUALS_PER_PASS: int(200, 1),
   KEEPER_MAX_ACCRUALS_PER_USER_WEEK: int(100, 1),
+  KEEPER_PERP_POKE_AGE_S: int(3600, 60),
   SPLIT_PARTS: int(2, 1, 3),
   // keeper job refresh-mock-feeds (testnet kit deployments only)
   KEEPER_MOCK_FEED_INTERVAL_S: int(600, 1),
