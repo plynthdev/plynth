@@ -209,6 +209,8 @@ contract PerpInvariantTest is Test {
     /// gain), so it never exceeds pool cash plus what traders can lose (their collateral).
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 80
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_lpEquityFloorsEachPosition() public view {
         for (uint256 i; i < 2; i++) {
             assertApproxEqAbs(markets[i].traderPnl(), handler.clampedPnl(i), 8, "per-position clamp");

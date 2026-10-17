@@ -119,6 +119,8 @@ contract PrivateSleeveBookInvariantTest is PrivateSleeveFixture {
     /// Real Honk verifier calls are heavy: fewer, shorter runs.
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 60
+    /// forge-config: ci.invariant.runs = 256
+    /// forge-config: ci.invariant.depth = 500
     function invariant_bookDropsOnlyByProvenProceeds() public view {
         assertEq(sleeve.bookUsd() + handler.provenDebit(), book0, "book moved without proven proceeds");
         assertLe(handler.provenDebit(), 40_000e18, "more than the one provable note was debited");
