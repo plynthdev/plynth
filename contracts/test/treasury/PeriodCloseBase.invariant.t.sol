@@ -196,7 +196,7 @@ contract PeriodCloseBaseInvariantTest is TreasuryFixture {
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 40
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 200
+    /// forge-config: ci.invariant.depth = 500
     function invariant_claimBasisNeverAboveRealHoldings() public view {
         assertLe(pc.claimBasisNow(), handler.trustedUsd(), "claim basis above the real cash + stock held");
     }
@@ -204,7 +204,7 @@ contract PeriodCloseBaseInvariantTest is TreasuryFixture {
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 40
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 200
+    /// forge-config: ci.invariant.depth = 500
     function invariant_withdrawalsNeverLowerTheDrawdownBase() public view {
         assertEq(handler.baseViolations(), 0, "a close stored a base below snapshot value + withdrawals");
     }

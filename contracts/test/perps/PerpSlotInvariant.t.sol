@@ -130,7 +130,7 @@ contract PerpSlotInvariantTest is Test {
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 300
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 400
+    /// forge-config: ci.invariant.depth = 500
     function invariant_slotsBounded() public view {
         assertLe(market.openPositionCount(), market.MAX_OPEN_POSITIONS());
         address[] memory list = market.openPositions();
@@ -144,7 +144,7 @@ contract PerpSlotInvariantTest is Test {
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 300
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 400
+    /// forge-config: ci.invariant.depth = 500
     function invariant_fullMarketAdmitsADisplacingOpen() public view {
         assertEq(handler.refusedButShouldPass(), 0, "an open that should displace (or fill a free slot) was refused");
         (address a, uint256 s) = market.smallestMaturePosition();
@@ -158,7 +158,7 @@ contract PerpSlotInvariantTest is Test {
     /// forge-config: default.invariant.runs = 16
     /// forge-config: default.invariant.depth = 300
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 400
+    /// forge-config: ci.invariant.depth = 500
     function invariant_displacedGetsItsVoluntaryClose() public view {
         assertEq(handler.displacedUnderpaid(), 0, "a displaced position got other than its own full close");
     }
