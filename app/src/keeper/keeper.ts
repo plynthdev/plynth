@@ -2,7 +2,6 @@ import type { Ctx, JobResult } from "./context";
 import { runBeacon } from "./jobs/beacon";
 import { runExecute } from "./jobs/execute";
 import { runLiquidate } from "./jobs/liquidate";
-import { runPerpPoke } from "./jobs/perp-poke";
 import { runFeePush } from "./jobs/fee-push";
 import { runDeliverHidden } from "./jobs/hidden";
 import { runRefreshMockFeeds } from "./jobs/mock-feeds";
@@ -16,7 +15,7 @@ import { runTopups } from "./jobs/topups";
  * Pass order matters within one pass: refresh-mock-feeds first (testnet kit only), so a mock feed that went stale
  * cannot put the market on hold for this pass's execute. liquidate next: a safety job (perp positions below
  * maintenance, bad debt, settling markets held past their grace), so a slow or failing consumer job never delays it.
- * perp-poke right after it records a recent price on perp markets that have not traded for an hour, so a later
+ * liquidate also pokes perp markets that have not recorded a price for an hour (jobs/perp-poke.ts), so a later
  * delisting starts its grace from a recent price (only when the feed has something newer: no gas while closed).
  * Then top-ups fund `available`, on-chain round-ups move it to `pending`, sweep
  * joins pending into books, beacon commits for books that now exist, execute runs books whose time came.
@@ -30,7 +29,6 @@ import { runTopups } from "./jobs/topups";
 export const JOBS: [string, (ctx: Ctx) => Promise<JobResult>][] = [
   ["refresh-mock-feeds", runRefreshMockFeeds],
   ["liquidate", runLiquidate],
-  ["perp-poke", runPerpPoke],
   ["fee-push", runFeePush],
   ["topups", runTopups],
   ["roundups", runRoundups],

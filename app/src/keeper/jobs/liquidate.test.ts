@@ -42,7 +42,9 @@ function fakeCtx(chain: Chain, markets: Address[]) {
   const sent: string[] = [];
   const key = (m: Address, a: unknown) => `${m}:${String(a)}`.toLowerCase();
   const pub = {
+    getBlock: async () => ({ timestamp: 1_800_000_000n }),
     readContract: async ({ address, functionName, args }: { address: Address; functionName: string; args: unknown[] }) => {
+      if (functionName === "openPositionCount") return 0n; // the poke phase: nothing to poke here
       if (functionName === "openPositions") {
         if (chain.throwOn?.has(`${address}:list`.toLowerCase())) throw new Error("execution reverted");
         return chain.positions[address] ?? [];

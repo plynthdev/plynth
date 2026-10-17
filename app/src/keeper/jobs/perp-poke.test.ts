@@ -7,6 +7,7 @@ import { perpMarketKeeperAbi } from "@/abi/keeper";
 import type { Ctx } from "@/keeper/context";
 import { JOBS } from "@/keeper/keeper";
 import { ROOT } from "@/testing/keeper-helpers";
+import { runLiquidate } from "./liquidate";
 import { pokeDecision, runPerpPoke } from "./perp-poke";
 
 const A = (n: number) => getAddress(`0x${n.toString(16).padStart(40, "0")}`);
@@ -88,10 +89,19 @@ describe("runPerpPoke over a fake chain", () => {
 });
 
 describe("wiring", () => {
-  test("perp-poke runs right after liquidate and spends stays last", () => {
-    const names = JOBS.map(([n]) => n);
-    expect(names.indexOf("perp-poke")).toBe(names.indexOf("liquidate") + 1);
-    expect(names.at(-1)).toBe("spends");
+  test("the JOBS order is exactly the merged order (safety first, user-supplied spends last); poke rides on liquidate", () => {
+    expect(JOBS.map(([n]) => n)).toEqual(["refresh-mock-feeds", "liquidate", "fee-push", "topups", "roundups", "sweep", "beacon", "execute", "deliver-quiet", "deliver-hidden", "spends"]);
+  });
+
+  test("runLiquidate runs the poke phase after its liquidations", async () => {
+    const { ctx, sent } = fakeCtx({ [M2]: { count: 3n, lastPriceAt: NOW - 7200n, feed: NOW - 30n } });
+    const pub = ctx.pub as any;
+    const inner = pub.readContract;
+    pub.readContract = async (q: any) => (q.functionName === "openPositions" ? [] : inner(q));
+    const r = await runLiquidate(ctx);
+    expect(sent).toEqual([`poke:${M2}`]);
+    expect(r.job).toBe("liquidate");
+    expect(r.actions).toBe(1);
   });
 
   test("ABI slice matches contracts/out (skips if not built)", () => {

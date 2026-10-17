@@ -4,9 +4,9 @@
 // Env (config.ts): KEEPER_CHAIN=local|testnet|mainnet (default local), DATABASE_URL, LOCAL_RPC_URL / RHC_*_RPC_URL,
 // KEEPER_DEPLOYMENTS_DIR (default app/deployments), KEEPER_SECRET_KEY (32 bytes hex/base64, seals beacon secrets),
 // KEEPER_PRIVATE_KEY or KEEPER_KEYSTORE + KEEPER_KEYSTORE_PASSWORD_FILE, KEEPER_LOOKAHEAD (windows, default 2),
-// KEEPER_JOBS (comma-separated subset of refresh-mock-feeds,liquidate,perp-poke,fee-push,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,
+// KEEPER_JOBS (comma-separated subset of refresh-mock-feeds,liquidate,fee-push,topups,roundups,spends,sweep,beacon,execute,deliver-quiet,
 // deliver-hidden; default all), KEEPER_MOCK_FEED_* (refresh-mock-feeds on testnet kit deployments; mainnet feeds are
-// read over RHC_MAINNET_RPC_URL), KEEPER_PERP_POKE_AGE_S (perp-poke: refresh a perp market's stored price older than this, default 3600),
+// read over RHC_MAINNET_RPC_URL), KEEPER_PERP_POKE_AGE_S (liquidate also pokes a perp market's stored price older than this, default 3600),
 // PLAID_CLIENT_ID + PLAID_SECRET (+ PLAID_ENV=sandbox|production, default sandbox) to sync linked Plaid items,
 // SPLIT_PARTS (Quiet delivery parts per allocation, 1-3, default 2), KEEPER_CONFIRMATIONS (Quiet delivery proofs are read
 // at head minus this many blocks; default 2 on testnet/mainnet, 0 on local).

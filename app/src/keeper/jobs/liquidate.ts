@@ -12,6 +12,7 @@
 import type { Address } from "viem";
 import { perpMarketKeeperAbi, perpPoolKeeperAbi } from "@/abi/keeper";
 import { simulate, type Ctx, type JobResult } from "@/keeper/context";
+import { runPerpPoke } from "./perp-poke";
 
 export type LiquidationView = {
   account: Address;
@@ -38,6 +39,21 @@ export function liquidationAction(v: LiquidationView): LiquidationAction {
 }
 
 export async function runLiquidate(ctx: Ctx): Promise<JobResult> {
+  const res = await liquidatePhase(ctx);
+  // Then keep each market's stored price recent (perp-poke.ts): after the liquidations, never before them.
+  try {
+    const poke = await runPerpPoke(ctx);
+    res.ok &&= poke.ok;
+    res.actions += poke.actions;
+    res.notes.push(...poke.notes.map((n) => `poke ${n}`));
+  } catch (err) {
+    res.ok = false;
+    res.notes.push(`poke failed (${firstLine(err)})`);
+  }
+  return res;
+}
+
+async function liquidatePhase(ctx: Ctx): Promise<JobResult> {
   const res: JobResult = { job: "liquidate", ok: true, actions: 0, notes: [] };
   const markets = ctx.dep.perpMarkets ?? [];
   if (markets.length === 0) {

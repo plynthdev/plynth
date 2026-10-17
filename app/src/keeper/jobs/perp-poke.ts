@@ -1,4 +1,4 @@
-// Job perp-poke: keeps each in-house perp market's stored price recent. PerpMarket measures a hold (feed halted,
+// perp-poke (run by the liquidate job, after its liquidations): keeps each in-house perp market's stored price recent. PerpMarket measures a hold (feed halted,
 // token delisted) from `lastPriceAt`, the feed time of the last price it recorded, and only trades record one. A
 // market with open positions and no trades for a week that is then delisted would start its HELD_GRACE a week in the
 // past and become settleable at once, at a week-old price. poke() records the current Valuer price and its time.
