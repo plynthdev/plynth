@@ -139,3 +139,21 @@ export const fmtUsd = (raw: bigint, dec = 6) => {
   const s = (raw < 0n ? -raw : raw).toString().padStart(dec + 1, "0");
   return `${raw < 0n ? "-" : ""}${s.slice(0, -dec)}.${s.slice(-dec, -dec + 2)}`;
 };
+
+/**
+ * v2 Valuer market calendar (on in MainnetBeta): prices hold from Friday 20:00 to Monday 01:00 UTC and on closed
+ * days, so new risk (perp opens, desk buys) is refused then. Steps that need an open market call this after a warp:
+ * if the market is closed it moves chain time to the next open hour. No-op on a stack without the calendar.
+ */
+export async function toMarketOpen(x: Ctx): Promise<void> {
+  const v = x.addr("valuer");
+  const V = abiOf("Valuer");
+  if (!(await x.r.read<boolean>(v, V, "marketClosed", []))) return;
+  await x.r.check("market closed by the v2 Valuer calendar: move to the next open hour", async () => {
+    let t = await x.r.now();
+    while (await x.r.read<boolean>(v, V, "isClosedAt", [t])) t += 3600n;
+    await x.r.warpTo(t + 60n);
+    expect(!(await x.r.read<boolean>(v, V, "marketClosed", [])), "still closed");
+    return `chain time ${t + 60n}`;
+  });
+}

@@ -46,6 +46,8 @@ export async function treasury(x: Ctx) {
     return { nav: s.nav, cash: Number((s.cashUsd * 10_000n) / s.nav), equity: Number((s.equityUsd * 10_000n) / s.nav) };
   };
   const exec = (deskId: string, adapter: Address, data: Hex, proofs: Hex[][], ticket: Hex = ZERO32) => ({ address: t.account!, abi: ACC, functionName: "execute", args: [stringToHex(deskId, { size: 32 }), adapter, data, packProofs(proofs), ticket] }) as const;
+  // Slippage the sleeve accepts: at most the guard's maxOpLossBps (200 on the default fork stack, 50 on v2 MainnetBeta).
+  const slip = Number(await r.read<number>(guard, abiOf("PolicyGuard"), "maxOpLossBps", []));
   const sharesFor = async (usd: bigint) => r.read<bigint>(steak, abiOf("ERC4626"), "convertToShares", [usd * U]);
 
   // ---- desk passes until the equity desk has rebalanced at its beacon time. The desk reveals only at that time
@@ -65,6 +67,9 @@ export async function treasury(x: Ctx) {
     if (at !== 2n ** 64n - 1n && (await r.now()) < at) await r.warpTo(at);
     rows.push(...(await x.state.deskPass(`day ${(day - dayStart(BigInt(x.dep.genesis as number))) / DAY}`)));
     if (rows.some((w) => w.action === "rebalance_done")) break;
+    // No beacon was committed for today before it began (this pass committed the next ones): today has no
+    // rebalance time, so go to tomorrow, whose beacon now exists, instead of passing again on the same day.
+    if (at === 2n ** 64n - 1n) await r.warpTo(day + DAY + 60n);
   }
   const sent = rows.filter((w) => w.status === "sent");
   await r.check("equity desk bought real Stock Tokens on the real pools", async () => {
@@ -94,7 +99,7 @@ export async function treasury(x: Ctx) {
   const T2 = x.state.t2 as Compiled | undefined;
   await r.reverts("guard: an order above the per-order cap (redeem $45k > $40k)", A.cashDesk, exec("cash", cashSleeve, wrap(steak, await sharesFor(45_000n), cashRun(1, steak, await sharesFor(45_000n), 0n)), [proofOf(usdg)]), "GuardRejected(4)");
   const meta = x.token("META");
-  await r.reverts("guard: buying a Stock Token the policy does not allow (META)", A.equityDesk, exec("equity", equitySleeve, wrap(usdg, 100n * U, equityRun(0, meta, 100n * U, 200)), [[]]), "GuardRejected(2)");
+  await r.reverts("guard: buying a Stock Token the policy does not allow (META)", A.equityDesk, exec("equity", equitySleeve, wrap(usdg, 100n * U, equityRun(0, meta, 100n * U, slip)), [[]]), "GuardRejected(2)");
   const offAt = (await r.now()) + 8n * DAY;
   await r.reverts("guard: off-hours (every held feed stale, simulated 8 days later) refuses a cash move", A.cashDesk, exec("cash", cashSleeve, wrap(steak, await sharesFor(500n), cashRun(1, steak, await sharesFor(500n), 0n)), [proofOf(usdg)]), "GuardRejected(8)", { blockOverrides: { time: offAt } });
   await r.reverts("an unregistered key cannot run a desk (rule 1: desk scope)", A.outsider, exec("cash", cashSleeve, wrap(steak, 1n, cashRun(1, steak, 1n, 0n)), []), "GuardRejected(1)");
@@ -157,7 +162,7 @@ export async function treasury(x: Ctx) {
     // covered by the forge suite (PolicyGuardTest). Recorded, not faked.
     await r.check("guard: band breach not reachable under the approval line at this fork block", async () => `equity needs +$${need / U} to cross the top; skipped`);
   } else
-  await r.reverts(`guard: a $${bandBuy / U} ${r.who(bandToken)} buy that takes equity above its band`, A.equityDesk, exec("equity", equitySleeve, wrap(usdg, bandBuy, equityRun(0, bandToken, bandBuy, 200)), [proofOf(bandToken)]), "GuardRejected(6)");
+  await r.reverts(`guard: a $${bandBuy / U} ${r.who(bandToken)} buy that takes equity above its band`, A.equityDesk, exec("equity", equitySleeve, wrap(usdg, bandBuy, equityRun(0, bandToken, bandBuy, slip)), [proofOf(bandToken)]), "GuardRejected(6)");
 
   // ---- period close: refused below the weekly-close tier, committed after the board stakes PLTH
   const pc = t.close!;
@@ -287,7 +292,7 @@ export async function treasury(x: Ctx) {
     const pull1 = toPaused < idle ? toPaused : idle;
     await r.send("board withdraws ~5% of NAV (withdrawToBoard is never gated)", A.deployer, { address: t.account!, abi: ACC, functionName: "withdrawToBoard", args: [usdg, pull1] }, async () => `drawdown ${(await ddBps()) / 100}% vs period start (PAUSED below -4%)`);
     const tsla = x.token("TSLA");
-    await r.reverts("PAUSED: buying a Stock Token is refused", A.equityDesk, exec("equity", equitySleeve, wrap(usdg, 100n * U, equityRun(0, tsla, 100n * U, 200)), [proofOf(tsla)]), "GuardRejected(9)");
+    await r.reverts("PAUSED: buying a Stock Token is refused", A.equityDesk, exec("equity", equitySleeve, wrap(usdg, 100n * U, equityRun(0, tsla, 100n * U, slip)), [proofOf(tsla)]), "GuardRejected(9)");
     await r.check("risk service reports the PAUSED drawdown state", async () => {
       const run = await runOnce("src/bin/treasury-risk.ts", [], treasuryEnv({ TREASURY_ACCOUNT: t.account!, RISK_ONCE: "1", TREASURY_POSITION_MIRROR: t.mirror }));
       expect(/PAUSED/i.test(run.out), `exit ${run.code}: ${run.out.slice(-500)}`);
@@ -304,7 +309,7 @@ export async function treasury(x: Ctx) {
       await r.reverts("DERISK: a cash -> vault deposit (cash weight not up) is refused", A.cashDesk, exec("cash", cashSleeve, wrap(usdg, 100n * U, cashRun(0, steak, 100n * U, 0n)), [proofOf(steak)]), "GuardRejected(10)");
       const bal = await r.read<bigint>(tsla, erc20Abi, "balanceOf", [t.account!]);
       if (bal > 0n) {
-        await r.send("DERISK: selling a Stock Token toward cash is allowed", A.equityDesk, exec("equity", equitySleeve, wrap(tsla, bal / 4n, equityRun(1, tsla, bal / 4n, 200)), [proofOf(usdg)]), async () => "sold 25% of the TSLA position");
+        await r.send("DERISK: selling a Stock Token toward cash is allowed", A.equityDesk, exec("equity", equitySleeve, wrap(tsla, bal / 4n, equityRun(1, tsla, bal / 4n, slip)), [proofOf(usdg)]), async () => "sold 25% of the TSLA position");
       }
       const idle3 = await usdgOf(x, t.account!);
       await r.send("board withdraws in DERISK (never gated)", A.deployer, { address: t.account!, abi: ACC, functionName: "withdrawToBoard", args: [usdg, idle3 / 10n] });

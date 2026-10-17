@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { devAccount, FORK_CHAIN_ID, PATHS, ROLE } from "../lib";
 import { abiOf, expect, j } from "./core";
-import { E18, erc20Abi, HOUR, U, usdgOf, type Ctx } from "./context";
+import { E18, erc20Abi, HOUR, toMarketOpen, U, usdgOf, type Ctx } from "./context";
 import { db, runOnce, treasuryEnv } from "./services";
 import { packProofs } from "@/treasury/desks/runner";
 
@@ -194,6 +194,7 @@ export async function perps(x: Ctx) {
     expect(carry > 0n, `carry ${carry}`);
     return `pairCarry ${Number(carry) / 1e18} USD`;
   });
+  await toMarketOpen(x);
   await r.send("crowd flips: the long closes", A.longT, { address: tslaM, abi: PM, functionName: "close" });
   await r.send("crowd flips: the short closes", A.shortT, { address: tslaM, abi: PM, functionName: "close" });
   await r.send("crowd flips: a 150k short (shorts pay now)", A.shortT, { address: tslaM, abi: PM, functionName: "open", args: [false, 150_000n * U, 30_000n * U, 100n] });
