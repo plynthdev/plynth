@@ -110,13 +110,16 @@ beforeAll(async () => {
   anvil = await spawnAnvil(["--chain-id", "46630"]);
   pub = createPublicClient({ transport: http(anvil.rpc), pollingInterval: 50 }) as PublicClient;
   await pub.request({ method: "anvil_setCode" as never, params: [PM, `0x${readFileSync(fixture, "utf8").trim()}`] as never });
-  const f = Bun.spawnSync(["forge", "script", "script/TestnetKit.s.sol:TestnetKit", "--rpc-url", anvil.rpc, "--broadcast", "--private-key", ANVIL_KEY_0, "--slow"], {
+  // Async, not spawnSync: a blocked event loop stops draining anvil's stdout (testing/anvil.ts), the pipe fills, anvil
+  // stalls on its next log line and forge's receipt polls time out (seen on the 2-core CI runner).
+  const f = Bun.spawn(["forge", "script", "script/TestnetKit.s.sol:TestnetKit", "--rpc-url", anvil.rpc, "--broadcast", "--private-key", ANVIL_KEY_0, "--slow"], {
     cwd: join(ROOT, "contracts"),
     env: { ...process.env, TESTNET_KIT_FILE: KIT_FILE },
     stdout: "pipe",
     stderr: "pipe",
   });
-  if (f.exitCode !== 0) throw new Error(`TestnetKit failed:\n${f.stdout.toString()}${f.stderr.toString()}`);
+  const [fOut, fErr, fCode] = await Promise.all([new Response(f.stdout).text(), new Response(f.stderr).text(), f.exited]);
+  if (fCode !== 0) throw new Error(`TestnetKit failed:\n${fOut}${fErr}`);
   dep = JSON.parse(readFileSync(KIT_PATH, "utf8"));
   // Fund the user-side trades the test simulates (deployer owns the kit's mocks).
   const w = createWalletClient({ account: deployer, transport: http(anvil.rpc) });
