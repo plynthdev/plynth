@@ -356,6 +356,30 @@
    "reason": "State written after calls to trusted, fixed contracts (own markets, sleeve venues, StockRouter, staking/insurance) inside nonReentrant or role-gated functions (onlyKeeper, onlyMarket, account-only)."
   },
   {
+   "check": "divide-before-multiply",
+   "where": "PerpMarket._heldSettlePrice",
+   "impact": "Medium",
+   "reason": "The division runs only for a feed with more than 18 decimals (Chainlink equity feeds use 8, so it never runs on mainnet), and it then loses at most the feed's sub-1e18 digits before the uiMultiplier scaling; the result is a settle price, compared against nothing."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PerpMarket._heldSettlePrice",
+   "impact": "Medium",
+   "reason": "`answer` and `dec` are assigned inside the try blocks before any use; every catch path returns 0 (fall back to lastPrice), so the zero defaults are never read."
+  },
+  {
+   "check": "unused-return",
+   "where": "PerpMarket._heldSettlePrice",
+   "impact": "Medium",
+   "reason": "valuer.quote is called only to learn whether the Valuer answers (then _decrease uses its price); from latestRoundData only the answer and updatedAt matter: the round must be newer than lastPriceAt and not in the future, roundId and startedAt are not needed."
+  },
+  {
+   "check": "unused-return",
+   "where": "PeriodClose._newSleeveUsd",
+   "impact": "Medium",
+   "reason": "Only the sleeve's value is needed: it is subtracted from the insurance claim basis, so ignoring a hold flag can only lower the cap (conservative), never raise it."
+  },
+  {
    "check": "uninitialized-local",
    "where": "PolicyGuard.venueLossBps",
    "impact": "Medium",
