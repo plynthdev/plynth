@@ -368,6 +368,36 @@
    "reason": "_open is nonReentrant. The external calls before the new position is written are the displacement close (the owner-listed PerpPool paying the displaced owner in USDG, a token with no transfer hooks) and the Valuer read; nothing they reach can call back into this market."
   },
   {
+   "check": "incorrect-equality",
+   "where": "BasisSleeve.sweepVenueIdle",
+   "impact": "Medium",
+   "reason": "`amount == 0` only skips an empty sweep. A donation to the venue can only raise the amount, and the sweep only moves the venue's idle cash to the sleeve's own treasury account (withdrawMarginToAccount), so nobody gains by steering it."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "PeriodClose.claimBasisNow",
+   "impact": "Medium",
+   "reason": "The accumulator starts at zero on purpose and is only added to."
+  },
+  {
+   "check": "uninitialized-local",
+   "where": "TreasuryFactory.allowedHashes",
+   "impact": "Medium",
+   "reason": "The counter starts at zero on purpose (it counts the allowed entries before the result array is filled)."
+  },
+  {
+   "check": "unused-return",
+   "where": "Valuer.feedQuote",
+   "impact": "Medium",
+   "reason": "startedAt and answeredInRound are not used: callers bound the round by updatedAt (newer than the last recorded price, not in the future, within the staleness of the delisting); the answer and decimals are checked here."
+  },
+  {
+   "check": "unused-return",
+   "where": "PerpMarket._heldFeedRound",
+   "impact": "Medium",
+   "reason": "valuer.quote is called only to learn whether the Valuer answers (then _decrease uses its price); the quote itself is not needed here."
+  },
+  {
    "check": "uninitialized-local",
    "where": "PerpMarket._close",
    "impact": "Medium",
@@ -390,18 +420,6 @@
    "where": "PeriodClose.claimBasisNow",
    "impact": "Medium",
    "reason": "Only the tracked asset list is needed from trackedAssets."
-  },
-  {
-   "check": "uninitialized-local",
-   "where": "PerpMarket._heldSettlePrice",
-   "impact": "Medium",
-   "reason": "`answer` and `dec` are assigned inside the try blocks before any use; every catch path returns 0 (fall back to lastPrice), so the zero defaults are never read."
-  },
-  {
-   "check": "unused-return",
-   "where": "PerpMarket._heldSettlePrice",
-   "impact": "Medium",
-   "reason": "valuer.quote is called only to learn whether the Valuer answers (then _decrease uses its price); from latestRoundData only the answer and updatedAt matter: the round must be newer than lastPriceAt and not in the future, roundId and startedAt are not needed."
   },
   {
    "check": "uninitialized-local",
