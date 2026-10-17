@@ -143,9 +143,10 @@ contract RV3PerpHeldSettlePriceTest is RV3PerpMainnet {
         emit log_named_uint("alice paid out, keeper poking (USDG units)", got);
     }
 
-    /// (b) R3-PERP-6, the known residual: with no poke for 6 days, settleHeld after the grace settles at the 6-day-old
-    /// lastPrice (exactly the open price, 100), so alice keeps the ~500 USDG she lost at the real price.
-    function test_V2L1_R3PERP6_withoutPokeHeldSettleUsesTheStalePrice() public {
+    /// (b) R3-PERP-6, fixed by the perps lane (00922fd): with no poke for 6 days, settleHeld on the delisted token
+    /// after the grace settles at its feed's newer round (~104.55), not at the 6-day-old lastPrice (100), so alice
+    /// pays her loss at the last published price.
+    function test_V2L1_R3PERP6_withoutPokeHeldSettleUsesTheFeedsNewerRound() public {
         (uint256 delistAt,) = _quietWeekThenDelist(false);
         (, int256 lastAnswer,,,) = feed.latestRoundData();
         assertGe(lastAnswer, 104e8, "the feed moved +4-5% while nobody poked");
@@ -159,15 +160,12 @@ contract RV3PerpHeldSettlePriceTest is RV3PerpMainnet {
         vm.warp(delistAt + market.HELD_GRACE() + 1);
         (Closed memory c, uint256 got) = _settle();
 
-        // The residual: the settle price is the stale one, not the ~105 the feed last published.
-        assertEq(c.price, 100e18, "R3-PERP-6: settled at the 6-day-old lastPrice");
-        assertEq(c.pnl, 0, "the short's loss at the real price is gone");
+        // The settle price is the feed's last round, not the stale stored price.
+        assertEq(c.price, uint256(lastAnswer) * 1e10, "R3-PERP-6 fixed: settled at the feed's newer round");
         _checkBorrow(c.borrow);
-        assertEq(got, uint256(_expectedPayout(100e18, c.borrow)));
-        int256 fair = _expectedPayout(uint256(lastAnswer) * 1e10, c.borrow);
-        uint256 erased = got - uint256(fair);
+        assertEq(got, uint256(_expectedPayout(c.price, c.borrow)));
+        int256 atStale = _expectedPayout(100e18, c.borrow);
+        assertEq(uint256(atStale) - got, SIZE * uint256(lastAnswer - P0) / uint256(P0), "alice pays size x the move since the open");
         emit log_named_uint("alice paid out, no poke (USDG units)", got);
-        emit log_named_uint("loss erased by the stale settle vs the last round (USDG units)", erased);
-        assertEq(erased, SIZE * uint256(lastAnswer - P0) / uint256(P0), "erased = size x the move since the open");
     }
 }
