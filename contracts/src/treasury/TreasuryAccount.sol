@@ -28,6 +28,11 @@ interface IPeriodCloseCash {
     function cash() external view returns (address);
 }
 
+/// PeriodClose's claim-basis low-water mark (review6 R6-TREAS-1).
+interface IPeriodCloseOutflow {
+    function noteOutflow() external;
+}
+
 /// The treasury's wallet. Desks are plain keys that call `execute`: the account checks the desk's scope,
 /// snapshots its state, runs the adapter with `call` (exact approvals, reset afterwards), then asks the
 /// PolicyGuard to check the resulting state against the board's policy and reverts everything on a breach.
@@ -316,7 +321,9 @@ contract TreasuryAccount is ReentrancyGuardTransient {
 
     /// Sends `amount` of `token` (address(0) = ETH) to the board. Never gated by policy, guard or desks. Counted per
     /// token in `boardWithdrawn`, so PeriodClose can add withdrawals back to the drawdown base and take them off the
-    /// insurance claim basis (review4 R4-TREAS-2/3); the counter never gates the withdrawal.
+    /// insurance claim basis (review4 R4-TREAS-2/3); the counter never gates the withdrawal. Then lowers the
+    /// PeriodClose's claim-basis low-water mark (it fails only if the board points the account at a PeriodClose
+    /// without `noteOutflow`).
     function withdrawToBoard(address token, uint256 amount) external onlyBoard {
         boardWithdrawn[token] += amount;
         if (token == address(0)) {
@@ -325,6 +332,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         } else {
             IERC20(token).safeTransfer(board, amount);
         }
+        _noteOutflow();
         emit WithdrawnToBoard(token, amount);
     }
 
@@ -368,6 +376,7 @@ contract TreasuryAccount is ReentrancyGuardTransient {
 
         uint8 code = guard.check(address(this), opHash, before, allowProof, approvalTicket);
         if (code != 0) revert GuardRejected(code);
+        _noteOutflow();
         emit GuardDecision(opHash, deskId, code);
         emit Executed(opHash, deskId, adapter);
     }
@@ -465,6 +474,13 @@ contract TreasuryAccount is ReentrancyGuardTransient {
         } catch {
             return address(0);
         }
+    }
+
+    /// Lowers the PeriodClose's claim-basis low-water mark to the holdings after this outflow (review6 R6-TREAS-1).
+    /// A plain call: a board that could make it fail (out of gas) could skip the mark, so a failure reverts.
+    function _noteOutflow() private {
+        address pc = periodClose;
+        if (pc != address(0)) IPeriodCloseOutflow(pc).noteOutflow();
     }
 
     function _inScope(bytes32 deskId, address adapter) private view returns (bool) {

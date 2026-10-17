@@ -166,6 +166,10 @@ export const perpVenueKeeperAbi = parseAbi([
   "function cash() view returns (address)",
   "function balanceOf(address account) view returns (uint256)",
   "function sweepVenueIdle(address venue) returns (uint256)",
+  "function account() view returns (address)",
+  "function isTreasury(address account) view returns (bool)",
+  "function isSleeve(address sleeve) view returns (bool)",
+  "function isVenue(address venue) view returns (bool)",
   "event VenueIdleSwept(address indexed venue, uint256 amount)",
   "error BadVenue()",
 ]);

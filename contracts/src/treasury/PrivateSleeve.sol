@@ -82,7 +82,10 @@ interface IPrivateSleeve {
 ///   more than it was proven at (the next close corrects it). Non-private assets sent
 ///   here count 0 against the book and `forwardOther` returns them; a private asset sent here by plain transfer
 ///   stays (it cannot be told apart from proceeds still to be swept).
-/// - refund (`refund`): a deposit still pending in the pool returns to the account, ungated.
+/// - refund (`refund`): a deposit still pending in the pool returns to the account, ungated. It debits the book
+///   only if no proof landed since the shield (review6 R6-TREAS-2): a pending deposit is not in the tree, so a proof
+///   after it already left it out of the book (and cleared `shieldedSinceProofUsd`); debiting it again would take
+///   its value off notes that are still shielded. `pendingEpoch` records the proof epoch of each shield.
 /// - close (`checkClose` / `onClose`, from PeriodClose): a treasury_close proof replaces `bookUsd` with the
 ///   proven private NAV.
 ///
@@ -145,6 +148,8 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
     }
 
     mapping(bytes32 nullifier => Held) public heldProceeds;
+    /// `proofEpoch` when each pending shield was made (review6 R6-TREAS-2): a refund after a later proof debits nothing.
+    mapping(uint256 pendingId => uint64) public pendingEpoch;
 
     event KeysSet(bytes32 ownerPk, bytes32 viewingPub);
     event Shielded(address indexed asset, uint256 raw, uint256 usd, uint256 indexed pendingId);
@@ -266,6 +271,7 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         bookUsd += usd;
         shieldedSinceProofUsd += usd;
         pendingUsd[pendingId] = usd;
+        pendingEpoch[pendingId] = proofEpoch;
         emit Shielded(asset, raw, usd, pendingId);
         return abi.encode(pendingId);
     }
@@ -311,10 +317,17 @@ contract PrivateSleeve is IPrivateSleeve, ISleeve, ReentrancyGuardTransient {
         pool.refundPending(pendingId);
         IERC20(p.asset).safeTransfer(account, p.raw);
         uint256 usd = pendingUsd[pendingId];
+        bool sinceProof = pendingEpoch[pendingId] == proofEpoch;
         delete pendingUsd[pendingId];
-        _debit(usd);
-        uint256 since = shieldedSinceProofUsd;
-        shieldedSinceProofUsd = since > usd ? since - usd : 0;
+        delete pendingEpoch[pendingId];
+        if (sinceProof) {
+            // Still counted in the book (no proof since the shield): take it off once.
+            _debit(usd);
+            uint256 since = shieldedSinceProofUsd;
+            shieldedSinceProofUsd = since > usd ? since - usd : 0;
+        } else {
+            usd = 0; // a later proof already left it out of the book
+        }
         emit Refunded(pendingId, p.asset, p.raw, usd);
     }
 

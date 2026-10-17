@@ -48,8 +48,8 @@ contract R5ClaimBasisVaultSharesTest is R3InsuranceCapNavTest {
         vm.prank(board);
         fAccount.withdrawToBoard(address(usdg), 50_000e6);
         assertApproxEqRel(ins.claimCapUsd(fAccount), cap0 - 25_000e18, 1e15, "USDG withdrawals are subtracted");
-        // value coming back never lifts the cap above the measurement
+        // value coming back never lifts the cap again before the next close (review6 R6-TREAS-1: low-water mark)
         usdg.mint(address(fAccount), 1_000_000e6);
-        assertApproxEqRel(ins.claimCapUsd(fAccount), cap0, 1e15, "back to the measurement, never above it");
+        assertApproxEqRel(ins.claimCapUsd(fAccount), cap0 - 25_000e18, 1e15, "the low-water mark holds");
     }
 }

@@ -15,6 +15,8 @@ const POOL = A(0x900);
 const M1 = A(0x901);
 const M2 = A(0x902);
 const USDG = A(0x05d);
+const FACTORY = A(0xfac);
+const TREASURY = A(0x7ea);
 
 describe("liquidationAction mirrors PerpMarket.liquidate / settleHeld", () => {
   const base = { account: A(1), keeper: KEEPER, keeperIsOperator: false, liquidatable: false, settleable: false };
@@ -56,6 +58,12 @@ function fakeCtx(chain: Chain, markets: Address[]) {
       const v = chain.venues?.[String(address).toLowerCase()];
       if (functionName === "sleeve") { if (!v) throw new Error("execution reverted"); return v.sleeve; }
       if (functionName === "cash") { if (!v) throw new Error("execution reverted"); return USDG; }
+      // review6 R6-SVC-1: the sweep checks the factory, the account and the sleeve before sending
+      const sl = Object.entries(chain.venues ?? {}).find(([, x]) => x.sleeve.toLowerCase() === String(address).toLowerCase());
+      if (functionName === "account") { if (!sl) throw new Error("execution reverted"); return TREASURY; }
+      if (functionName === "isTreasury") return address === FACTORY && args[0] === TREASURY;
+      if (functionName === "isSleeve") return address === TREASURY && Object.values(chain.venues ?? {}).some((x) => x.sleeve === args[0]);
+      if (functionName === "isVenue") return !!sl && sl[0] === String(args[0]).toLowerCase();
       if (functionName === "balanceOf") return chain.venues?.[String(args[0]).toLowerCase()]?.idle ?? 0n;
       if (functionName === "openPositions") {
         if (chain.throwOn?.has(`${address}:list`.toLowerCase())) throw new Error("execution reverted");
@@ -89,7 +97,7 @@ function fakeCtx(chain: Chain, markets: Address[]) {
       return { transactionHash: "0x01" };
     },
   };
-  const ctx = { account: KEEPER, pub, sender, dep: { perpMarkets: markets }, log: () => {} } as unknown as Ctx;
+  const ctx = { account: KEEPER, pub, sender, dep: { perpMarkets: markets, usdg: USDG, treasuryFactories: [FACTORY] }, log: () => {} } as unknown as Ctx;
   return { ctx, sent };
 }
 

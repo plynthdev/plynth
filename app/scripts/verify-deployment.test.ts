@@ -475,3 +475,37 @@ describe("adapter allow-list enumeration (v2)", () => {
   });
 });
 });
+
+describe("treasury v2.1 overlay (TreasuryV21.s.sol, review v6)", () => {
+  const { mergeTreasury, verifyTreasuryOverlay } = require("./verify-deployment") as typeof import("./verify-deployment");
+  const A = (n: number) => getAddress(`0x${n.toString(16).padStart(40, "0")}`);
+  const OWNER = A(0x0e), DEPLOYER = A(0xde), OLD = A(0xf1), NEW = A(0xf2);
+  const base = { chainId: 4663, owner: OWNER, deployer: DEPLOYER, treasuryFactory: OLD, acceptOwnership: [A(1)], allowEoaOwner: true } as unknown as Deployment;
+  const overlay = { treasuryVersion: "2.1", treasuryFactory: NEW, legacyTreasuryFactories: [OLD], owner: OWNER, accountImpl: A(0xa2), closeImpl: A(0xc2), policyImpl: A(0xb0), approvalsImpl: A(0xab), acceptOwnership: [NEW] };
+  const chain = (over: Record<string, unknown> = {}) => {
+    const f: Record<string, Record<string, unknown>> = {
+      [OLD]: { accountImpl: A(0xa1), closeImpl: A(0xc1), policyImpl: A(0xb0), approvalsImpl: A(0xab), guard: A(0x9), cash: A(0x5), feeRecipient: OWNER, tiers: zeroAddress, templates: A(0x7), allowedHashes: ["0x01", "0x02"], owner: OWNER, treasuryCount: 0n },
+      [NEW]: { accountImpl: A(0xa2), closeImpl: A(0xc2), policyImpl: A(0xb0), approvalsImpl: A(0xab), guard: A(0x9), cash: A(0x5), feeRecipient: OWNER, tiers: zeroAddress, templates: A(0x7), allowedHashes: ["0x02", "0x01"], ...over },
+    };
+    return async (a: Address, sig: string) => {
+      const fn = sig.match(/function (\w+)/)![1]!;
+      if (fn === "claimBasisLow") { if (a === A(0xc2)) return 0n; throw new Error("execution reverted"); }
+      const v = f[a]?.[fn];
+      if (v === undefined) throw new Error(`no ${fn} at ${a}`);
+      return v;
+    };
+  };
+  test("merge: the overlay's factory wins, the base keeps its roles and accept list", () => {
+    const m = mergeTreasury(base, overlay);
+    expect(m.treasuryFactory).toBe(NEW);
+    expect(m.acceptOwnership).toEqual([A(1)]);
+  });
+  test("a faithful redeploy passes; a changed parameter or an old close implementation fails", async () => {
+    const ok = await verifyTreasuryOverlay(base, overlay, chain(), async () => true);
+    expect(ok.filter((c) => c.status === "FAIL")).toEqual([]);
+    const badFee = await verifyTreasuryOverlay(base, overlay, chain({ feeRecipient: DEPLOYER }), async () => true);
+    expect(badFee.some((c) => c.status === "FAIL" && /feeRecipient/.test(c.what))).toBe(true);
+    const oldClose = await verifyTreasuryOverlay(base, { ...overlay, closeImpl: A(0xc1) }, chain({ closeImpl: A(0xc1) }), async () => true);
+    expect(oldClose.some((c) => c.status === "FAIL" && /low-water|is new/.test(c.what))).toBe(true);
+  });
+});

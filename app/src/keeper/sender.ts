@@ -80,9 +80,18 @@ export type SignedTx = { hash: Hash; nonce: number; raw: Hex };
 
 export type SendOptions = {
   minGas?: bigint;
+  /** Refuse to sign when the buffered estimate exceeds this (review6 R6-SVC-1): nothing is broadcast. */
+  maxGas?: bigint;
   /** Awaited before the first broadcast of each signed transaction; if it throws, nothing is broadcast. */
   onSigned?: (tx: SignedTx) => Promise<void>;
 };
+
+/** The estimate is above the caller's cap: nothing was signed or sent. */
+export class GasCapExceeded extends Error {
+  constructor(readonly to: Address, readonly gas: bigint, readonly cap: bigint) {
+    super(`gas ${gas} for ${to} above the cap ${cap}; not sent`);
+  }
+}
 
 export class TxUnconfirmed extends Error {
   constructor(readonly hash: Hash, readonly nonce: number, readonly label: string) {
@@ -202,13 +211,14 @@ export class Sender {
   }
 
   /** Before anything leaves the process: retry freely (backoff, nonce resync). */
-  private async sign(to: Address, data: Hex, opts: { minGas?: bigint }): Promise<{ signed: Hex; hash: Hash; nonce: number }> {
+  private async sign(to: Address, data: Hex, opts: { minGas?: bigint; maxGas?: bigint }): Promise<{ signed: Hex; hash: Hash; nonce: number }> {
     for (let attempt = 0; ; attempt++) {
       try {
         if (this.nonce === undefined) this.nonce = await this.io.getTransactionCount({ address: this.address, blockTag: "pending" });
         const est = await this.io.estimateGas({ account: this.address, to, data });
         const buffered = (est * this.gasBufferBps) / 10_000n;
         const gas = opts.minGas !== undefined && opts.minGas > buffered ? opts.minGas : buffered;
+        if (opts.maxGas !== undefined && gas > opts.maxGas) throw new GasCapExceeded(to, gas, opts.maxGas);
         const fees = await this.io.estimateFeesPerGas();
         if (fees.maxFeePerGas === undefined || fees.maxPriorityFeePerGas === undefined) throw new Error("node returned no EIP-1559 fees");
         const nonce = this.nonce;

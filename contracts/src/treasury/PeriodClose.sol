@@ -56,11 +56,18 @@ interface ICloseFeeHook {
 /// R3-TREAS-2, review4 R4-TREAS-2): only value nothing the board writes can inflate: the account's balance of the
 /// close's cash asset (USDG) at 1:1, its balances of registry-canonical Stock Tokens at Valuer prices, and the
 /// proven private part, less the fee. Every sleeve's `valueOf`, cash vaults (board-chosen ERC-4626 code), venue
-/// equity and any non-canonical token count 0 there. `claimBasisNow()` then subtracts every later DECREASE of the
-/// account's trusted holdings below the measurement (review5 R5-TREAS-1), whatever form the value leaves in (USDG or
-/// stock withdrawn, USDG moved into vault shares or a venue and withdrawn from there, stock shielded and spent): so
-/// value lent in for the snapshot block and taken out again never lifts the cap. A fall in trusted holdings from any
-/// cause (a loss, a price fall) lowers the cap for the rest of the period; a rise never raises it. The fee recipient is the FeeRouter in production.
+/// equity and any non-canonical token count 0 there. `claimBasisNow()` is then the LOWEST value of the trusted
+/// holdings seen since the close (`claimBasisLow`, review5 R5-TREAS-1, review6 R6-TREAS-1 / -3), whatever form the
+/// value leaves in (USDG or stock withdrawn, USDG moved into vault shares or a venue and withdrawn from there, stock
+/// shielded and spent). The trusted holdings H = public trusted balances + the private sleeve's book, the latter at
+/// most the proven part of the close (so a proven note unshielded to the account moves value inside H, and a new
+/// shield never adds to it). `claimBasisLow` starts at the close's basis (or H at the commit if lower) and is lowered
+/// to H after every outflow the board or a desk makes (`TreasuryAccount.withdrawToBoard` and `execute` call
+/// `noteOutflow`) and by the live H whenever the cap is read; nothing raises it before the next close. So value lent
+/// in for the snapshot block, taken out, and lent in again for the claim never lifts the cap (the v6 rule remembered
+/// a decrease only while the money stayed out). A fall from any cause (a loss, a price fall seen at an outflow)
+/// lowers the cap for the rest of the period; a rise never raises it. An asset whose price cannot be read at an
+/// outflow counts 0 there (fail closed). The fee recipient is the FeeRouter in production.
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
@@ -154,6 +161,11 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     uint256[3] private _snapMeasure;
     /// The account's public trusted holdings (T) at the last close's measurement, less the fee it paid.
     uint256 public trustedAtClose;
+    // Appended in v2.1 (review6 R6-TREAS-1).
+    /// The lowest trusted holdings (H, see the contract notes) seen since the last close: min(claimBasisNav, H at the
+    /// commit), then lowered by `noteOutflow` after every board withdrawal and desk operation. Never raised before the
+    /// next close.
+    uint256 public claimBasisLow;
 
     event BookSnapshotted(uint64 takenAt, bytes32 positionsHash, uint256 navUsd, uint16 cashBps, uint16 equityBps);
     event PeriodClosed(
@@ -178,6 +190,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     error NoSnapshot();
     error SnapshotBeforePeriodEnd(uint64 takenAt, uint64 periodEnd);
     error SnapshotExpired(uint64 takenAt);
+    error NotAccount();
 
     event PrivateBookRefreshed(bytes32 root, uint256 privateNavUsd, bytes32 pricesCommitment, bytes32[8] nullifiers);
     event PrivateSleeveProven(
@@ -379,6 +392,8 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         t = t > feeUsd ? t - feeUsd : 0;
         trustedAtClose = t;
         claimBasisNav = t + proven;
+        uint256 tNow = _trustedNow(); // after the fee left: a loan taken out between snapshot and commit counts
+        claimBasisLow = (tNow < t ? tNow : t) + proven;
         (address[] memory assets,,) = account.trackedAssets();
         for (uint256 i; i < assets.length; ++i) {
             withdrawnMark[assets[i]] = _withdrawnPending[assets[i]];
@@ -409,24 +424,50 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     }
 
     /// Value that nothing the board writes can inflate: the close's cash asset 1:1, canonical Stock Tokens at
-    /// Valuer prices, everything else 0.
+    /// Valuer prices, everything else 0. A price that cannot be read counts 0 (fail closed; a commit has already
+    /// refused a held or broken feed in `_positions`), so the outflow hook never blocks a withdrawal.
     function _trustedUsd(address a, uint256 raw) private view returns (uint256 usd) {
         if (raw == 0) return 0;
         if (a == address(cash)) return AssetValuation.to1e18(raw, cashDecimals);
-        if (valuer.registry().isCanonical(a)) (usd,) = valuer.value(a, raw);
+        if (valuer.registry().isCanonical(a)) {
+            try valuer.value(a, raw) returns (uint256 v, bool) {
+                usd = v;
+            } catch {}
+        }
     }
 
-    /// The claim basis less every decrease of the account's trusted holdings since the last close's measurement.
+    /// The claim basis less the largest decrease of the trusted holdings since the last close's measurement: the
+    /// low-water mark of every outflow so far, or the holdings now if lower (review6 R6-TREAS-1).
     function claimBasisNow() external view returns (uint256) {
+        uint256 low = claimBasisLow;
+        uint256 h = _trustedNow() + _privateHeld();
+        return h < low ? h : low;
+    }
+
+    /// The account, after every board withdrawal and desk operation: lowers `claimBasisLow` to the trusted holdings
+    /// now. Only the account calls it (a call from inside an operation could see a half-done swap); it never
+    /// reverts on a price (an asset whose price cannot be read counts 0), so it never blocks a withdrawal.
+    function noteOutflow() external {
+        if (msg.sender != address(account)) revert NotAccount();
+        uint256 h = _trustedNow() + _privateHeld();
+        if (h < claimBasisLow) claimBasisLow = h; // 0 before the first close: never set
+    }
+
+    /// The private sleeve's book, at most the proven part of the last close (review6 R6-TREAS-3).
+    function _privateHeld() private view returns (uint256) {
+        address ps = account.privateSleeve();
+        if (ps == address(0)) return 0;
+        uint256 proven = claimBasisNav - trustedAtClose;
+        if (proven == 0) return 0;
+        uint256 b = IPrivateSleeve(ps).bookUsd();
+        return b < proven ? b : proven;
+    }
+
+    function _trustedNow() private view returns (uint256 t) {
         (address[] memory assets,,) = account.trackedAssets();
-        uint256 t;
         for (uint256 i; i < assets.length; ++i) {
             t += _trustedUsd(assets[i], IERC20(assets[i]).balanceOf(address(account)));
         }
-        uint256 ref = trustedAtClose;
-        uint256 drop = ref > t ? ref - t : 0;
-        uint256 basis = claimBasisNav;
-        return basis > drop ? basis - drop : 0;
     }
 
     /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the

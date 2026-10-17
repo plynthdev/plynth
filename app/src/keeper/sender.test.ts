@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BaseError, hexToString, keccak256, toHex, type Address, type Hex, type TransactionReceipt } from "viem";
-import { isNonceError, isTransportError, Sender, TxReverted, TxUnconfirmed, type SenderIO, type SignedTx } from "./sender";
+import { GasCapExceeded, isNonceError, isTransportError, Sender, TxReverted, TxUnconfirmed, type SenderIO, type SignedTx } from "./sender";
 
 const ME = "0x00000000000000000000000000000000000000aa" as Address;
 const TO = "0x00000000000000000000000000000000000000bb" as Address;
@@ -76,6 +76,15 @@ describe("sender", () => {
     await s.send(TO, "0x01", "aggregate3", { minGas: 300_000n });
     await s.send(TO, "0x02", "aggregate3", { minGas: 50_000n });
     expect(f.sent.map((x) => x.gas)).toEqual([300_000n, 120_000n]);
+  });
+
+  test("maxGas is a ceiling: above it nothing is signed or sent (review6 R6-SVC-1)", async () => {
+    const f = fakeIO(); // 120k buffered
+    const s = new Sender(f.io, ME, { sleep: noSleep });
+    await expect(s.send(TO, "0x01", "sweep", { maxGas: 100_000n })).rejects.toBeInstanceOf(GasCapExceeded);
+    expect(f.sent).toEqual([]);
+    await s.send(TO, "0x02", "sweep", { maxGas: 120_000n });
+    expect(f.sent.map((x) => x.gas)).toEqual([120_000n]);
   });
 
   test("nonce manager: concurrent sends are serialised with consecutive nonces", async () => {

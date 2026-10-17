@@ -29,7 +29,22 @@ export type KeeperDeployment = {
   feeRouter?: Address | undefined;
   /** In-house perp markets (job liquidate): `perpMarkets` in the file (symbol -> address, or that map as JSON). */
   perpMarkets: Address[];
+  /** TreasuryFactory contracts whose treasuries the venue sweep trusts (review6 R6-SVC-1): `treasuryFactory` and any
+   * `legacyTreasuryFactories` of the file (and of <chainid>-treasury.json, merged by the keeper). */
+  treasuryFactories?: Address[] | undefined;
 };
+
+/** The current TreasuryFactory and every earlier one still serving treasuries (`legacyTreasuryFactories`). */
+export function treasuryFactoriesOf(dep: Deployment): Address[] {
+  const out: Address[] = [];
+  const add = (v: unknown) => {
+    if (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) && BigInt(v) !== 0n && !out.some((a) => a.toLowerCase() === v.toLowerCase())) out.push(getAddress(v));
+  };
+  add(dep.treasuryFactory);
+  const legacy = (dep as Record<string, unknown>).legacyTreasuryFactories;
+  if (Array.isArray(legacy)) legacy.forEach(add);
+  return out;
+}
 
 /** `perpMarkets` of a deployment file: a symbol -> address map (the deploy scripts write it as an object or as a JSON string). */
 export function perpMarketsOf(dep: Deployment): Address[] {
@@ -135,6 +150,7 @@ export function keeperDeployment(dep: Deployment | undefined, chainId: number): 
     mock: mockFeedDeployment(dep),
     feeRouter: typeof dep.feeRouter === "string" ? getAddress(dep.feeRouter) : undefined,
     perpMarkets: perpMarketsOf(dep),
+    treasuryFactories: treasuryFactoriesOf(dep),
   };
 }
 

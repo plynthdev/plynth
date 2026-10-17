@@ -21,6 +21,9 @@ contract MockPeriodClose {
         return claimBasisNav;
     }
 
+    /// TreasuryAccount's outflow hook (review6 R6-TREAS-1); the mock keeps a fixed basis.
+    function noteOutflow() external {}
+
     function set(uint256 v) external {
         periodStartNav = v;
         claimBasisNav = v;

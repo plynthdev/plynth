@@ -15,6 +15,8 @@
 // One keeper per database + chain + deployment: a Postgres session advisory lock is taken before any job runs (in
 // --once mode too). A second keeper exits with status 75 and a clear error. The lock goes with the process (exit or
 // crash closes its session); if the session is lost while running, the keeper takes it again or exits.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { keysFor, loadConfig, rpcUrlFor, safeConfigSummary } from "@/config";
 import { connect, databaseUrl } from "@/db";
 import { readDeployment } from "@/indexer";
@@ -42,7 +44,11 @@ const chain = defineChain({ id: chainId, name: `chain-${chainId}`, nativeCurrenc
 // The sender retries itself (backoff + nonce resync), so the transport does not.
 const pub = createPublicClient({ chain, transport: http(rpcUrl, { retryCount: 0, timeout: 30_000 }), pollingInterval: chainName === "local" ? 50 : 1_000 }) as PublicClient;
 
-const dep = keeperDeployment(readDeployment(config.KEEPER_DEPLOYMENTS_DIR, chainId), chainId);
+// deployments/<chainid>-treasury.json (a treasury-only redeploy, TreasuryV21.s.sol) overrides the factory fields,
+// as the API merges it; the venue sweep trusts treasuries of every factory it names (review6 R6-SVC-1).
+const baseDep = readDeployment(config.KEEPER_DEPLOYMENTS_DIR, chainId);
+const treasuryFile = join(config.KEEPER_DEPLOYMENTS_DIR, `${chainId}-treasury.json`);
+const dep = keeperDeployment(baseDep && existsSync(treasuryFile) ? { ...baseDep, ...JSON.parse(readFileSync(treasuryFile, "utf8")) } : baseDep, chainId);
 const log = (m: string) => console.log(`[keeper ${chainId}] ${m}`);
 let lock: KeeperLock;
 try {

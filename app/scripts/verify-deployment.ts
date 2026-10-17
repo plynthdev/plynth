@@ -6,6 +6,13 @@
 //   bun run verify:deployment --file deployments/fork.json --rpc http://127.0.0.1:8545
 //   bun run verify:deployment --strict                          # also FAIL while any two-step hand-over is pending
 //   bun run verify:deployment --fail-on-warn                    # also exit 1 on any WARN
+//   bun run verify:deployment --treasury deployments/fork-treasury.json   # a treasury-only redeploy over the file
+//
+// Treasury overlay (TreasuryV21.s.sol, review v6): a <chainid>-treasury.json carrying `treasuryVersion` replaces the
+// factory fields of the base file (as the API and the keeper merge it), so every factory check runs against the new
+// factory, and `verifyTreasuryOverlay` adds the v2.1 checks: the new implementations, the reused ones, the claim-basis
+// low-water mark, the parameters copied from the v2 factory and the v2 factory left with OWNER. The CLI applies
+// deployments/<chainid>-treasury.json by itself when it carries `treasuryVersion`.
 //
 // Two deployment formats, each checked against its own expectations:
 //   v1  the closed beta at block 88,470,046 (no market calendar; OI cap 100%, guard loss bound 200 bps)
@@ -24,8 +31,8 @@
 // a contract with OWNER as pendingOwner) is a FAIL. The release gate (scripts/mainnet/release-gate.ts) and the daily
 // CI job run it. The holiday table (review v2 M-1) is a FAIL with less than 90 days left: an expired table holds
 // every price (fails closed), so the daily job must alert first.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createPublicClient, getAddress, http, keccak256, encodeAbiParameters, parseAbi, zeroAddress, type Address, type Hex } from "viem";
 
 const DAY = 86_400n;
@@ -189,6 +196,70 @@ export function isDelegatedEoaCode(code: Hex | undefined): boolean {
 /** v2 files carry the fields MainnetBeta.s.sol added after the audit; the v1 file (also `beta: true`) has neither. */
 export function deploymentVersion(dep: Record<string, unknown>): 1 | 2 {
   return "calendarValidUntil" in dep || "allowEoaOwner" in dep ? 2 : 1;
+}
+
+/** The base deployment with a treasury-only redeploy over it (the overlay's factory fields win; the base's
+ * acceptOwnership list and roles stay). */
+export function mergeTreasury(base: Deployment, overlay: Record<string, unknown>): Deployment {
+  const keep = { owner: base.owner, deployer: base.deployer, chainId: base.chainId, allowEoaOwner: base.allowEoaOwner, acceptOwnership: base.acceptOwnership };
+  return { ...base, ...overlay, ...keep } as Deployment;
+}
+
+/** v2.1 treasury redeploy checks (TreasuryV21.checkHandoff, read from the chain). */
+export async function verifyTreasuryOverlay(base: Deployment, overlay: Record<string, unknown>, read: Reader, codeAt: (a: Address) => Promise<boolean>, opts: Options = {}): Promise<Check[]> {
+  const out: Check[] = [];
+  const push = (status: Status, what: string, detail = "") => out.push({ status, what, detail });
+  const firstLine = (e: unknown) => (e as Error).message.split("\n")[0] ?? "";
+  const r = async (a: Address, sig: string, args?: readonly unknown[]) => read(a, sig, args);
+  const O = base.owner;
+  const f = overlay.treasuryFactory as Address | undefined;
+  const legacy = Array.isArray(overlay.legacyTreasuryFactories) ? (overlay.legacyTreasuryFactories[0] as Address) : undefined;
+  push(overlay.treasuryVersion === "2.1" ? "ok" : "FAIL", "treasury overlay version", String(overlay.treasuryVersion));
+  if (!f || !legacy) {
+    push("FAIL", "treasury overlay addresses", "treasuryFactory / legacyTreasuryFactories missing");
+    return out;
+  }
+  push(eq(legacy, base.treasuryFactory) ? "ok" : "FAIL", "legacy factory == base file's treasuryFactory", `${legacy}`);
+  push(eq(overlay.owner, O) ? "ok" : "FAIL", "overlay owner == deployment OWNER", String(overlay.owner));
+  try {
+    for (const [fn, key] of [["accountImpl", "accountImpl"], ["closeImpl", "closeImpl"], ["policyImpl", "policyImpl"], ["approvalsImpl", "approvalsImpl"]] as const) {
+      const got = (await r(f, `function ${fn}() view returns (address)`)) as Address;
+      push(eq(got, overlay[key]) && (await codeAt(got)) ? "ok" : "FAIL", `treasuryFactory.${fn}() == file, has code`, `${got}`);
+    }
+    for (const fn of ["policyImpl", "approvalsImpl"]) {
+      const a = (await r(f, `function ${fn}() view returns (address)`)) as Address;
+      const b = (await r(legacy, `function ${fn}() view returns (address)`)) as Address;
+      push(eq(a, b) ? "ok" : "FAIL", `${fn} reused from the v2 factory`, `${a}`);
+    }
+    for (const fn of ["accountImpl", "closeImpl"]) {
+      const a = (await r(f, `function ${fn}() view returns (address)`)) as Address;
+      const b = (await r(legacy, `function ${fn}() view returns (address)`)) as Address;
+      push(!eq(a, b) ? "ok" : "FAIL", `${fn} is new (v2.1)`, `${a} (v2 ${b})`);
+    }
+    const close = (await r(f, "function closeImpl() view returns (address)")) as Address;
+    try {
+      await r(close, "function claimBasisLow() view returns (uint256)");
+      push("ok", "closeImpl has the claim-basis low-water mark (R6-TREAS-1)", close);
+    } catch (e) {
+      push("FAIL", "closeImpl has the claim-basis low-water mark (R6-TREAS-1)", firstLine(e));
+    }
+    for (const [fn, ret] of [["guard", "address"], ["cash", "address"], ["feeRecipient", "address"], ["tiers", "address"], ["templates", "address"]] as const) {
+      const a = await r(f, `function ${fn}() view returns (${ret})`);
+      const b = await r(legacy, `function ${fn}() view returns (${ret})`);
+      push(eq(a, b) ? "ok" : "FAIL", `treasuryFactory.${fn}() == v2 factory`, show(a));
+    }
+    const ha = ((await r(f, "function allowedHashes() view returns (bytes32[])")) as Hex[]).map((h) => h.toLowerCase()).sort();
+    const hb = ((await r(legacy, "function allowedHashes() view returns (bytes32[])")) as Hex[]).map((h) => h.toLowerCase()).sort();
+    push(ha.join() === hb.join() ? "ok" : "FAIL", "treasuryFactory allow-list == v2 factory allow-list", ha.join(", "));
+    const lo = (await r(legacy, "function owner() view returns (address)")) as Address;
+    push(eq(lo, O) ? "ok" : "FAIL", "v2 factory still owned by OWNER", lo);
+    const n = BigInt((await r(legacy, "function treasuryCount() view returns (uint256)")) as bigint);
+    push(n === 0n ? "ok" : "WARN", "v2 factory treasuries (on the pre-v2.1 code)", String(n));
+  } catch (e) {
+    push("FAIL", "treasury overlay reads", firstLine(e));
+  }
+  void opts;
+  return out;
 }
 
 /** forge writes nested objects as JSON strings in a raw script output; the normalized files have objects. */
@@ -613,7 +684,12 @@ function arg(name: string): string | undefined {
 
 if (import.meta.main) {
   const file = arg("file") ?? join(import.meta.dir, "..", "deployments", "4663.json");
-  const dep = normalize(JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>);
+  const base = normalize(JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>);
+  const defaultOverlay = join(dirname(file), `${base.chainId}-treasury.json`);
+  const overlayFile = arg("treasury") ?? (existsSync(defaultOverlay) ? defaultOverlay : undefined);
+  const overlayRaw = overlayFile ? (JSON.parse(readFileSync(overlayFile, "utf8")) as Record<string, unknown>) : undefined;
+  const overlay = overlayRaw && "treasuryVersion" in overlayRaw ? overlayRaw : undefined;
+  const dep = overlay ? mergeTreasury(base, overlay) : base;
   const rpc = arg("rpc") ?? process.env.RHC_MAINNET_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com";
   const strict = process.argv.includes("--strict");
   const c = createPublicClient({ transport: http(rpc, { retryCount: 5, retryDelay: 1500 }) });
@@ -630,8 +706,9 @@ if (import.meta.main) {
   const codeOf = async (a: Address) => (await c.getCode({ address: getAddress(a) })) ?? undefined;
   const storageAt = async (a: Address, slot: Hex) => (await c.getStorageAt({ address: getAddress(a), slot })) ?? undefined;
   const checks = await verifyDeployment(dep, read, codeAt, await c.getChainId(), { strict, now, codeOf, storageAt });
+  if (overlay) checks.push(...(await verifyTreasuryOverlay(base, overlay, read, codeAt, { strict })));
   for (const ch of checks) console.log(`${ch.status.padEnd(4)} ${ch.what}${ch.detail ? `  ${ch.detail}` : ""}`);
   const s = summarize(checks);
-  console.log(`\n${s.total} checks: ${s.ok} ok, ${s.warn} warn, ${s.fail} fail (v${deploymentVersion(dep)}${strict ? ", strict" : ""}; ${file})`);
+  console.log(`\n${s.total} checks: ${s.ok} ok, ${s.warn} warn, ${s.fail} fail (v${deploymentVersion(dep)}${overlay ? ` + treasury ${overlay.treasuryVersion}` : ""}${strict ? ", strict" : ""}; ${file}${overlay ? ` + ${overlayFile}` : ""})`);
   process.exit(exitCode(s, process.argv.includes("--fail-on-warn")));
 }
