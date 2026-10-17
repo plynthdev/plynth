@@ -4,6 +4,28 @@ Every security review of this code, newest first, with what it found and what ch
 audit: the internal passes were multi-agent AI reviews run by the team, and the external one is an AI audit. A human
 audit is required before large deposits.
 
+## 2026-10-17: internal v3 review (multi-agent AI), weighted 8.3 / 10, capped at 7.0
+
+The merged v2 tree reviewed again before any deploy. The cap binds because no live contract is verified on the
+explorer, the v2 code is not deployed, CI had not run, and mutation testing covered v1 only. Every fix below is in
+code on this branch, pending independent re-review.
+
+| Id | Finding | Status |
+| --- | --- | --- |
+| R3-PERP-1 | 100 hedged floor-sized positions held every slot of a perp market for about 780 USDG a month | Fixed in code, pending independent re-review: the size floor scales with occupancy (`slotFloor`: 100 USDG up to 50 positions, then doubling every 5 to 102,400 USDG), so holding every slot needs about 1.02M USDG of size |
+| R3-PERP-6 | Without a keeper poke, `settleHeld` on a delisted token settled at a days-old price | Fixed in code, pending independent re-review: it settles at the token feed's newer round; the keeper also pokes hourly |
+| R3-ORC-1 | A book completed over a weekend ran when a stranger chose, at the top of the band on a lagging oracle (the real SPY pool: about 64 bps worst case) | Fixed in code, pending independent re-review: a weekend or holiday never counts as the keeper's miss |
+| R3-TREAS-1 | A second withdraw proof of the same note let the controller zero the private book | Fixed in code, pending independent re-review: `sweep` debits only what ShieldedPool recorded paying the sleeve for that nullifier (`withdrawnOf`), once |
+| R3-TREAS-2, R3-TREAS-3 | The period start NAV came from the live book, so a fake sleeve lifted the insurance cap and a withdraw-and-return switched the drawdown rule off | Fixed in code, pending independent re-review: `periodStartNav` is the checked statement NAV less the close fee; the insurance cap reads `claimBasisNav`, which also leaves out sleeves registered during the period |
+| R3-SVC-1 | One global 2-slot statement parser pool | Fixed in code, pending independent re-review: per-client slots, a short queue, warm workers, no quota charge when busy |
+| R3-SVC-2 | Sub-cent on-chain round-ups each bought a keeper transaction | Fixed in code, pending independent re-review: under 5 cents they are carried per user and sent as one `SavingsVault.accrueBatch` (at most 32 spends) |
+| Hedge cost | A treasury hedge at the in-house market loses 52-60 bps of size, above the 50 bps per-operation bound, so every hedge was refused | Fixed in code, pending independent re-review: the guard bounds an in-house venue's opens and closes by that venue's own cost (`venueLossBps`, at most 100 bps); OWNER registers treasury venues as makers |
+| Perps proposals | `etaOf` proposals never expired and survived an ownership change | Fixed in code, pending independent re-review: 14 days after the eta, and void after any ownership change |
+
+The weak proving tests the review named were replaced by real-contract ones (`contracts/test/review-v3/`,
+`contracts/test/review3/`): the front-run range for M-3, the held-settle price for V2-L1, the oracle-lag band on the
+real Uniswap v4 pools for V2-L4, a second real proof for V2-L8 and the real PeriodClose for V2-L11.
+
 ## 2026-10-16: internal v2 review (multi-agent AI), grade 4.9 / 10
 
 The audit fixes above, reviewed as new code before any deploy: seven area reviewers with the audit checklist, a
@@ -14,7 +36,7 @@ several Info items. Three of the Mediums came from the fixes themselves. The Hid
 | Id | Finding | Status |
 | --- | --- | --- |
 | V2-M1 | The market calendar knew no holidays or early closes, and never expired (fails open about 10 trading days a year) | Fixed in code in v2 (merged, not deployed), pending independent re-review: NYSE closures and early closes to Labor Day 2029, `calendarValidUntil` fails closed |
-| V2-M2 | Dust positions fill all 100 slots of a perp market for about 0.6 USDG | Fixed in code in v2, pending independent re-review: collateral and size floors after every open, increase and partial decrease; `retire` |
+| V2-M2 | Dust positions fill all 100 slots of a perp market for about 0.6 USDG | Fixed in code in v2, pending independent re-review: collateral floor (100 USDG) and an occupancy-scaled size floor (`slotFloor`, doubling every 5 positions past 50, so holding every slot costs about 1.02M USDG of size) after every open, increase and partial decrease; `retire` |
 | V2-M3 | The minimum liquidation reward could be farmed from the LP pool with dust-collateral positions | Fixed in code in v2, pending independent re-review: the pool's top-up is capped at the position's own collateral |
 | V2-M4 | The OFX parser still had one quadratic regex | Fixed in the services code, pending independent re-review: a linear scan, statements parsed in a worker |
 | V2-M5 | Sybils with 1 USDG each bought keeper transactions and stalled the core jobs | Fixed in the services code, pending independent re-review: a 25-cent minimum imported round-up and a time, gas and per-user budget per pass |
