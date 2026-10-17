@@ -171,7 +171,9 @@ async function main(c: Checks) {
     const r = await rows();
     c.step(`day ${i}: NAV $${(Number(w.nav / 10n ** 12n) / 1e6).toFixed(2)}, cash ${w.cash} bps, equity ${w.equity} bps, ${r.filter((x) => x.status === "sent").length} desk txs so far`);
     c.ok(`day ${i}: weights inside the bands`, w.cash >= 4000 && w.cash <= 7000 && w.equity >= 3000 && w.equity <= 6000, JSON.stringify({ cash: w.cash, equity: w.equity }));
-    c.ok(`day ${i}: rebalance finished at the beacon time`, r.some((x) => x.action === "rebalance_done" && x.beacon_key === beaconKey(a.account!, day)));
+    // done, or partial: a name the pool cannot fill within the guard's slippage even in 250 USDG pieces waits for a
+    // later pass (the desk never loosens the bound; see app/src/treasury/desks/split.ts).
+    c.ok(`day ${i}: rebalance ran at the beacon time (done, or partial with unfilled names)`, r.some((x) => (x.action === "rebalance_done" || x.action === "rebalance_partial") && x.beacon_key === beaconKey(a.account!, day)));
   }
   const r = await rows();
   const bought = new Set(r.filter((x) => x.action === "buy" && x.status === "sent").map((x) => x.asset));
