@@ -5,6 +5,8 @@
 #                                   OWNER accepted every ownership, prepare plynth_mainnet, start the services
 #   bash scripts/mainnet/down.sh    stop the services (the chain and the deployment stay)
 #
+# Release gate (review v2 L-20): before inviting users, `bun run release:gate` (forge verifyDeploymentStrict + verify:deployment
+# --strict, scripts/mainnet/release-gate.ts) must pass; setup.ts below already refuses while an acceptOwnership is missing.
 # It never deploys and never funds anything: the deploy is the manual MainnetBeta.s.sol command in the runbook,
 # run only after an explicit go, and the bots are funded by hand. Refuses unless the RPC answers chain id 4663.
 # Keys: plynth-main-* keystores (~/.foundry/keystores), passwords in ~/.plynth-mainnet; each service unlocks its own.

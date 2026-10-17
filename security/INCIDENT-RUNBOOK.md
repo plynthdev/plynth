@@ -65,8 +65,9 @@ the SDK snippets for withdraw and claim. The relayer is optional for every exit.
 
 1. Fix with a failing-then-passing test (a Foundry test reproducing the exploit), reviewed like any contract change.
 2. For a contract bug: redeploy (no contract is upgradeable), run the fork dry run of the deploy script, deploy,
-   accept ownership, then `bun run verify:deployment` and `bun run verify:explorer` against the new
-   `app/deployments/4663.json`, and regenerate the README section (`python3 .github/scripts/readme-deployments.py`).
+   accept ownership, then `bun run release:gate` (forge `verifyDeploymentStrict` + `verify:deployment --strict`:
+   fails while any hand-over is pending) and `bun run verify:explorer` against the new `app/deployments/4663.json`,
+   and regenerate the README section (`python3 .github/scripts/readme-deployments.py`).
 3. Unwind the levers (unpause, raise caps through their timelock) only after the post-deploy checks pass.
 4. Record the incident and the fix in [AUDITS.md](AUDITS.md).
 

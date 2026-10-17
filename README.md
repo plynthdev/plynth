@@ -471,7 +471,7 @@ cd .. && .githooks/public-guard.sh   # also the pre-commit hook (`bun install` i
 cd contracts && FOUNDRY_PROFILE=ci forge test   # what CI runs: every invariant at 128,000 calls
 bash script/slither.sh                          # scoped Slither; fails on an untriaged Medium/High
 cd .. && bash .github/scripts/semgrep.sh && python3 .github/scripts/check-hygiene.py
-cd app && bun run verify:deployment && bun run verify:explorer   # live mainnet state and bytecode vs this repo
+cd app && bun run release:gate && bun run verify:explorer   # live mainnet state (strict) and bytecode vs this repo
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request, plus coverage and gitleaks.

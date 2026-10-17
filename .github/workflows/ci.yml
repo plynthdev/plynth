@@ -255,9 +255,13 @@ jobs:
         run: |
           (cd sdk && bun install --frozen-lockfile && bun run build)
           (cd app && bun install --frozen-lockfile)
-      - name: verify:deployment (owners, roles, timers, feeds, pools, caps; fails on any mismatch)
+      # The release gate: verify:deployment --strict (owners, roles, timers, feeds, pools, caps, perp guards, the
+      # holiday table's expiry; a pending two-step hand-over fails) and, for a v2 file, MainnetBeta's own
+      # verifyDeploymentStrict. Strict daily: the recorded file is only committed after OWNER accepted everything
+      # (setup.ts), so a pending owner here is a hand-over nobody announced, and the live v1 file passes it.
+      - name: release:gate (verify:deployment --strict + forge verifyDeploymentStrict for v2; fails on any mismatch)
         working-directory: app
-        run: bun run verify:deployment
+        run: bun run release:gate
       - name: verify:explorer (every deployed runtime code equals the recorded source; dry run, nothing submitted)
         working-directory: app
         run: bun run verify:explorer

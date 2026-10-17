@@ -62,7 +62,7 @@ export async function runPerpPoke(ctx: Ctx): Promise<JobResult> {
         feedUpdatedAt = null; // the market itself falls back to its stored price here
         unpricedSince = BigInt(await read<bigint>(market, "unpricedSince"));
       }
-      const d = pokeDecision({ openPositions, lastPriceAt, now, feedUpdatedAt, maxAge, unpricedSince });
+      const d = pokeDecision({ openPositions, lastPriceAt, now, feedUpdatedAt, maxAge, ...(unpricedSince === undefined ? {} : { unpricedSince }) });
       if (!d.poke) {
         res.notes.push(`${market}: not poked, ${d.reason}`);
         continue;

@@ -84,7 +84,7 @@ async function main() {
   if (left.length) {
     throw new Error(`OWNER ${dep.owner} has not accepted ownership of ${left.length} contract(s) yet: call acceptOwnership() from OWNER on ${left.join(", ")} (runbook step 6)`);
   }
-  log("OWNER holds every two-step ownership");
+  log("OWNER holds every two-step ownership; release gate before inviting users: bun run release:gate");
   for (const role of ["keeper", "relayer", "controller", "cashDesk", "equityDesk"] as const) {
     const a = dep[role];
     if (typeof a !== "string") continue;
