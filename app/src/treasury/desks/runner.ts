@@ -52,12 +52,20 @@ export type State = {
   dayUsed: bigint;
   tokens: (EquityToken & { hold: boolean })[];
   guard: Address;
+  /** The guard's maxOpLossBps: the most slippage the equity sleeve accepts (absent in older fixtures). */
+  maxOpLossBps?: number;
 };
 
 const PULLS = { type: "tuple[]", components: [{ name: "token", type: "address" }, { name: "amount", type: "uint256" }] } as const;
 
 export function wrapData(pullToken: Address, pullAmount: bigint, runData: Hex): Hex {
   return encodeAbiParameters([PULLS, { type: "bytes" }], [[{ token: pullToken, amount: pullAmount }], runData]);
+}
+
+/** The equity desk's slippage: the configured value (default 100 bps), capped at the guard's maxOpLossBps. */
+export function effectiveSlippageBps(configured: number | undefined, maxOpLossBps: number | undefined): number {
+  const want = configured ?? 100;
+  return maxOpLossBps === undefined ? want : Math.min(want, maxOpLossBps);
 }
 
 export function equityRunData(op: "buy" | "sell", token: Address, amount: bigint, slippageBps: number): Hex {
@@ -87,11 +95,12 @@ export async function readState(ctx: DeskContext): Promise<State> {
   const block = await pub.getBlock({ blockTag: "latest" });
   const guard = (await pub.readContract({ address: cfg.account, abi: accountAbi, functionName: "guard" })) as Address;
   const policyAddr = (await pub.readContract({ address: cfg.account, abi: accountAbi, functionName: "policy" })) as Address;
-  const [snap, tracked, cur, dayUsed] = await Promise.all([
+  const [snap, tracked, cur, dayUsed, maxOpLossBps] = await Promise.all([
     pub.readContract({ address: guard, abi: guardAbi, functionName: "snapshot", args: [cfg.account] }),
     pub.readContract({ address: cfg.account, abi: accountAbi, functionName: "trackedAssets" }),
     pub.readContract({ address: policyAddr, abi: policyAbi, functionName: "current" }),
     pub.readContract({ address: guard, abi: guardAbi, functionName: "dayTotal", args: [cfg.account] }),
+    pub.readContract({ address: guard, abi: guardAbi, functionName: "maxOpLossBps" }),
   ]);
   const [assets, kinds] = tracked as readonly [readonly Address[], readonly number[], readonly number[]];
   const p = cur[0];
@@ -144,6 +153,7 @@ export async function readState(ctx: DeskContext): Promise<State> {
     dayUsed,
     tokens,
     guard,
+    maxOpLossBps: Number(maxOpLossBps),
   };
 }
 
@@ -333,8 +343,11 @@ export async function runEquityDesk(ctx: DeskContext): Promise<EquityResult> {
     return res;
   }
 
-  const plan = planEquity(s.nav, s.tokens, s.policy, s.dayUsed, cfg.equity);
-  const slip = cfg.equity.slippageBps ?? 100;
+  // The sleeve refuses any slippage above the guard's maxOpLossBps (SlippageAbovePolicy): never ask for more. The v2
+  // mainnet guard allows 50 bps, below the 100 bps default.
+  const eq = { ...cfg.equity, slippageBps: effectiveSlippageBps(cfg.equity.slippageBps, s.maxOpLossBps) };
+  const plan = planEquity(s.nav, s.tokens, s.policy, s.dayUsed, eq);
+  const slip = eq.slippageBps;
   const opFor = (o: (typeof plan.orders)[number]): Op =>
     o.action === "buy"
       ? { desk: "equity", action: "buy", adapter: cfg.equitySleeve, data: wrapData(s.usdg, o.amount, equityRunData("buy", o.token, o.amount, slip)), increased: o.token, asset: o.token, amount: o.amount, usd: o.usd, beaconKey: kToday }

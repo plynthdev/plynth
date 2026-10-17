@@ -140,3 +140,13 @@ describe("equity desk: target weights inside the band", () => {
     }
   });
 });
+
+describe("equity slippage follows the guard", () => {
+  test("the configured slippage is capped at the guard's maxOpLossBps (v2 mainnet guard: 50 bps)", async () => {
+    const { effectiveSlippageBps } = await import("./runner");
+    expect(effectiveSlippageBps(undefined, 50)).toBe(50);
+    expect(effectiveSlippageBps(30, 50)).toBe(30);
+    expect(effectiveSlippageBps(undefined, 200)).toBe(100);
+    expect(effectiveSlippageBps(150, undefined)).toBe(150);
+  });
+});
