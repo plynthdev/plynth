@@ -248,7 +248,7 @@ contract R5PrivateBookCycleInvariantTest is PrivateSleeveFixture {
     /// forge-config: default.invariant.runs = 64
     /// forge-config: default.invariant.depth = 40
     /// forge-config: ci.invariant.runs = 256
-    /// forge-config: ci.invariant.depth = 200
+    /// forge-config: ci.invariant.depth = 500
     function invariant_bookNeverAboveRealSleeveHoldings() public view {
         assertLe(sleeve.bookUsd(), handler.ownUnspentUsd() + handler.ownHeldUsd(), "private book above real holdings");
     }
