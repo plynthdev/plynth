@@ -276,7 +276,9 @@ contract PeriodCloseTest is TreasuryFixture {
         vm.expectRevert(PeriodClose.BadSignature.selector);
         pc.commitSnapshot(c, badSig);
         pc.commitSnapshot(c, sig);
-        assertEq(pc.periodStartNav(), 900_000e18 - pc.feeFor(c.navUsd, PERIOD) * 1e12, "start NAV is the live book");
+        // review3 R3-TREAS-3: the start NAV is the checked statement (less the fee), never the live book, so a
+        // withdrawal between snapshot and commit cannot lower the drawdown base.
+        assertEq(pc.periodStartNav(), c.navUsd - pc.feeFor(c.navUsd, PERIOD) * 1e12, "start NAV is the statement");
         assertEq(pc.bookSnapshot().takenAt, 0, "consumed");
     }
 

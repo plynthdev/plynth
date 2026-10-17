@@ -14,16 +14,19 @@ contract MockCashVault is ERC4626 {
 
 contract MockPeriodClose {
     uint256 public periodStartNav;
+    uint256 public claimBasisNav;
     uint256 public closeCount;
 
     function set(uint256 v) external {
         periodStartNav = v;
+        claimBasisNav = v;
     }
 
     /// A new period closed (the insurance pool keys its running claim total by the close count).
     function close(uint256 startNav) external {
         ++closeCount;
         periodStartNav = startNav;
+        claimBasisNav = startNav;
     }
 }
 

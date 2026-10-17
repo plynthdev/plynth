@@ -16,9 +16,10 @@ interface ITreasuryRegistry {
     function accountOfClose(address close) external view returns (address);
 }
 
-/// The part of a PeriodClose the pool reads: the period-start NAV and how many periods have closed.
+/// The part of a PeriodClose the pool reads: the claim basis (period-start NAV without sleeves registered during
+/// the period just closed) and how many periods have closed.
 interface IPeriodCloseCap {
-    function periodStartNav() external view returns (uint256);
+    function claimBasisNav() external view returns (uint256);
     function closeCount() external view returns (uint256);
 }
 
@@ -35,12 +36,14 @@ interface IPeriodCloseCap {
 ///   - only treasuries the TreasuryFactory made (`isTreasury`) may file (the factory is bound once by the
 ///     deployer; unbound, every claim is refused), so `board()`, `policy()` and the NAV below are real;
 ///   - the claims of one treasury filed in one period may not exceed, together, MAX_CLAIM_NAV_BPS of the
-///     period-start NAV of the PeriodClose the factory made for it (review-v2 L-11). Live NAV is not used: the
-///     board can raise it at once (a sleeve of its own via `registerDesk`), and a swapped-in PeriodClose is not
-///     the factory's, so its NAV is refused (cap 0). The period-start NAV comes from a controller-signed close that
-///     matched the live book at commit, at most once per period and paying the close fee on it. The running total
-///     (`claimedInPeriod`) is keyed by the close count, so one loss cannot be split into many capped claims; a
-///     rejected claim gives its amount back to its period. Until the first close the cap is 0;
+///     `claimBasisNav` of the PeriodClose the factory made for it (review-v2 L-11, review3 R3-TREAS-2). Live NAV
+///     is not used: the board can raise it at once (a sleeve of its own via `registerDesk`), and a swapped-in
+///     PeriodClose is not the factory's, so it gives cap 0. The claim basis is the controller-signed statement NAV
+///     of the last close (checked against the book at the snapshot, never re-read live) less the fee and less
+///     every sleeve registered during the period it closed, so a sleeve added just before a close counts only
+///     from the next one. The running total (`claimedInPeriod`) is keyed by the close count, so one loss cannot
+///     be split into many capped claims; a rejected claim gives its amount back to its period. Until the first
+///     close the cap is 0;
 ///   - the committee cannot approve before REVIEW_DELAY has passed since filing, so the claim and its evidence
 ///     hash are public for that long first.
 /// Approved claims join a FIFO queue. A payout never exceeds the pool's balance: the head claim is paid as
@@ -111,7 +114,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
     uint256 private constant VIRTUAL_SHARES = 1e6;
     /// Deposits need active shares worth at least this share of the entry price (1 raw unit per 1e6 shares).
     uint256 public constant MIN_PRICE_BPS = 5_000;
-    /// Most the claims of one treasury in one period may ask together, in bps of its period-start NAV.
+    /// Most the claims of one treasury in one period may ask together, in bps of its PeriodClose's `claimBasisNav`.
     uint256 public constant MAX_CLAIM_NAV_BPS = 2_500;
     /// Minimum public review time between filing and committee approval: 3 days, or WITHDRAW_DELAY if shorter.
     uint256 public immutable REVIEW_DELAY;
@@ -376,8 +379,8 @@ contract ExceptionInsurancePool is ReentrancyGuard {
 
     // ---------------------------------------------------------------- views
 
-    /// What the claims of `treasury` may still ask this period (USD 1e18): MAX_CLAIM_NAV_BPS of the period-start
-    /// NAV of the PeriodClose the factory made for it, less what was already filed (and not rejected) this period.
+    /// What the claims of `treasury` may still ask this period (USD 1e18): MAX_CLAIM_NAV_BPS of the claim basis
+    /// (`claimBasisNav`) of the PeriodClose the factory made for it, less what was already filed (and not rejected) this period.
     /// 0 if its PeriodClose is not the factory's own, or before its first close.
     function claimCapUsd(TreasuryAccount treasury) public view returns (uint256 left) {
         (left,) = _capLeft(treasury);
@@ -390,7 +393,7 @@ contract ExceptionInsurancePool is ReentrancyGuard {
             return (0, 0);
         }
         period = IPeriodCloseCap(pc).closeCount();
-        uint256 cap = IPeriodCloseCap(pc).periodStartNav() * MAX_CLAIM_NAV_BPS / BPS;
+        uint256 cap = IPeriodCloseCap(pc).claimBasisNav() * MAX_CLAIM_NAV_BPS / BPS;
         uint256 used = claimedInPeriod[address(treasury)][period];
         left = cap > used ? cap - used : 0;
     }

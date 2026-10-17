@@ -39,8 +39,18 @@ interface ICloseFeeHook {
 ///
 /// After the checks a platform fee of navUsd x 25 bps x elapsed / 365 days is paid from the account's idle
 /// cash (USDG) to `feeRecipient`; what idle cash cannot cover is carried as `feeOwed` to the next close.
-/// `periodStartNav` (read by the PolicyGuard drawdown rule) becomes the NAV after the fee. The fee recipient
-/// is the FeeRouter in production.
+/// `periodStartNav` (read by the PolicyGuard drawdown rule) becomes the checked statement's NAV (the controller-
+/// signed `navUsd`, equal to the book at the snapshot or at a live commit) less the fee paid in this close. It is
+/// never re-read from the live book after the checks (review3 R3-TREAS-3: a board batch of withdrawToBoard ->
+/// commitSnapshot -> transfer back stored a $460k start for a $1M book and switched the drawdown rule off for
+/// the period). `claimBasisNav` (read by the ExceptionInsurancePool claim cap) is `periodStartNav` without the
+/// value of sleeves registered since the previous close (measured with the statement): a new sleeve counts only
+/// from the next period, so a sleeve the board registers just before a close cannot lift the cap (review3
+/// R3-TREAS-2). Residual: a sleeve that has been registered for a whole period counts like any other, and the
+/// statement NAV is the book at the controller's snapshot block, so a real withdrawal between snapshot and commit
+/// (at most SNAPSHOT_MAX_AGE) counts against the next period's drawdown: move funds before the snapshot or after
+/// the commit. The fee recipient is the FeeRouter in
+/// production.
 ///
 /// Weekly close: when `tiers` is set, a period shorter than `WEEKLY_BELOW` (28 days) is accepted only while
 /// the account's board holds a staking tier with `weeklyClose` (`TierTooLow` otherwise). Non-upgradeable.
@@ -118,6 +128,13 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     Close[] private _closes;
     uint256 public periodStartNav;
+    /// `periodStartNav` without the sleeves registered during the period just closed (insurance claim basis).
+    uint256 public claimBasisNav;
+    /// Sleeves of the account (append-only list) that count in `claimBasisNav`: those registered before the last
+    /// close (or before this contract was set up).
+    uint256 public sleevesCounted;
+    uint256 private _snapNewSleeveUsd; // value of the not-yet-counted sleeves at the pinned snapshot
+    uint256 private transient _newSleeveUsdNow; // the same, for the commit in progress
     uint256 public feeOwed; // cash raw units not yet paid
     BookSnapshot private _snap;
 
@@ -184,6 +201,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         feeRecipient = feeRecipient_;
         startTime = uint64(block.timestamp);
         tiers = tiers_;
+        sleevesCounted = account_.sleeves().length;
     }
 
     // ---------------------------------------------------------------- commit
@@ -193,6 +211,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     function commit(Close calldata c, bytes calldata controllerSig) external {
         (bytes32 posHash,) = _positions(true);
         (uint256 nav,) = account.navUsd();
+        _newSleeveUsdNow = _newSleeveUsd();
         _commitPublic(c, controllerSig, posHash, nav, _bandUsd());
     }
 
@@ -204,6 +223,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
     ) external {
         (bytes32 posHash,) = _positions(true);
         (uint256 pubNav,) = account.navUsd();
+        _newSleeveUsdNow = _newSleeveUsd();
         _commitPrivate(c, controllerSig, p, posHash, pubNav, _bandUsd());
     }
 
@@ -239,6 +259,7 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         uint256[3] memory band = _bandUsd();
         (cashBps, equityBps) = _weightsOf(band, navUsd);
         _snap = BookSnapshot(uint64(block.timestamp), navUsd, cashBps, equityBps, positionsHash, band);
+        _snapNewSleeveUsd = _newSleeveUsd();
         emit BookSnapshotted(uint64(block.timestamp), positionsHash, navUsd, cashBps, equityBps);
     }
 
@@ -261,10 +282,12 @@ contract PeriodClose is EIP712, IPeriodStartNav {
 
     function _useSnapshot(uint64 periodEnd) private returns (BookSnapshot memory b) {
         b = _snap;
+        _newSleeveUsdNow = _snapNewSleeveUsd;
         if (b.takenAt == 0) revert NoSnapshot();
         if (b.takenAt < periodEnd) revert SnapshotBeforePeriodEnd(b.takenAt, periodEnd);
         if (block.timestamp > b.takenAt + SNAPSHOT_MAX_AGE) revert SnapshotExpired(b.takenAt);
         delete _snap; // consumed once
+        delete _snapNewSleeveUsd;
     }
 
     function _commitPublic(
@@ -291,7 +314,6 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
 
         _record(c, prevEnd);
-        (periodStartNav,) = account.navUsd();
     }
 
     function _commitPrivate(
@@ -312,19 +334,39 @@ contract PeriodClose is EIP712, IPeriodStartNav {
         bytes32 pc = _checkPrivate(c, p, ps, pubNav, pubBand);
         if (!SignatureChecker.isValidSignatureNow(controller, digest(c), controllerSig)) revert BadSignature();
 
-        uint256 index = _record(c, prevEnd);
+        uint256 index = _record(c, prevEnd); // c.navUsd = checked public part + proven private part
         ps.onClose(p.navUsd);
-        (uint256 pubAfter,) = account.navUsd();
-        periodStartNav = pubAfter + p.navUsd;
         emit PrivateSleeveProven(index, p.root, p.navUsd, pc, p.nullifiers);
     }
 
-    /// Stores the close and pays the fee on its NAV.
+    /// Stores the close, pays the fee on its NAV and sets the next period's start from the checked statement.
     function _record(Close calldata c, uint64 prevEnd) private returns (uint256 index) {
         _closes.push(c);
         index = _closes.length - 1;
         (uint256 feeRaw, uint256 paid, uint256 owed) = _fee(c.navUsd, c.periodEnd - prevEnd);
         emit PeriodClosed(index, c.periodEnd, c, feeRaw, paid, owed);
+        _setStart(c.navUsd, paid);
+    }
+
+    /// The next period's start: the checked statement NAV less the fee paid now (never the live book, R3-TREAS-3),
+    /// and the claim basis without the sleeves registered during the period just closed (R3-TREAS-2).
+    function _setStart(uint256 statementNav, uint256 feePaidRaw) private {
+        uint256 newSleeveUsd = _newSleeveUsdNow;
+        uint8 dec = cashDecimals;
+        uint256 feeUsd = dec <= 18 ? feePaidRaw * 10 ** (18 - dec) : feePaidRaw / 10 ** (dec - 18);
+        uint256 start = statementNav > feeUsd ? statementNav - feeUsd : 0;
+        periodStartNav = start;
+        claimBasisNav = start > newSleeveUsd ? start - newSleeveUsd : 0;
+        sleevesCounted = account.sleeves().length;
+    }
+
+    /// Value of the sleeves registered since the last close (not yet counted in the claim basis).
+    function _newSleeveUsd() private view returns (uint256 usd) {
+        address[] memory s = account.sleeves();
+        for (uint256 i = sleevesCounted; i < s.length; ++i) {
+            (uint256 v,) = ISleeve(s[i]).valueOf(address(account));
+            usd += v;
+        }
     }
 
     /// NAV and weights with the private part in the sleeve's band, then the proof against the public book and the

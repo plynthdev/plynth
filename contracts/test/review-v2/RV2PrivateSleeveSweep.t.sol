@@ -9,7 +9,7 @@ import {TreasuryAccount} from "../../src/treasury/TreasuryAccount.sol";
 /// review-v2 V2-L8 regression. The PoC recycled the board's own AAPL (withdrawToBoard -> transfer to the sleeve ->
 /// `sweep(asset)`) to drive `bookUsd` to 0 while the notes were still in the pool: a zero book is never stale (L-6
 /// bypass) and a sleeve with a zero book can be dropped (PrivateBookOpen bypass). `sweep` now debits only a proven
-/// pool withdraw to the sleeve (nullifier spent, recipient this, not forwarded before), so the loop cannot start.
+/// pool withdraw to the sleeve (the pool's record of what it paid the sleeve, each nullifier once), so the loop cannot start.
 contract RV2PrivateSleeveSweepTest is PrivateSleeveFixture {
     /// A forged withdraw for `raw` of AAPL paid to the sleeve (the attacker's best guess at a "proceeds" claim).
     function _forged(uint256 raw) internal view returns (ShieldedPool.PublicWithdraw memory w) {
@@ -25,10 +25,11 @@ contract RV2PrivateSleeveSweepTest is PrivateSleeveFixture {
         aapl.transfer(address(sleeve), x);
         vm.stopPrank();
         // no withdraw happened: the fixture proof's nullifier is unspent, and a forged one is unspent too
-        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotSpent.selector, _withdrawPub().nullifier));
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
-        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotSpent.selector, bytes32(uint256(0xdead))));
-        sleeve.sweep(_hex(".withdraw.proofHex"), _forged(x));
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, _withdrawPub().nullifier));
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), x);
+        ShieldedPool.PublicWithdraw memory f = _forged(x);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, f.nullifier));
+        sleeve.sweep(f.nullifier, address(aapl), x);
     }
 
     function test_rv2_boardCannotRecycleSweepToZeroBook() public {
@@ -65,7 +66,7 @@ contract RV2PrivateSleeveSweepTest is PrivateSleeveFixture {
         _shieldBook();
         uint256 book = sleeve.bookUsd();
         pool.withdraw(_hex(".withdraw.proofHex"), _withdrawPub());
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);
         assertEq(sleeve.bookUsd(), book - 40_000e18);
         uint256 x = aapl.balanceOf(address(account));
         vm.startPrank(board);
@@ -73,7 +74,7 @@ contract RV2PrivateSleeveSweepTest is PrivateSleeveFixture {
         aapl.transfer(address(sleeve), x);
         vm.stopPrank();
         vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.AlreadyForwarded.selector, _withdrawPub().nullifier));
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);
         assertEq(sleeve.bookUsd(), book - 40_000e18, "book still counts the notes left in the pool");
     }
 }

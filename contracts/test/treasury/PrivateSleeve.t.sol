@@ -574,7 +574,7 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
         vm.prank(stranger);
         assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the proof pays the sleeve, not the account");
         vm.prank(stranger);
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);
         assertEq(aapl.balanceOf(address(account)) - before, 200e18, "paid to the account");
         assertEq(sleeve.bookUsd(), 80_000e18, "book debited: the note is not counted twice");
         assertEq(guard.snapshot(address(account)).nav, navBefore, "guard NAV unchanged by an unshield");
@@ -582,40 +582,34 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
         // The same proceeds cannot be swept (debited) twice, even with fresh tokens sitting in the sleeve.
         aapl.mint(address(sleeve), 200e18);
         vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.AlreadyForwarded.selector, _withdrawPub().nullifier));
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);
     }
 
-    /// review-v2 L-8: `sweep` debits only a proven pool withdraw to this sleeve whose nullifier is spent.
-    function test_sweepNeedsASpentVerifiedWithdrawToTheSleeve() public {
+    /// review-v2 L-8 / review3 R3-TREAS-1: `sweep` debits only what the pool recorded paying this sleeve.
+    function test_sweepNeedsThePoolsRecordOfAWithdrawToTheSleeve() public {
         _shieldBook();
         ShieldedPool.PublicWithdraw memory w = _withdrawPub();
         aapl.mint(address(sleeve), 200e18); // tokens are there, but no withdraw happened
-        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotSpent.selector, w.nullifier));
-        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, w.nullifier));
+        sleeve.sweep(w.nullifier, address(aapl), w.amount);
 
         vm.prank(stranger);
         pool.withdraw(_hex(".withdraw.proofHex"), w);
+        assertEq(pool.withdrawnOf(w.nullifier), keccak256(abi.encode(address(sleeve), address(aapl), w.amount)));
 
-        w.recipient = stranger;
-        vm.expectRevert(PrivateSleeve.BadRecipient.selector);
-        sleeve.sweep(_hex(".withdraw.proofHex"), w);
-        w = _withdrawPub();
-        w.relayerFee = 1;
-        vm.expectRevert(PrivateSleeve.FeeNotAllowed.selector);
-        sleeve.sweep(_hex(".withdraw.proofHex"), w);
-        w = _withdrawPub();
-        w.amount += 1; // inflated amount: the proof does not open it
-        vm.expectRevert(PrivateSleeve.InvalidProof.selector);
-        sleeve.sweep(_hex(".withdraw.proofHex"), w);
-        w = _withdrawPub();
-        w.root = bytes32(uint256(1));
-        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.UnknownRoot.selector, w.root));
-        sleeve.sweep(_hex(".withdraw.proofHex"), w);
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, w.nullifier));
+        sleeve.sweep(w.nullifier, address(aapl), w.amount + 1); // more than it paid
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, w.nullifier));
+        sleeve.sweep(w.nullifier, address(aapl), w.amount - 1); // less: not the record either
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, w.nullifier));
+        sleeve.sweep(w.nullifier, address(nvda), w.amount); // another asset
+        vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.NotWithdrawnHere.selector, bytes32(uint256(5))));
+        sleeve.sweep(bytes32(uint256(5)), address(aapl), w.amount); // an unknown nullifier
 
         uint256 book = sleeve.bookUsd();
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
-        assertEq(sleeve.bookUsd(), book - 40_000e18, "debited by the proven 200 AAPL only");
-        assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the unproven transfer stays");
+        sleeve.sweep(w.nullifier, address(aapl), w.amount);
+        assertEq(sleeve.bookUsd(), book - 40_000e18, "debited by the recorded 200 AAPL only");
+        assertEq(aapl.balanceOf(address(sleeve)), 200e18, "the unrecorded transfer stays");
     }
 
     /// An unshield marks its nullifier forwarded: its proof cannot be replayed through `sweep`.
@@ -624,7 +618,7 @@ contract PrivateSleeveTest is PrivateSleeveFixture {
         sleeve.unshield(_hex(".withdraw.proofHex"), _withdrawPub());
         aapl.mint(address(sleeve), 200e18);
         vm.expectRevert(abi.encodeWithSelector(PrivateSleeve.AlreadyForwarded.selector, _withdrawPub().nullifier));
-        sleeve.sweep(_hex(".withdraw.proofHex"), _withdrawPub());
+        sleeve.sweep(_withdrawPub().nullifier, address(aapl), _withdrawPub().amount);
     }
 
     function test_unshieldOnlyToSleeveWithoutFee() public {
