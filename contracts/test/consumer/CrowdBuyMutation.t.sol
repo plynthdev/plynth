@@ -93,6 +93,7 @@ contract CrowdBuyMutationTest is CrowdBuyBase {
         (a[0], a[1]) = (address(tokA), address(tokB));
         (w[0], w[1]) = (1, 9_999);
         _prepare(u, a, w, 5); // 5 raw USDG units: 5 * 1 / 10_000 floors to 0 for token A
+        vm.prank(u); // only the saver or the keeper may join (L-3)
         crowd.join(u);
         (, CrowdBuy.Book memory bA) = crowd.openBook(address(tokA));
         (, CrowdBuy.Book memory bB) = crowd.openBook(address(tokB));

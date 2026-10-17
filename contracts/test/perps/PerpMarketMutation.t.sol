@@ -29,7 +29,7 @@ contract PerpMarketMutationTest is PerpFixture {
     function test_defaultParamsBeforeSetParams() public {
         PerpMarket m = new PerpMarket(pool, valuer, address(token), owner);
         assertEq(m.takerFeeBps(), 10);
-        assertEq(m.makerFeeBps(), 2);
+        assertEq(m.makerFeeBps(), 6); // the round-trip floor uses the cheaper fee: maker default 6 bps (v2 review)
         assertEq(m.offHoursSpreadBps(), 1_000);
         assertEq(m.borrowBpsPerHour(), 1);
         assertEq(m.fundingK(), 2.78e11);
@@ -245,12 +245,14 @@ contract PerpMarketMutationTest is PerpFixture {
         market.liquidate(alice);
     }
 
-    function test_liquidateUnderwaterPaysNoReward() public {
+    /// Underwater (bad debt): the liquidator still gets the minimum reward, capped by the position's own collateral
+    /// (M-4: an underwater position is worth the gas to close).
+    function test_liquidateUnderwaterPaysOnlyTheMinimumReward() public {
         _open(alice, true, 1_000e6, 100e6);
         _setPrice(80e8); // equity 100 - 200 < 0
         vm.prank(keeper);
         market.liquidate(alice);
-        assertEq(usdg.balanceOf(keeper), 0);
+        assertEq(usdg.balanceOf(keeper), market.minLiquidationReward());
     }
 
     // ------------------------------------------------------------ funding and borrow

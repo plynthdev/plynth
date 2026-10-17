@@ -151,7 +151,10 @@ contract ShieldedPoolMutationTest is ShieldedPoolBase {
 
     function test_readyCountHonoursLimit() public {
         for (uint256 i; i < 3; ++i) _deposit(alice, address(usdg), U, i + 1);
+        // three deposits are below MIN_INSERT_BATCH: ready only once the oldest waited the solo delay too (M-5)
         vm.warp(block.timestamp + pool.MIN_PENDING_DELAY());
+        assertEq(pool.readyCount(10), 0, "a short batch is not ready before the solo delay");
+        vm.warp(block.timestamp + pool.SOLO_INSERT_DELAY());
         assertEq(pool.readyCount(2), 2);
         assertEq(pool.readyCount(10), 3);
     }
