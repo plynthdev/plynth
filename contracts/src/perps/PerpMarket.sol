@@ -89,6 +89,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// and its positions become settleable at the last price: longer than a weekend plus a market holiday, and
     /// plus Chainlink's 24 h heartbeat on these feeds, so a normal off-hours hold never triggers it.
     uint256 public constant HELD_GRACE = 5 days;
+    /// A matured proposal must be applied within this long after its eta.
+    uint256 public constant PROPOSAL_EXPIRY = 14 days;
     uint256 internal constant WAD = 1e18;
 
     struct Position {
@@ -158,6 +160,9 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     mapping(address account => Position) internal _positions;
     /// Timelocked changes: proposal id (paramsId / guardsId) => time it may be applied.
     mapping(bytes32 id => uint256) public etaOf;
+    /// Bumped on every ownership change and part of every proposal id: a proposal made under one owner (the
+    /// deployer) is void for the next (review v2 L-6, applied to the perps proposals).
+    uint256 public proposalNonce;
     EnumerableSet.AddressSet internal _longAccounts;
     EnumerableSet.AddressSet internal _shortAccounts;
 
@@ -190,6 +195,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     error TooManyPositions();
     error TimelockActive(bytes32 id, uint256 eta);
     error NotProposed(bytes32 id);
+    error ProposalExpired(bytes32 id, uint256 eta);
     error SizeTooSmall();
     error RoundTripTooCheap(uint256 openSpreadBps, uint256 feeBps);
     error Retired();
@@ -314,12 +320,12 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         emit Retiring(at);
     }
 
-    function paramsId(Params memory p) public pure returns (bytes32) {
-        return keccak256(abi.encode("params", p));
+    function paramsId(Params memory p) public view returns (bytes32) {
+        return keccak256(abi.encode(proposalNonce, "params", p));
     }
 
-    function guardsId(Guards memory g) public pure returns (bytes32) {
-        return keccak256(abi.encode("guards", g));
+    function guardsId(Guards memory g) public view returns (bytes32) {
+        return keccak256(abi.encode(proposalNonce, "guards", g));
     }
 
     function _checkParams(Params memory p) internal view {
@@ -386,11 +392,19 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         emit ChangeProposed(id, eta);
     }
 
-    /// A matured proposal is used up by the change it announced.
+    /// A matured proposal is used up by the change it announced. It is good for PROPOSAL_EXPIRY after its eta; a
+    /// change announced long ago needs a fresh proposal (review v2 L-6).
     function _consume(bytes32 id) internal {
         uint256 eta = etaOf[id];
         if (eta == 0 || block.timestamp < eta) revert TimelockActive(id, eta);
+        if (block.timestamp > eta + PROPOSAL_EXPIRY) revert ProposalExpired(id, eta);
         delete etaOf[id];
+    }
+
+    /// Every ownership change (the constructor's too) voids the proposals made so far.
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        ++proposalNonce;
     }
 
     // ---------------------------------------------------------------- trader entry points

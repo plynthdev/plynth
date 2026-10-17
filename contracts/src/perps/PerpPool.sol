@@ -55,6 +55,8 @@ contract PerpPool is ERC4626, Ownable2Step {
     /// changing the maker registrar, and (in every market) risk-param changes wait this long once LPs are in.
     uint256 public constant MIN_TIMELOCK = 10 minutes;
     uint256 public immutable TIMELOCK;
+    /// A matured proposal must be applied within this long after its eta.
+    uint256 public constant PROPOSAL_EXPIRY = 14 days;
 
     uint256 public traderCollateral;
     uint256 public totalReserved;
@@ -70,6 +72,9 @@ contract PerpPool is ERC4626, Ownable2Step {
     mapping(address account => mapping(address operator => bool)) public isOperator;
     /// Timelocked changes: proposal id (marketId / registrarId) => time it may be applied.
     mapping(bytes32 id => uint256) public etaOf;
+    /// Bumped on every ownership change and part of every proposal id: a proposal made under one owner (the
+    /// deployer) is void for the next (review v2 L-6, applied to the perps proposals).
+    uint256 public proposalNonce;
 
     event MarketAdded(address indexed market);
     event MarketRemoved(address indexed market);
@@ -96,6 +101,7 @@ contract PerpPool is ERC4626, Ownable2Step {
     error TimelockTooShort();
     error TimelockActive(bytes32 id, uint256 eta);
     error NotProposed(bytes32 id);
+    error ProposalExpired(bytes32 id, uint256 eta);
     error DepositsClosed();
     error AlreadyOpen();
 
@@ -177,12 +183,12 @@ contract PerpPool is ERC4626, Ownable2Step {
         emit ChangeCancelled(id);
     }
 
-    function marketId(address market) public pure returns (bytes32) {
-        return keccak256(abi.encode("addMarket", market));
+    function marketId(address market) public view returns (bytes32) {
+        return keccak256(abi.encode(proposalNonce, "addMarket", market));
     }
 
-    function registrarId(address registrar) public pure returns (bytes32) {
-        return keccak256(abi.encode("makerRegistrar", registrar));
+    function registrarId(address registrar) public view returns (bytes32) {
+        return keccak256(abi.encode(proposalNonce, "makerRegistrar", registrar));
     }
 
     function _propose(bytes32 id) internal {
@@ -191,11 +197,19 @@ contract PerpPool is ERC4626, Ownable2Step {
         emit ChangeProposed(id, eta);
     }
 
-    /// A matured proposal is used up by the change it announced.
+    /// A matured proposal is used up by the change it announced. It is good for PROPOSAL_EXPIRY after its eta; a
+    /// change announced long ago needs a fresh proposal (review v2 L-6).
     function _consume(bytes32 id) internal {
         uint256 eta = etaOf[id];
         if (eta == 0 || block.timestamp < eta) revert TimelockActive(id, eta);
+        if (block.timestamp > eta + PROPOSAL_EXPIRY) revert ProposalExpired(id, eta);
         delete etaOf[id];
+    }
+
+    /// Every ownership change (the constructor's too) voids the proposals made so far.
+    function _transferOwnership(address newOwner) internal override {
+        super._transferOwnership(newOwner);
+        ++proposalNonce;
     }
 
     function setMaker(address account, bool maker) external {
