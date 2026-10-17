@@ -9,6 +9,8 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Valuer} from "../core/Valuer.sol";
 import {StockTokenRegistry} from "../core/StockTokenRegistry.sol";
+import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
+import {IStockToken} from "../interfaces/IStockToken.sol";
 import {PerpPool} from "./PerpPool.sol";
 
 /// One oracle-priced pool perp per Stock Token (GMX-v1 style), isolated margin, USDG collateral, the
@@ -46,9 +48,11 @@ import {PerpPool} from "./PerpPool.sol";
 /// the LPs never pay a liquidator more than the liquidated position brought in (review v2 M-3). LP equity values
 /// every position on its own, floored at minus its collateral and capped at its maximum payout, so one trader's bad
 /// debt is never netted against another's gain. That needs the open positions enumerable: at most
-/// `MAX_OPEN_POSITIONS` per market, and every position keeps at least `minCollateral` of collateral and of size
-/// after every open, increase and partial decrease (a smaller remainder must close in full), so a slot always
-/// locks real capital that pays borrow on real size (review v2 M-2). The owner can `retire` a market: opens stop at
+/// `MAX_OPEN_POSITIONS` per market, and every position keeps at least `minCollateral` of collateral and at least
+/// `slotFloor(openPositionCount())` of size after every open, increase and partial decrease (a smaller remainder
+/// must close in full), so a slot always locks real capital that pays borrow on real size (review v2 M-2), and the
+/// size floor doubles every few slots once half the slots are taken, so holding all of them costs about 1M USDG of
+/// size (review v3 R3-PERP-1). The owner can `retire` a market: opens stop at
 /// once and, after `pool.TIMELOCK()` in public, anyone settles the remaining positions at a fresh oracle price, so a
 /// market can always be emptied and removed from the pool whoever holds its slots.
 ///
@@ -81,10 +85,16 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     /// Open positions per market (both sides). Every LP share-price read (deposit, redeem, the treasury's NAV)
     /// values each one: ~10k gas each cold (set slot + size, collateral, tokens), ~1.1M for a full market, and
     /// the pool's four mainnet markets stay under ~5M per read (test_M4_totalAssetsGasWithAFullMarket). With
-    /// the 100 USDG minimum collateral and size kept by every position, filling one market's slots locks 10,000 USDG
-    /// at market risk and pays fees and borrow on at least 10,000 USDG of size; the owner can raise minCollateral at
-    /// once, and `retire` empties a market whatever holds its slots.
+    /// the occupancy-scaled size floor (`slotFloor`), occupying every slot needs about 1,000,000 USDG of size, which
+    /// pays borrow (about 74,000 USDG a month at 1 bps/h) and fits only under the per-side OI cap of a pool with
+    /// millions of liquidity; `retire` still empties a market whatever holds its slots (review v3 R3-PERP-1).
     uint256 public constant MAX_OPEN_POSITIONS = 100;
+    /// Slots at the base size floor (minCollateral). Above it the size floor doubles every SLOT_DOUBLING slots, so
+    /// the last slots of a market cost real size to hold: 100 USDG up to the 50th position, then 200 USDG for the
+    /// 51st-55th, ... 102,400 USDG for the 96th-100th (review v3 R3-PERP-1: 100 hedged positions at the floors
+    /// blocked every open for about 780 USDG a month).
+    uint256 public constant FREE_SLOTS = 50;
+    uint256 public constant SLOT_DOUBLING = 5;
     /// How long a market may sit on hold (measured from its last fresh price) before it stops blocking the pool
     /// and its positions become settleable at the last price: longer than a weekend plus a market holiday, and
     /// plus Chainlink's 24 h heartbeat on these feeds, so a normal off-hours hold never triggers it.
@@ -428,19 +438,19 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     }
 
     function decrease(uint256 sizeUsd) external {
-        _decrease(msg.sender, sizeUsd, false);
+        _decrease(msg.sender, sizeUsd, false, 0);
     }
 
     function decreaseFor(address account, uint256 sizeUsd) external {
-        _decrease(account, sizeUsd, false);
+        _decrease(account, sizeUsd, false, 0);
     }
 
     function close() external {
-        _decrease(msg.sender, _positions[msg.sender].size, false);
+        _decrease(msg.sender, _positions[msg.sender].size, false, 0);
     }
 
     function closeFor(address account) external {
-        _decrease(account, _positions[account].size, false);
+        _decrease(account, _positions[account].size, false, 0);
     }
 
     /// Anyone (except the account and its operators) closes an underwater position and earns the fee.
@@ -477,7 +487,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     function settleHeld(address account) external {
         uint256 held = heldFor();
         if (held <= HELD_GRACE) revert NotHeldLongEnough(held);
-        _decrease(account, _positions[account].size, true);
+        _decrease(account, _positions[account].size, true, _heldSettlePrice());
         emit HeldSettled(account, msg.sender, held);
     }
 
@@ -488,7 +498,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         if (at == 0 || block.timestamp < at) revert NotRetired(at);
         (, bool hold,) = _quote();
         if (hold) revert Hold();
-        _decrease(account, _positions[account].size, true);
+        _decrease(account, _positions[account].size, true, 0);
         emit RetiredSettled(account, msg.sender);
     }
 
@@ -602,6 +612,16 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         for (uint256 i; i < s_.length; i++) {
             out[l.length + i] = s_[i];
         }
+    }
+
+    /// Least size a position keeps while the market holds `n` open positions: minCollateral up to FREE_SLOTS, then
+    /// doubling every SLOT_DOUBLING positions (x1024 at MAX_OPEN_POSITIONS). The floor applies only when a position's
+    /// size changes (open, increase, partial decrease); a full close, a liquidation and margin-only top-ups never
+    /// check it, so no position is ever trapped by a busier market.
+    function slotFloor(uint256 n) public view returns (uint256) {
+        uint256 m = minCollateral;
+        if (n <= FREE_SLOTS) return m;
+        return m << ((n - FREE_SLOTS + SLOT_DOUBLING - 1) / SLOT_DOUBLING);
     }
 
     function openPositionCount() public view returns (uint256) {
@@ -741,7 +761,8 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
     }
 
     /// `settle`: settleHeld (anyone, whole position, last price without the hold spread).
-    function _decrease(address account, uint256 sizeUsd, bool settle) internal nonReentrant {
+    /// `settlePrice` (settleHeld on a delisted token only): a feed round newer than `lastPrice`, used instead of it.
+    function _decrease(address account, uint256 sizeUsd, bool settle, uint256 settlePrice) internal nonReentrant {
         if (!settle) _auth(account);
         Position storage p = _positions[account];
         if (p.size == 0) revert NoPosition();
@@ -751,6 +772,7 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         _fold(p);
 
         (uint256 pr, bool hold,) = _quoteAndRecord();
+        if (settlePrice != 0) pr = settlePrice;
         Exit memory x;
         x.exec = pr;
         if (hold && !settle) {
@@ -806,11 +828,11 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
         emit Decreased(account, msg.sender, sizeUsd, x.pnl, x.funding, x.borrow, x.fee, x.payout, x.exec);
     }
 
-    /// The minimum collateral and the minimum size (also minCollateral) a remaining position keeps.
+    /// The minimum collateral (minCollateral) and the minimum size (`slotFloor` at the market's current occupancy, the
+    /// position itself included) a position keeps after any open, increase or partial decrease.
     function _checkFloors(Position storage p) internal view {
-        uint256 m = minCollateral;
-        if (p.collateral < m) revert CollateralTooLow();
-        if (p.size < m) revert SizeTooSmall();
+        if (p.collateral < minCollateral) revert CollateralTooLow();
+        if (p.size < slotFloor(openPositionCount())) revert SizeTooSmall();
     }
 
     /// Net profit of a realization (PnL - funding - borrow), capped at the reserve held for that size, and at 0
@@ -965,6 +987,41 @@ contract PerpMarket is Ownable2Step, ReentrancyGuard {
             uint256 until = valuer.calendarValidUntil();
             if (until != 0 && block.timestamp >= until && until < at) at = until;
         }
+    }
+
+    /// settleHeld's price when the Valuer reverts (delisted token): the token's own feed, read directly, if it has a
+    /// round newer than `lastPrice` (a delisted token's feed keeps publishing while its market trades elsewhere), else
+    /// 0 (use `lastPrice`). Without it, a market nobody poked settled after the grace at a days-old price (review v3
+    /// R3-PERP-6). The read never reverts: a feed that is gone or answers nonsense leaves `lastPrice`.
+    function _heldSettlePrice() internal view returns (uint256) {
+        try valuer.quote(underlying) returns (Valuer.Quote memory) {
+            return 0; // the Valuer answers: _decrease already uses (and records) its latest round
+        } catch {}
+        StockTokenRegistry.Entry memory e = valuer.registry().entry(underlying);
+        if (e.feed.code.length == 0) return 0;
+        AggregatorV3Interface f = AggregatorV3Interface(e.feed);
+        uint256 answer;
+        try f.latestRoundData() returns (uint80, int256 a, uint256, uint256 updatedAt, uint80) {
+            if (a <= 0 || updatedAt <= lastPriceAt || updatedAt > block.timestamp) return 0;
+            answer = uint256(a);
+        } catch {
+            return 0;
+        }
+        uint8 dec;
+        try f.decimals() returns (uint8 d) {
+            dec = d;
+        } catch {
+            return 0;
+        }
+        uint256 p = dec <= 18 ? answer * 10 ** (18 - dec) : answer / 10 ** (dec - 18);
+        if (!e.multiplierEmbedded) {
+            try IStockToken(underlying).uiMultiplier() returns (uint256 m) {
+                p = p * m / 1e18;
+            } catch {
+                return 0;
+            }
+        }
+        return p;
     }
 
     /// Hold start for a reverting Valuer: the later of the last recorded price time and when the trouble started.

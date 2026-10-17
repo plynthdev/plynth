@@ -358,6 +358,15 @@ contract MainnetBeta is Script {
         if (chainId != need) revert WrongChain(chainId, need);
     }
 
+    /// OWNER counts as a contract (a Safe) only if it has code that is not an EIP-7702 delegation designator
+    /// (0xef0100 || delegate, 23 bytes): a delegated EOA is still one private key (review v3 R3-ORC-2; Robinhood Chain
+    /// runs ArbOS with EIP-7702).
+    function isContractOwner(address a) public view returns (bool) {
+        bytes memory code = a.code;
+        if (code.length == 0) return false;
+        return !(code.length >= 3 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00);
+    }
+
     /// Every role set, all distinct from each other and from the deployer; staleness and crowd size in range; in
     /// mainnet mode staleness at most 26 h, MIN_CROWD at least 3 and OWNER a contract (unless allowEoaOwner); the
     /// holiday table long enough.
@@ -377,7 +386,7 @@ contract MainnetBeta is Script {
         if (!c.fork) {
             if (c.maxStaleness > DEFAULT_MAX_STALENESS) revert BadStaleness(c.maxStaleness);
             if (c.minCrowd < DEFAULT_MIN_CROWD) revert BadMinCrowd(c.minCrowd);
-            if (c.owner.code.length == 0 && !c.allowEoaOwner) revert OwnerNotContract(c.owner);
+            if (!isContractOwner(c.owner) && !c.allowEoaOwner) revert OwnerNotContract(c.owner);
         }
         checkCalendar(block.timestamp);
     }
@@ -686,7 +695,7 @@ contract MainnetBeta is Script {
     /// and nothing left with the deployer. `verifyDeployment` runs the same check later against a deployment file.
     function checkHandoff() public view {
         address o = cfg.owner;
-        if (!cfg.fork && !cfg.allowEoaOwner) _is(o.code.length != 0, o, "OWNER is a contract");
+        if (!cfg.fork && !cfg.allowEoaOwner) _is(isContractOwner(o), o, "OWNER is a contract");
         _owned(address(registry), "registry");
         _owned(address(valuer), "valuer");
         _is(IOwned(address(router)).owner() == o, address(router), "router owner");

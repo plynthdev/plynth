@@ -134,7 +134,15 @@ export type Options = {
   now?: bigint;
   /** Override the expectations (default: by the file's format). */
   expected?: Expected;
+  /** The code at an address (the CLI passes eth_getCode): an OWNER whose code is an EIP-7702 delegation designator
+   *  (0xef0100 || delegate) is still one private key, so it does not count as a contract (review v3 R3-ORC-2). */
+  codeOf?: (a: Address) => Promise<Hex | undefined>;
 };
+
+/** EIP-7702 delegation designator: 0xef0100 followed by the 20-byte delegate. */
+export function isDelegatedEoaCode(code: Hex | undefined): boolean {
+  return !!code && code.toLowerCase().startsWith("0xef0100");
+}
 
 /** v2 files carry the fields MainnetBeta.s.sol added after the audit; the v1 file (also `beta: true`) has neither. */
 export function deploymentVersion(dep: Record<string, unknown>): 1 | 2 {
@@ -245,7 +253,9 @@ export async function verifyDeployment(
   const O = dep.owner;
   if (v2) {
     if (dep.fork === true) push("ok", "OWNER is a contract", "fork mode: not required (dry run)");
-    else if (await codeAt(O)) push("ok", "OWNER is a contract", O);
+    else if ((await codeAt(O)) && opts.codeOf && isDelegatedEoaCode(await opts.codeOf(O))) {
+      push(dep.allowEoaOwner === true ? "WARN" : "FAIL", "OWNER is a contract", `OWNER ${O} is an EIP-7702 delegated EOA (one key), not a Safe`);
+    } else if (await codeAt(O)) push("ok", "OWNER is a contract", O);
     else if (dep.allowEoaOwner === true) push("WARN", "OWNER is a contract", `OWNER ${O} is an EOA (deployed with ALLOW_EOA_OWNER=1)`);
     else push("FAIL", "OWNER is a contract", `no code at OWNER ${O} and allowEoaOwner is not set`);
     if (dep.fork !== true) {
@@ -535,7 +545,8 @@ if (import.meta.main) {
     return !!code && code !== "0x";
   };
   const now = (await c.getBlock()).timestamp;
-  const checks = await verifyDeployment(dep, read, codeAt, await c.getChainId(), { strict, now });
+  const codeOf = async (a: Address) => (await c.getCode({ address: getAddress(a) })) ?? undefined;
+  const checks = await verifyDeployment(dep, read, codeAt, await c.getChainId(), { strict, now, codeOf });
   for (const ch of checks) console.log(`${ch.status.padEnd(4)} ${ch.what}${ch.detail ? `  ${ch.detail}` : ""}`);
   const s = summarize(checks);
   console.log(`\n${s.total} checks: ${s.ok} ok, ${s.warn} warn, ${s.fail} fail (v${deploymentVersion(dep)}${strict ? ", strict" : ""}; ${file})`);

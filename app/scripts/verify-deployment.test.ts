@@ -4,9 +4,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAddress, keccak256, encodeAbiParameters, zeroAddress, type Address } from "viem";
+import { getAddress, keccak256, encodeAbiParameters, zeroAddress, type Address, type Hex } from "viem";
 import {
-  calendarCheck, deploymentVersion, exitCode, handover, MAINNET_BETA_V1, MAINNET_BETA_V2, normalize, summarize, V2, verifyDeployment,
+  calendarCheck, deploymentVersion, exitCode, handover, isDelegatedEoaCode, MAINNET_BETA_V1, MAINNET_BETA_V2, normalize, summarize, V2, verifyDeployment,
   type Check, type Deployment, type Reader,
 } from "./verify-deployment";
 
@@ -317,6 +317,24 @@ describe("verifyDeployment v2", () => {
     const fork = v2File({ fork: true, chainId: 31337 });
     const c3 = await verifyDeployment(fork, world(fork), codeButOwner(fork), 31337, { now: NOW });
     expect(fails(c3, /OWNER is a contract/)).toHaveLength(0);
+  });
+
+  test("review v3 R3-ORC-2: an EIP-7702 delegated EOA OWNER is not a contract", async () => {
+    const dep = v2File();
+    const delegated = async (x: Address): Promise<Hex | undefined> =>
+      x.toLowerCase() === dep.owner.toLowerCase() ? "0xef01001111111111111111111111111111111111111111" : "0x6080";
+    const c1 = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW, codeOf: delegated });
+    expect(fails(c1, /OWNER is a contract/)).toHaveLength(1);
+    expect(c1.find((c) => c.what === "OWNER is a contract")?.detail).toMatch(/7702/);
+    const eoa = v2File({ allowEoaOwner: true });
+    const c2 = await verifyDeployment(eoa, world(eoa), codeAll, eoa.chainId, { now: NOW, codeOf: delegated });
+    expect(warns(c2, /OWNER is a contract/)).toHaveLength(1);
+    const safe = async (): Promise<Hex | undefined> => "0x608060405234801561001057600080fd5b50";
+    const c3 = await verifyDeployment(dep, world(dep), codeAll, dep.chainId, { now: NOW, codeOf: safe });
+    expect(fails(c3, /OWNER is a contract/)).toHaveLength(0);
+    expect(isDelegatedEoaCode("0xEF0100aa")).toBe(true);
+    expect(isDelegatedEoaCode("0x60")).toBe(false);
+    expect(isDelegatedEoaCode(undefined)).toBe(false);
   });
 
   test("mainnet pins: staleness <= 26 h and MIN_CROWD >= 3 (not in fork mode)", async () => {

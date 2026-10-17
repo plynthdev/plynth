@@ -157,7 +157,9 @@ contract CrowdBuyPublicPathTest is CrowdBuyBase {
         feedA.set(int256(PRICE_A / 1e10));
         assertTrue(valuer.marketClosed());
         vm.prank(makeAddr("anyone"));
-        vm.expectRevert(abi.encodeWithSelector(CrowdBuy.MarketOnHold.selector, address(tokA)));
+        // Review v3 R3-ORC-1: a fallback time in a closed market is not the keeper's miss, so the public path is not
+        // open at all yet (NotKeeper); the keeper itself is held.
+        vm.expectRevert(CrowdBuy.NotKeeper.selector);
         crowd.execute(address(tokA));
         vm.expectRevert(abi.encodeWithSelector(CrowdBuy.MarketOnHold.selector, address(tokA)));
         _executeAsKeeper(address(tokA));

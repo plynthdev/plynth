@@ -101,6 +101,8 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
     uint64 public constant PUBLIC_FRESHNESS = 15 minutes;
     /// A public execution's band over the pool fee (review v2 L-4).
     uint256 public constant PUBLIC_EXTRA_BPS = 10;
+    /// Most closed-market fallback times `missedFrom` skips (a four-day holiday weekend is 4).
+    uint256 public constant MAX_CLOSED_FALLBACKS = 10;
 
     SavingsVault public immutable vault;
     StockRouter public immutable router;
@@ -310,9 +312,9 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
     /// Keeper-only because whoever executes picks the block: a stranger could move the pool, execute the whole
     /// book against it up to the slippage band and move it back in one transaction. So that a dead keeper never
     /// blocks a book, anyone may execute a book the keeper missed: from the first `windowEnd - beacon.GRACE()` (the
-    /// beacon's own fallback time) of a window the book had its crowd for and did not execute in (`missedFrom`), at
-    /// any later time the market is open, once per window (review v2 L-3: one fixed hour a day rarely had a round in
-    /// it). Only when (audit M-1):
+    /// beacon's own fallback time) in open market of a window the book had its crowd for and did not execute in
+    /// (`missedFrom`; a weekend or holiday never counts as the keeper's miss), at any later time the market is open,
+    /// once per window (review v2 L-3: one fixed hour a day rarely had a round in it). Only when (audit M-1):
     ///   - the oracle round was published after `missedFrom` and is at most PUBLIC_FRESHNESS old, so the book is
     ///     never bought at a stale-but-"fresh" price (Friday's close on a weekend) that a sandwich could push the
     ///     pool back to;
@@ -369,12 +371,23 @@ contract CrowdBuy is Ownable2Step, ReentrancyGuard, ChangeDelay {
 
     /// When the public fallback opens for a book whose crowd formed at `crowdSince`: the fallback time
     /// (`windowEnd - beacon.GRACE()`) of the window the crowd formed in, if it formed before that time and no book
-    /// executed in that window; else the next window's. From then on the book counts as missed by the keeper.
+    /// executed in that window; else the next window's. A fallback time at which the market is closed (a weekend, a
+    /// holiday, the closed part of an early-close day, or past the calendar's validity) does not count: the keeper
+    /// could not execute in that window, so the fallback moves on to the first window whose fallback time is in open
+    /// market. A book that completes over a weekend therefore stays the keeper's through the whole first open day (its
+    /// secret beacon time), and opens to the public only GRACE before that window ends (review v3 R3-ORC-1).
+    /// From then on the book counts as missed by the keeper.
     function missedFrom(address asset, uint64 crowdSince) public view returns (uint64) {
         uint64 t = crowdSince < GENESIS ? GENESIS : crowdSince;
         (uint64 start, uint64 end) = windowOf(t);
         uint64 from = end - beacon.GRACE();
         if (crowdSince >= from || lastExecutedWindow[asset] == start + 1) from += WINDOW;
+        if (!valuer.marketCalendar()) return from;
+        uint256 until = valuer.calendarValidUntil();
+        // At most a long holiday weekend plus slack; past it the hold check in execute still refuses.
+        for (uint256 i; i < MAX_CLOSED_FALLBACKS && (from >= until || valuer.isClosedAt(from)); ++i) {
+            from += WINDOW;
+        }
         return from;
     }
 
