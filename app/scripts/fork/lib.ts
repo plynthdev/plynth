@@ -33,6 +33,8 @@ export const PATHS = {
   stack: join(FORK_DIR, "stack"),
   /** Gas of the deploy broadcast (beta stack): what the mainnet cost estimate starts from. */
   deployGas: join(FORK_DIR, "deploy-gas.json"),
+  /** Beta stack: the address of OWNER's 2-of-3 Safe stand-in. */
+  ownerSafe: join(FORK_DIR, "owner-safe"),
   /** Written by ForkMainnet.s.sol / MainnetBeta.s.sol (forge may only write under app/deployments). */
   forgeOut: join(APP, "deployments", "fork.json"),
 };

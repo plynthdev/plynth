@@ -54,6 +54,9 @@ export async function timelocks(x: Ctx) {
       return "current() version = 2";
     });
   }
+  // v4: OWNER applies the per-instance adapter allow-list queued in treasury-setup; the board proposes the T2 desks
+  // and venues (registered at the start of the treasury area, 48 h later).
+  if (x.state.t2Approve) await x.state.t2Approve();
   // The equity desk commits tomorrow's beacon now, so its rebalance falls in the same day as the crowd window.
   if (x.state.deskPass) await x.state.deskPass("commit");
 }

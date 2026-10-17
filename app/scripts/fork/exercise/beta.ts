@@ -6,6 +6,7 @@ import { initVault, approveTx, depositTx, deriveVaultKeys, destroyProver, VAULT_
 import { decodeFunctionData, getAddress, maxUint256, parseAbi, type Address, type Hex } from "viem";
 import { giveUsdg } from "../fund";
 import { abiOf, expect } from "./core";
+import { verifyDeployment, type Deployment, type Reader } from "../../verify-deployment";
 import { events, HOUR, U, usdgOf, type Ctx } from "./context";
 
 const ownedAbi = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)"]);
@@ -32,11 +33,45 @@ export async function beta(x: Ctx) {
   const usdg = x.addr("usdg");
   const P = abiOf("ShieldedPool");
 
-  await r.check("the placeholder OWNER is the exercise's owner account (dev account 0)", () => {
-    expect(owner === A.deployer.address, `OWNER ${owner} is not dev account 0`);
+  // Review v4 R4-ORC-1: on mainnet OWNER must be a Safe with threshold >= 2 (MainnetBeta.checkConfig and
+  // verify:deployment). The fork's OWNER is a 2-of-3 Safe stand-in, so the pin runs against a real contract here.
+  await r.check("OWNER is the fork's 2-of-3 Safe stand-in, not the deployer", async () => {
+    expect(owner === A.owner.address, `OWNER ${owner} is not the exercise's owner ${A.owner.address}`);
     expect(deployer !== owner, "deployer == OWNER");
-    return `OWNER ${owner}, deployer ${deployer}`;
+    const code = await r.pub.getCode({ address: owner });
+    expect(!!code && code !== "0x", "OWNER has no code");
+    const t = await r.read<bigint>(owner, parseAbi(["function getThreshold() view returns (uint256)"]), "getThreshold", []);
+    const o = await r.read<readonly Address[]>(owner, parseAbi(["function getOwners() view returns (address[])"]), "getOwners", []);
+    expect(t >= 2n && BigInt(o.length) >= t, `${t}-of-${o.length}`);
+    return `OWNER ${owner}: ${t}-of-${o.length}, deployer ${deployer}`;
   });
+  const pin = async (asOwner: Address) => {
+    const read: Reader = (address, signature, args) => {
+      const item = parseAbi([signature] as [string]);
+      return r.pub.readContract({ address, abi: item as never, functionName: (item[0] as { name: string }).name, args: (args ?? []) as never } as never);
+    };
+    const codeAt = async (a: Address) => {
+      const c = await r.pub.getCode({ address: a });
+      return !!c && c !== "0x";
+    };
+    const checks = await verifyDeployment({ ...(dep as unknown as Deployment), owner: asOwner, fork: false }, read, codeAt, Number(dep.chainId));
+    return checks.find((c) => c.what === "OWNER is a contract");
+  };
+  await r.check("the mainnet owner pin (verify:deployment, as MainnetBeta.checkConfig) accepts the 2-of-3 Safe", async () => {
+    const c = await pin(owner);
+    expect(c?.status === "ok" && /2-of-3/.test(c.detail), JSON.stringify(c));
+    return c!.detail;
+  });
+  const oneOfOne = await r.deploy("a 1-of-1 Safe stand-in (one key: must fail the owner pin)", A.deployer, "MockSafe", [[A.deployer.address], 1n]);
+  if (oneOfOne) {
+    await r.check("the mainnet owner pin refuses a 1-of-1 Safe and an EOA", async () => {
+      const one = await pin(oneOfOne);
+      expect(one?.status === "FAIL", `1-of-1: ${JSON.stringify(one)}`);
+      const eoa = await pin(A.deployer.address);
+      expect(eoa?.status === "FAIL", `EOA: ${JSON.stringify(eoa)}`);
+      return `1-of-1: ${one!.detail}; EOA: ${eoa!.detail}`;
+    });
+  }
   await r.check("OWNER owns every contract, nothing is pending, the deployer owns nothing", async () => {
     const list = ownedContracts(dep);
     for (const [name, a] of list) {
@@ -122,7 +157,7 @@ export async function beta(x: Ctx) {
 
     // ---- emergency levers
     await r.reverts("a non-owner cannot pause Hidden deposits", A.keeper, { address: pool, abi: P, functionName: "setDepositsPaused", args: [true] }, "OwnableUnauthorizedAccount");
-    await r.send("OWNER pauses Hidden deposits", A.deployer, { address: pool, abi: P, functionName: "setDepositsPaused", args: [true] }, async () => {
+    await r.send("OWNER pauses Hidden deposits", A.owner, { address: pool, abi: P, functionName: "setDepositsPaused", args: [true] }, async () => {
       expect(await r.read<boolean>(pool, P, "depositsPaused"), "not paused");
       return "depositsPaused = true";
     });
@@ -131,18 +166,18 @@ export async function beta(x: Ctx) {
       return { address: pool, abi: P, functionName: d.functionName, args: d.args as unknown[] };
     };
     await r.reverts("a Hidden deposit while paused reverts Paused", A.shielder, asCall(depositTx(pool, usdg, 1n * U, ks).data), "Paused");
-    await r.send("OWNER unpauses Hidden deposits", A.deployer, { address: pool, abi: P, functionName: "setDepositsPaused", args: [false] });
+    await r.send("OWNER unpauses Hidden deposits", A.owner, { address: pool, abi: P, functionName: "setDepositsPaused", args: [false] });
     const smallId = await deposit("shielder deposits 1 USDG after the unpause", 1n * U);
     await refund(smallId, "1 USDG");
 
     const held = await r.read<bigint>(pool, P, "shielded", [usdg]);
-    await r.send("OWNER lowers the USDG cap to what the vault holds (applies at once)", A.deployer, { address: pool, abi: P, functionName: "proposeCap", args: [usdg, held] }, async () => {
+    await r.send("OWNER lowers the USDG cap to what the vault holds (applies at once)", A.owner, { address: pool, abi: P, functionName: "proposeCap", args: [usdg, held] }, async () => {
       const c = await r.read<bigint>(pool, P, "cap", [usdg]);
       expect(c === held, `cap ${c} != ${held}`);
       return `cap(USDG) = ${c}`;
     });
     await r.reverts("a deposit above the lowered cap reverts CapExceeded", A.shielder, asCall(depositTx(pool, usdg, 1n * U, ks).data), "CapExceeded");
-    await r.send("OWNER proposes the unlimited cap again", A.deployer, { address: pool, abi: P, functionName: "proposeCap", args: [usdg, maxUint256] });
+    await r.send("OWNER proposes the unlimited cap again", A.owner, { address: pool, abi: P, functionName: "proposeCap", args: [usdg, maxUint256] });
     await r.reverts("raising a cap waits for the 48h timelock", A.outsider, { address: pool, abi: P, functionName: "applyCap", args: [usdg] }, "TooEarly");
     await r.check("warp 48h", async () => {
       await r.warp(48n * HOUR + 60n);

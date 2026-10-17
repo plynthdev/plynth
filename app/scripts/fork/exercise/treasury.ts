@@ -31,6 +31,8 @@ export async function treasury(x: Ctx) {
   const { r, A } = x;
   const t = x.state.treasury as Record<string, Address> | undefined;
   if (!t) throw new Error("no treasury (treasury-setup failed)");
+  // v4: the T2 venues and desks proposed after the timelocks area are registered now (their 48 h have passed).
+  if (x.state.t2Register) await x.state.t2Register();
   const ACC = abiOf("TreasuryAccount");
   const PC = abiOf("PeriodClose");
   const usdg = x.addr("usdg");

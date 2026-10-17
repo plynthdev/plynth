@@ -4,7 +4,7 @@
 // timelock, and the templates marketplace (author submits, committee lists, a second board deploys from it).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { decodeEventLog, encodeAbiParameters, getAddress, stringToHex, type Address, type Hex } from "viem";
+import { decodeEventLog, encodeAbiParameters, getAddress, keccak256, stringToHex, type Address, type Hex } from "viem";
 import { compileTemplate, loadTemplate, policyAbiParam, type Compiled } from "@/treasury/policy-compiler";
 import { PATHS, ROOT, RPC } from "../lib";
 import { abiOf, expect } from "./core";
@@ -112,28 +112,76 @@ export async function treasurySetup(x: Ctx) {
   } else {
     await r.check("perps maker registration (no registrar among the fork's actors on this stack)", async () => `makerRegistrar ${registrar}: venues pay the taker fee`);
   }
-  await r.send("board adds the in-house venue to the basis sleeve", board, { address: basis, abi: abiOf("BasisSleeve"), functionName: "addVenue", args: [basisVenue] });
-  await r.send("board adds the in-house venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [hedgeVenue] });
-  await r.send("board adds the mirrored venue to the hedge sleeve", board, { address: perp, abi: abiOf("PerpSleeve"), functionName: "addVenue", args: [mirrorVenue] });
-  // Desk limit by staking tier (B1): tier 0 allows two desks; the board stakes 10,000 PLTH (tier 1, four desks)
-  // for the basis and hedge desks, then unstakes: the four desks stay (the tier is read when a desk is added), and
-  // the board is back at tier 0 for the weekly-close refusal in the treasury area.
-  await r.reverts("tier-0 board cannot register a third desk (TierTooLow, maxDesks 2)", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("basis", { size: 32 }), A.basisDesk.address, [basis]] }, "TierTooLow");
-  await stake(x, board, 10_000n * E18, "board");
-  await r.send("board registers the basis desk", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("basis", { size: 32 }), A.basisDesk.address, [basis]] });
-  await r.send("board registers the hedge desk", board, { address: t.account, abi: ACC, functionName: "registerDesk", args: [stringToHex("hedge", { size: 32 }), A.hedgeDesk.address, [perp]] });
-  const S = abiOf("PlinthStaking");
-  await r.send("board unstakes its 10,000 PLTH: tier 0 again, the four desks stay registered", board, { address: x.addr("staking"), abi: S, functionName: "unstake", args: [10_000n * E18] }, async () => {
-    const tier = await r.read<{ maxDesks: number; weeklyClose: boolean }>(x.addr("staking"), S, "tierOf", [board.address]);
-    expect(tier.maxDesks === 2 && !tier.weeklyClose, `tier ${JSON.stringify(tier)}`);
-    const count = await r.read<bigint>(t.account!, ACC, "activeDeskCount");
-    expect(count === 4n, `activeDeskCount ${count}`);
-    for (const d of ["cash", "equity", "basis", "hedge"]) {
-      const desk = await r.read<{ active: boolean }>(t.account!, ACC, "desk", [stringToHex(d, { size: 32 })]);
-      expect(desk.active, `${d} desk not active`);
+  // v4 (reviewed adapters only): a factory treasury registers a sleeve or venue only if its runtime codehash is on
+  // the factory's allow-list (OWNER, 48 h ChangeDelay once ownership was accepted), and after the account's setup
+  // window only through proposeDesk / proposeVenue and 48 h. Per-instance adapters (these sleeves and venues carry
+  // the account in their immutables) are therefore approved one by one: OWNER queues them here; after the timelocks
+  // area OWNER applies them and the board proposes the desks and venues; the treasury area registers them.
+  const fOwner = getAddress(await r.read<Address>(factory, F, "owner", []));
+  const ownerActor = Object.values(A).find((a) => (a as { address?: Address }).address && getAddress((a as { address: Address }).address) === fOwner) as typeof board | undefined;
+  if (!ownerActor) throw new Error(`treasury factory owner ${fOwner} is not a fork actor`);
+  const adapters = { basis, perp, basisVenue, hedgeVenue, mirrorVenue } as const;
+  const hashes: Record<string, Hex> = {};
+  for (const [k, a] of Object.entries(adapters)) {
+    const code = await r.pub.getCode({ address: a });
+    hashes[k] = keccak256(code!);
+    await r.send(`OWNER asks the factory to allow the ${k} codehash (per-instance adapter; 48 h ChangeDelay)`, ownerActor, { address: factory, abi: F, functionName: "setAdapterAllowed", args: [hashes[k], true] }, async () => {
+      const ok = await r.read<boolean>(factory, F, "isAdapterAllowed", [a]);
+      return ok ? "allowed at once (first-time setup)" : "queued: applies after 48 h";
+    });
+  }
+  const queuedAt = await r.now();
+  const ACCs = { basis: abiOf("BasisSleeve"), perp: abiOf("PerpSleeve") };
+  const venueOf: [keyof typeof ACCs, Address, string][] = [["basis", basisVenue, "in-house venue to the basis sleeve"], ["perp", hedgeVenue, "in-house venue to the hedge sleeve"], ["perp", mirrorVenue, "mirrored venue to the hedge sleeve"]];
+  const desks: [string, Address, Address][] = [["basis", A.basisDesk.address, basis], ["hedge", A.hedgeDesk.address, perp]];
+  // Phase 2 (after the timelocks area): OWNER applies the allow-list; the board proposes the desks and venues (or,
+  // inside the account's setup window, nothing needs proposing).
+  x.state.t2Approve = async () => {
+    const wait = queuedAt + 48n * 3600n + 1n;
+    if ((await r.now()) < wait) await r.warpTo(wait);
+    for (const [k, a] of Object.entries(adapters)) {
+      if (await r.read<boolean>(factory, F, "isAdapterAllowed", [a])) continue;
+      await r.send(`OWNER applies the ${k} codehash after the 48 h ChangeDelay`, ownerActor, { address: factory, abi: F, functionName: "setAdapterAllowed", args: [hashes[k], true] }, async () => {
+        expect(await r.read<boolean>(factory, F, "isAdapterAllowed", [a]), "not allowed");
+        return "isAdapterAllowed = true";
+      });
     }
-    return "tierOf(board).maxDesks = 2, activeDeskCount = 4 (unstaking never revokes a desk)";
-  });
+    const setupEnds = await r.read<bigint>(t.account!, ACC, "setupEndsAt", []);
+    if ((await r.now()) <= setupEnds) return;
+    for (const [sleeve, venue, what] of venueOf) {
+      await r.send(`board proposes the ${what} (48 h)`, board, { address: adapters[sleeve], abi: ACCs[sleeve], functionName: "proposeVenue", args: [venue] });
+    }
+    for (const [id, key, a] of desks) {
+      await r.send(`board proposes the ${id} desk (48 h)`, board, { address: t.account!, abi: ACC, functionName: "proposeDesk", args: [stringToHex(id, { size: 32 }), key, [a]] });
+    }
+    x.state.t2ProposedAt = await r.now();
+  };
+  // Phase 3 (start of the treasury area): the venues and desks are registered once their proposals matured.
+  x.state.t2Register = async () => {
+    const at = x.state.t2ProposedAt as bigint | undefined;
+    if (at !== undefined && (await r.now()) < at + 48n * 3600n + 1n) await r.warpTo(at + 48n * 3600n + 1n);
+    for (const [sleeve, venue, what] of venueOf) {
+      await r.send(`board adds the ${what}`, board, { address: adapters[sleeve], abi: ACCs[sleeve], functionName: "addVenue", args: [venue] });
+    }
+    // Desk limit by staking tier (B1): tier 0 allows two desks; the board stakes 10,000 PLTH (tier 1, four desks)
+    // for the basis and hedge desks, then unstakes: the four desks stay (the tier is read when a desk is added), and
+    // the board is back at tier 0 for the weekly-close refusal in the treasury area.
+    await r.reverts("tier-0 board cannot register a third desk (TierTooLow, maxDesks 2)", board, { address: t.account!, abi: ACC, functionName: "registerDesk", args: [stringToHex("basis", { size: 32 }), A.basisDesk.address, [basis]] }, "TierTooLow");
+    await stake(x, board, 10_000n * E18, "board");
+    for (const [id, key, a] of desks) await r.send(`board registers the ${id} desk`, board, { address: t.account!, abi: ACC, functionName: "registerDesk", args: [stringToHex(id, { size: 32 }), key, [a]] });
+    const S = abiOf("PlinthStaking");
+    await r.send("board unstakes its 10,000 PLTH: tier 0 again, the four desks stay registered", board, { address: x.addr("staking"), abi: S, functionName: "unstake", args: [10_000n * E18] }, async () => {
+      const tier = await r.read<{ maxDesks: number; weeklyClose: boolean }>(x.addr("staking"), S, "tierOf", [board.address]);
+      expect(tier.maxDesks === 2 && !tier.weeklyClose, `tier ${JSON.stringify(tier)}`);
+      const count = await r.read<bigint>(t.account!, ACC, "activeDeskCount");
+      expect(count === 4n, `activeDeskCount ${count}`);
+      for (const d of ["cash", "equity", "basis", "hedge"]) {
+        const desk = await r.read<{ active: boolean }>(t.account!, ACC, "desk", [stringToHex(d, { size: 32 })]);
+        expect(desk.active, `${d} desk not active`);
+      }
+      return "tierOf(board).maxDesks = 2, activeDeskCount = 4 (unstaking never revokes a desk)";
+    });
+  };
   Object.assign(t, { beacon: beacon!, basis, basisVenue, perp, hedgeVenue, mirror, mirrorVenue });
   for (const [k, v] of Object.entries({ basis, basisVenue, perp, hedgeVenue, mirror, mirrorVenue })) r.names.set(v.toLowerCase(), k);
 

@@ -32,13 +32,14 @@ async function deploy() {
   const startBlock = Number(await pub.getBlockNumber());
   const script = stack === "beta" ? "MainnetBeta" : "ForkMainnet";
   const beta = stack === "beta" ? await prepareBetaDeployer() : undefined;
+  const safe = beta ? await deployOwnerSafe() : undefined;
   log(`forge script ${script} (broadcast to the local fork only)`);
   const env = {
     ...process.env,
     FORK_KEEPER: devAccount(ROLE.keeper).address,
     FORK_ATTESTER: devAccount(ROLE.attester).address,
     FORK_COMMITTEE: devAccount(ROLE.committee).address,
-    ...(beta ? betaEnv(beta.token) : {}),
+    ...(beta ? betaEnv(beta.token, safe) : {}),
   };
   const sender = beta ? beta.deployer : devAccount(ROLE.deployer).address;
   const r = Bun.spawnSync(
@@ -69,13 +70,17 @@ async function deploy() {
 
 // ---------------------------------------------------------------- beta stack (MainnetBeta.s.sol, fork mode)
 
-/** Placeholder OWNER and bots on the fork: dev accounts, so the services and the exercise can sign. */
-export function betaEnv(token: boolean): Record<string, string> {
+/**
+ * Placeholder OWNER and bots on the fork. OWNER is a 2-of-3 Safe stand-in (MockSafe: getThreshold / getOwners, as
+ * the mainnet owner pin reads them) owned by dev accounts 0-2 when one was deployed (`owner`), else dev account 0;
+ * the setup and the exercise act as it by anvil impersonation. Bots are dev accounts, so services can sign.
+ */
+export function betaEnv(token: boolean, owner?: Address): Record<string, string> {
   return {
     BETA_FORK: "true",
     BETA_OUT: "fork.json",
     DEPLOY_TOKEN: token ? "true" : "false",
-    OWNER: devAccount(ROLE.deployer).address,
+    OWNER: owner ?? devAccount(ROLE.deployer).address,
     KEEPER: devAccount(ROLE.keeper).address,
     ATTESTER: devAccount(ROLE.attester).address,
     RELAYER: devAccount(ROLE.relayer).address,
@@ -102,6 +107,26 @@ async function prepareBetaDeployer(): Promise<{ deployer: Address; token: boolea
   return { deployer, token };
 }
 
+/**
+ * OWNER on the beta fork: a 2-of-3 Safe stand-in (contracts/test/mocks/MockSafe.sol) owned by dev accounts 0-2, so
+ * the deploy's and verify:deployment's owner pin (a contract with getThreshold() >= 2 and enough owners) is
+ * exercised. Its ownership calls are sent by anvil impersonation (a real Safe would collect two signatures).
+ */
+async function deployOwnerSafe(): Promise<Address> {
+  const { pub, wallet, rpc } = clients();
+  const art = JSON.parse(readFileSync(join(ROOT, "contracts", "out", "MockSafe.sol", "MockSafe.json"), "utf8")) as { abi: unknown[]; bytecode: { object: Hex } };
+  const owners = [0, 1, 2].map((i) => devAccount(i).address);
+  const w = wallet(devAccount(ROLE.deployer));
+  const hash = await w.deployContract({ abi: art.abi as never, bytecode: art.bytecode.object, args: [owners, 2n] } as never);
+  const rc = await pub.waitForTransactionReceipt({ hash });
+  if (rc.status !== "success" || !rc.contractAddress) throw new Error("MockSafe deploy reverted");
+  const safe = getAddress(rc.contractAddress);
+  await rpc("anvil_setBalance", [safe, "0x56bc75e2d63100000"]); // 100 ETH for its own transactions
+  writeFileSync(PATHS.ownerSafe, safe);
+  log(`OWNER: 2-of-3 Safe stand-in ${safe} (owners dev accounts 0-2)`);
+  return safe;
+}
+
 /** Gas of every broadcast transaction (receipts), for the mainnet cost estimate. */
 function recordDeployGas(script: string) {
   const f = join(ROOT, "contracts", "broadcast", `${script}.s.sol`, String(FORK_CHAIN_ID), "run-latest.json");
@@ -121,14 +146,28 @@ const acceptAbi = parseAbi(["function acceptOwnership()", "function approve(addr
 
 /** OWNER accepts every two-step ownership (what Kal does after the real deploy), then seeds the perp pool's LP side. */
 async function betaAfterDeploy(main: Record<string, unknown>) {
-  const { pub, wallet } = clients();
+  const { pub, wallet, rpc } = clients();
   const owner = devAccount(ROLE.deployer);
   const w = wallet(owner);
+  // OWNER (the Safe stand-in) accepts by impersonation; the LP seed below stays dev account 0's.
+  const ownerAddr = getAddress(main.owner as string);
+  await rpc("anvil_impersonateAccount", [ownerAddr]);
+  const asOwner = (to: Address, data: Hex) => rpc<Hex>("eth_sendTransaction", [{ from: ownerAddr, to, data }]);
   for (const a of (main.acceptOwnership ?? []) as Address[]) {
-    const rc = await pub.waitForTransactionReceipt({ hash: await w.sendTransaction({ to: getAddress(a), data: encodeFunctionData({ abi: acceptAbi, functionName: "acceptOwnership" }) }) });
+    const rc = await pub.waitForTransactionReceipt({ hash: await asOwner(getAddress(a), encodeFunctionData({ abi: acceptAbi, functionName: "acceptOwnership" })) });
     if (rc.status !== "success") throw new Error(`acceptOwnership on ${a} reverted`);
   }
   log(`OWNER accepted ${(main.acceptOwnership as Address[] | undefined)?.length ?? 0} ownerships`);
+  // The token deploy sends OWNER the PLTH left after the pool; the exercise's board (dev account 0) stakes it.
+  if (typeof main.plth === "string") {
+    const plth = getAddress(main.plth);
+    const bal = await pub.readContract({ address: plth, abi: parseAbi(["function balanceOf(address) view returns (uint256)"]), functionName: "balanceOf", args: [ownerAddr] });
+    if (bal > 0n) {
+      const rc = await pub.waitForTransactionReceipt({ hash: await asOwner(plth, encodeFunctionData({ abi: parseAbi(["function transfer(address, uint256) returns (bool)"]), functionName: "transfer", args: [owner.address, bal] })) });
+      if (rc.status !== "success") throw new Error("PLTH hand-on to the board reverted");
+      log(`OWNER passed ${bal} PLTH (raw) to the board, dev account 0`);
+    }
+  }
   const lp = 1_000_000n * U;
   const pool = getAddress(main.perpPool as string);
   for (const data of [encodeFunctionData({ abi: acceptAbi, functionName: "approve", args: [pool, lp] })]) {

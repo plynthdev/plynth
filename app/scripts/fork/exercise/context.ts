@@ -46,7 +46,7 @@ export const ACTORS = {
   merchant: 35, // receives spends
   trader2: 36,
 } as const;
-export type ActorName = keyof typeof ACTORS;
+export type ActorName = keyof typeof ACTORS | "owner";
 
 export const U = 1_000_000n; // USDG base units
 export const E18 = 10n ** 18n;
@@ -79,8 +79,12 @@ export type Ctx = {
 
 export function makeCtx(dep: ForkDeployment, r: Recorder): Ctx {
   const A = Object.fromEntries(Object.entries(ACTORS).map(([n, i]) => [n, devAccount(i)])) as Record<ActorName, HDAccount>;
-  // MainnetBeta.s.sol makes OWNER (dev account 0 on the fork) the template and insurance committee too.
-  if (dep.beta) A.committee = A.deployer;
+  // OWNER: on the beta stack a 2-of-3 Safe stand-in (setup.ts), acted as by anvil impersonation (a JSON-RPC account:
+  // viem sends eth_sendTransaction from it); elsewhere dev account 0. MainnetBeta makes OWNER the template and
+  // insurance committee too.
+  const ownerAddr = typeof dep.owner === "string" ? getAddress(dep.owner) : undefined;
+  A.owner = (dep.beta && ownerAddr && ownerAddr !== A.deployer.address ? { address: ownerAddr, type: "json-rpc" } : A.deployer) as HDAccount;
+  if (dep.beta) A.committee = A.owner;
   for (const [n, a] of Object.entries(A)) if (!r.names.has(a.address.toLowerCase())) r.names.set(a.address.toLowerCase(), n);
   for (const [k, v] of Object.entries(dep)) if (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) && !r.names.has(v.toLowerCase())) r.names.set(v.toLowerCase(), k);
   for (const [sym, s] of Object.entries(dep.stocks)) r.names.set(s.token.toLowerCase(), sym);

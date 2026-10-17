@@ -113,14 +113,14 @@ async function perpsArea(x: Ctx) {
   const raised = [...params];
   raised[3] = 100n; // 1%/h borrow
   // A live market's params wait the pool's 48 h timelock (audit privileged finding): propose, wait, apply.
-  await r.send("market owner proposes raising the AAPL borrow fee to 1%/h (pool timelock)", A.deployer, { address: aaplM, abi: PM, functionName: "proposeParams", args: raised });
-  await r.reverts("the raise cannot apply before the timelock", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: raised }, "TimelockActive");
+  await r.send("market owner proposes raising the AAPL borrow fee to 1%/h (pool timelock)", A.owner, { address: aaplM, abi: PM, functionName: "proposeParams", args: raised });
+  await r.reverts("the raise cannot apply before the timelock", A.owner, { address: aaplM, abi: PM, functionName: "setParams", args: raised }, "TimelockActive");
   const lock = await r.read<bigint>(pool, PP, "TIMELOCK");
   await r.check("warp past the pool's params timelock", async () => {
     await r.warp(lock + 1n);
     return `chain time ${await r.now()}`;
   });
-  await r.send("market owner applies the raised borrow fee", A.deployer, { address: aaplM, abi: PM, functionName: "setParams", args: raised });
+  await r.send("market owner applies the raised borrow fee", A.owner, { address: aaplM, abi: PM, functionName: "setParams", args: raised });
   await r.check("warp 2h: borrow eats the thin margin", async () => {
     await r.warp(2n * HOUR);
     expect(await r.read<boolean>(aaplM, PM, "isLiquidatable", [A.trader2.address]), "not liquidatable yet");
@@ -132,7 +132,7 @@ async function perpsArea(x: Ctx) {
     expect(got > 0n && (await pos(aaplM, A.trader2.address)).size === 0n, `reward ${got}`);
     return `position gone; liquidator earned ${Number(got) / 1e6} USDG`;
   });
-  await r.send("market owner proposes restoring the borrow fee (applies after the timelock)", A.deployer, { address: aaplM, abi: PM, functionName: "proposeParams", args: params });
+  await r.send("market owner proposes restoring the borrow fee (applies after the timelock)", A.owner, { address: aaplM, abi: PM, functionName: "proposeParams", args: params });
   await r.send("long closes the rest", A.longT, { address: aaplM, abi: PM, functionName: "close" });
 
   // ---- LP redeem after the cooldown

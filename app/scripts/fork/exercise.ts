@@ -60,6 +60,12 @@ async function main(): Promise<number> {
   writeFileSync(PATHS.exercised, new Date().toISOString());
   const r = new Recorder(new Map(), KNOWN_BUGS);
   const x = makeCtx(dep, r);
+  // OWNER as a contract (the beta stack's Safe stand-in): impersonate it for its steps (anvil does not keep this
+  // across restarts).
+  if (x.A.owner.address !== x.A.deployer.address) {
+    await r.c.rpc("anvil_impersonateAccount", [x.A.owner.address]);
+    await r.c.rpc("anvil_setBalance", [x.A.owner.address, "0x56bc75e2d63100000"]);
+  }
   const startedAt = new Date().toISOString();
   for (const [name, fn] of AREAS) {
     if (only && !only.includes(name)) continue;
