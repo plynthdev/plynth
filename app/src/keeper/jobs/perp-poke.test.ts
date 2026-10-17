@@ -20,13 +20,16 @@ describe("pokeDecision", () => {
   test("open positions, an old stored price, a newer feed: poke", () => expect(pokeDecision(base).poke).toBe(true));
   test("no open positions: nothing to protect", () => expect(pokeDecision({ ...base, openPositions: 0n })).toMatchObject({ poke: false, reason: "no open positions" }));
   test("stored price younger than the max age", () => expect(pokeDecision({ ...base, lastPriceAt: NOW - 3600n }).poke).toBe(false));
-  test("market closed (feed not newer) or Valuer reverting: no transaction", () => {
+  test("a reverting Valuer nobody recorded yet: one poke starts the hold clock (v2 unpricedSince)", () => {
+    expect(pokeDecision({ ...base, feedUpdatedAt: null, unpricedSince: 0n }).poke).toBe(true);
+  });
+  test("market closed (feed not newer) or a Valuer revert already recorded: no transaction", () => {
     expect(pokeDecision({ ...base, feedUpdatedAt: NOW - 7200n })).toMatchObject({ poke: false, reason: expect.stringMatching(/closed/) });
-    expect(pokeDecision({ ...base, feedUpdatedAt: null })).toMatchObject({ poke: false, reason: expect.stringMatching(/does not answer/) });
+    expect(pokeDecision({ ...base, feedUpdatedAt: null, unpricedSince: NOW - 600n })).toMatchObject({ poke: false, reason: expect.stringMatching(/already recorded/) });
   });
 });
 
-type M = { count: bigint; lastPriceAt: bigint; feed: bigint | "revert"; throws?: boolean };
+type M = { count: bigint; lastPriceAt: bigint; feed: bigint | "revert"; throws?: boolean; unpricedSince?: bigint };
 
 function fakeCtx(markets: Record<string, M>, maxAge?: number) {
   const sent: string[] = [];
@@ -44,6 +47,7 @@ function fakeCtx(markets: Record<string, M>, maxAge?: number) {
       if (functionName === "lastPriceAt") return m.lastPriceAt;
       if (functionName === "valuer") return VALUER;
       if (functionName === "underlying") return address; // the fake keys the Valuer by market
+      if (functionName === "unpricedSince") return m.unpricedSince ?? 0n;
       throw new Error(`unexpected read ${functionName}`);
     },
     simulateContract: async () => ({ result: undefined }),
@@ -63,14 +67,14 @@ describe("runPerpPoke over a fake chain", () => {
     const { ctx, sent } = fakeCtx({
       [M1]: { count: 1n, lastPriceAt: NOW - 7200n, feed: NOW - 30n, throws: true },
       [M2]: { count: 3n, lastPriceAt: NOW - 7200n, feed: NOW - 30n },
-      [M3]: { count: 3n, lastPriceAt: NOW - 7200n, feed: "revert" },
+      [M3]: { count: 3n, lastPriceAt: NOW - 7200n, feed: "revert", unpricedSince: NOW - 900n },
     });
     const r = await runPerpPoke(ctx);
     expect(sent).toEqual([`poke:${M2}`]);
     expect(r.actions).toBe(1);
     expect(r.ok).toBe(false);
     expect(r.notes.join("|")).toMatch(new RegExp(`${M1}: failed \\(rpc: connection reset\\)`));
-    expect(r.notes.join("|")).toMatch(new RegExp(`${M3}: not poked, the Valuer does not answer`));
+    expect(r.notes.join("|")).toMatch(new RegExp(`${M3}: not poked, the Valuer does not answer and the market already recorded`));
   });
 
   test("fresh prices, empty markets and a closed market cost no transaction; the max age is configurable", async () => {

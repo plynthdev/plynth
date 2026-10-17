@@ -139,6 +139,7 @@ export const perpMarketKeeperAbi = parseAbi([
   "function settleHeld(address account)",
   "function openPositionCount() view returns (uint256)",
   "function lastPriceAt() view returns (uint256)",
+  "function unpricedSince() view returns (uint256)",
   "function valuer() view returns (address)",
   "function underlying() view returns (address)",
   "function poke()",

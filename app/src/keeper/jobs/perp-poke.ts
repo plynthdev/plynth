@@ -6,6 +6,10 @@
 // Cheap by design: a market is poked only when it has open positions, its stored price is older than
 // KEEPER_PERP_POKE_AGE_S (default 1 h) and the Valuer has a newer feed time to record (so a closed market or a
 // delisted token, whose feed does not move, costs reads only, never a transaction every pass).
+// v2 (review V2-L1): a market whose Valuer reverts (feed broken, token delisted) measures its hold from the later of
+// lastPriceAt and `unpricedSince`, which only a state-changing call records (a delisted token uses its delistedAt).
+// So when the Valuer reverts and nothing has recorded it yet, one poke starts that clock (once: the market then
+// holds unpricedSince until the Valuer answers again); a recent lastPrice also means settleHeld settles at a recent price.
 // Isolation: each market is its own try/catch; one failing market is a note and never stops the others.
 import type { Address } from "viem";
 import { perpMarketKeeperAbi, valuerAbi } from "@/abi/keeper";
@@ -13,13 +17,24 @@ import { chainNow, simulate, type Ctx, type JobResult } from "@/keeper/context";
 
 export const DEFAULT_PERP_POKE_AGE_S = 3600;
 
-export type PokeView = { openPositions: bigint; lastPriceAt: bigint; now: bigint; feedUpdatedAt: bigint | null; maxAge: bigint };
+export type PokeView = {
+  openPositions: bigint;
+  lastPriceAt: bigint;
+  now: bigint;
+  feedUpdatedAt: bigint | null;
+  maxAge: bigint;
+  /** PerpMarket.unpricedSince, read only when the Valuer reverts (0 = not recorded yet). */
+  unpricedSince?: bigint;
+};
 
 /** Whether poke() is worth a transaction. Pure. */
 export function pokeDecision(v: PokeView): { poke: true } | { poke: false; reason: string } {
   if (v.openPositions === 0n) return { poke: false, reason: "no open positions" };
   if (v.now <= v.lastPriceAt + v.maxAge) return { poke: false, reason: "price is recent" };
-  if (v.feedUpdatedAt === null) return { poke: false, reason: "the Valuer does not answer (held or delisted): nothing newer to record" };
+  if (v.feedUpdatedAt === null) {
+    if ((v.unpricedSince ?? 0n) === 0n) return { poke: true }; // records when the Valuer started reverting
+    return { poke: false, reason: "the Valuer does not answer and the market already recorded since when" };
+  }
   if (v.feedUpdatedAt <= v.lastPriceAt) return { poke: false, reason: "the feed has nothing newer (market closed)" };
   return { poke: true };
 }
@@ -40,12 +55,14 @@ export async function runPerpPoke(ctx: Ctx): Promise<JobResult> {
       if (now <= lastPriceAt + maxAge) continue;
       const [valuer, underlying] = await Promise.all([read<Address>(market, "valuer"), read<Address>(market, "underlying")]);
       let feedUpdatedAt: bigint | null;
+      let unpricedSince: bigint | undefined;
       try {
         feedUpdatedAt = BigInt((await read<{ updatedAt: bigint }>(valuer, "quote", [underlying], valuerAbi)).updatedAt);
       } catch {
         feedUpdatedAt = null; // the market itself falls back to its stored price here
+        unpricedSince = BigInt(await read<bigint>(market, "unpricedSince"));
       }
-      const d = pokeDecision({ openPositions, lastPriceAt, now, feedUpdatedAt, maxAge });
+      const d = pokeDecision({ openPositions, lastPriceAt, now, feedUpdatedAt, maxAge, unpricedSince });
       if (!d.poke) {
         res.notes.push(`${market}: not poked, ${d.reason}`);
         continue;
